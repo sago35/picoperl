@@ -1,0 +1,31 @@
+use strict; use warnings;
+$| = 1;
+my $u;
+my $n = $u + 1;
+print "n=$n\n";
+my $s = "abc" + 1;
+print "s=$s\n";
+my $t = "5 apples" * 2;
+print "t=$t\n";
+print "u=$u\n";
+print "join: ", join(",", 1, $u, 3), "\n";
+my %h = (1, 2, 3);
+print scalar(keys %h), "\n";
+my $r = { a => 1, 'b' };
+print scalar(keys %$r), "\n";
+my $c = $u . "x";
+print "c=$c\n";
+my $eq = ($u == 0) ? "zero" : "nonzero";
+print "$eq\n";
+my $f = sprintf("%d-%s", $u, "x");
+print "$f\n";
+{
+    no warnings;
+    my $q = $u + 1;
+    print "quiet q=$q\n";
+}
+my $ok = "0 but true" + 5;
+print "ok=$ok\n";
+my $z; $z .= "a"; $z += 1 if 0; print "z=$z\n";
+my $w = "12" + 3; print "w=$w\n";
+print "done\n";

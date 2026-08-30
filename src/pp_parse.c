@@ -1,0 +1,1924 @@
+/* Lexer + recursive-descent parser for the picoperl Perl subset. */
+#include "pp_internal.h"
+#include <ctype.h>
+#include <setjmp.h>
+
+/* ------------------------------------------------------------------ */
+/* Lexer                                                               */
+/* ------------------------------------------------------------------ */
+
+enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW };
+
+typedef struct {
+    int    type;
+    int    line;
+    const char *s;      /* STR/ISTR/QW: copied body; IDENT/VAR: pointer into src */
+    int    len;
+    pp_val num;
+    char   sigil;       /* T_VAR: '$','@','%','&','#' ($#name) */
+    char   op[4];       /* T_OP / T_CAST */
+    int    space_before;
+} pp_tok;
+
+typedef struct {
+    const char *src;
+    int   pos, len;
+    int   line;
+    int   prev_term;    /* previous token ends a term (so '/', '%', '@' are operators) */
+    int   prev_brace;   /* previous token was '}' (block end: sigils are more likely than operators) */
+    int   prev_split;   /* previous token was the identifier 'split' (so // is a pattern) */
+    char **strs; int nstrs, capstrs;
+} pp_lex;
+
+/* Compile-time lexical scopes: every block/sub/unit/loop-variable/condition scope gets an id.
+   Variables resolve to (depth, slot); scopes that end up declaring nothing are "collapsed"
+   (no run-time environment is created for them) and skipped when depths are computed. */
+enum { SCOPE_BLOCK = 0, SCOPE_SUB, SCOPE_UNIT, SCOPE_LOOPVAR };
+typedef struct {
+    int id, kind, n, cap;
+    pp_sym **vars;
+    unsigned char strict_vars, strict_subs, warnings;
+} pscope;
+typedef struct {
+    pp_arena *arena;                             /* AST storage of the file being parsed */
+    int heap_depth;                              /* >0: nodes are malloc'd (subtree runs at parse time) */
+    pscope *st; int n, cap;                      /* open scopes (stack) */
+    unsigned char *collapsed; int *parent_of; int nids, capids;
+    struct { pp_node *node; int own, target; } *recs; int nrecs, caprecs;   /* lexical references to finalize */
+    pp_sym **ours; int nours, capours;           /* `our` names allowed under strict vars */
+} pscopes;
+
+typedef struct pp_parser pp_parser;
+struct pp_parser {
+    pp_interp *I;
+    pp_lex L;
+    pp_tok cur, nxt;
+    int has_nxt;
+    pscopes *sc;                          /* shared with sub-parsers (string interpolation) */
+    int owns_sc;
+    const char *file;
+    jmp_buf jb;
+    char errmsg[256];
+    int err_has_loc;                     /* errmsg already ends with "at FILE line N." */
+    pp_sym **decl; int ndecl, capdecl;   /* subs declared so far (for bareword parsing) */
+    unsigned char *declnoargs;           /* 1 if declared with an empty prototype */
+    pp_sym *pending_label;               /* LABEL: before a loop statement */
+    char pkg[96];                        /* current package */
+    char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
+    int in_sub;
+};
+
+static char *lex_strdup(pp_lex *L, const char *s, int len) {
+    char *p = pp_xmalloc(len + 1);
+    memcpy(p, s, len); p[len] = 0;
+    if (L->nstrs == L->capstrs) { L->capstrs = L->capstrs ? L->capstrs * 2 : 16; L->strs = pp_xrealloc(L->strs, L->capstrs * sizeof(char *)); }
+    L->strs[L->nstrs++] = p;
+    return p;
+}
+
+static void perr(pp_parser *P, const char *fmt, ...) __attribute__((noreturn));
+static void perr(pp_parser *P, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(P->errmsg, sizeof P->errmsg, fmt, ap);
+    va_end(ap);
+    longjmp(P->jb, 1);
+}
+
+static pscope *scope_top(pp_parser *P) { return P->sc->n ? &P->sc->st[P->sc->n - 1] : NULL; }
+
+static int scope_push(pp_parser *P, int kind) {
+    pscopes *S = P->sc;
+    if (S->n == S->cap) { S->cap = S->cap ? S->cap * 2 : 8; S->st = pp_xrealloc(S->st, S->cap * sizeof(pscope)); }
+    if (S->nids == S->capids) {
+        S->capids = S->capids ? S->capids * 2 : 32;
+        S->collapsed = pp_xrealloc(S->collapsed, S->capids);
+        S->parent_of = pp_xrealloc(S->parent_of, S->capids * sizeof(int));
+    }
+    pscope *top = scope_top(P);
+    pscope sc;
+    sc.id = S->nids; sc.kind = kind; sc.n = 0; sc.cap = 0; sc.vars = NULL;
+    sc.strict_vars = top ? top->strict_vars : 0;
+    sc.strict_subs = top ? top->strict_subs : 0;
+    sc.warnings = top ? top->warnings : 0;
+    S->parent_of[S->nids] = top ? top->id : -1;
+    S->collapsed[S->nids] = 0;
+    S->nids++;
+    S->st[S->n++] = sc;
+    return sc.id;
+}
+/* closes the scope; returns the number of slots it needs at run time */
+static int scope_pop(pp_parser *P) {
+    pscopes *S = P->sc;
+    pscope *sc = &S->st[--S->n];
+    int n = sc->n;
+    S->collapsed[sc->id] = (n == 0 && sc->kind == SCOPE_BLOCK);
+    free(sc->vars);
+    return n;
+}
+static int scope_declare(pp_parser *P, pp_sym *sym) {
+    pscope *sc = scope_top(P);
+    if (sc->n == sc->cap) { sc->cap = sc->cap ? sc->cap * 2 : 4; sc->vars = pp_xrealloc(sc->vars, sc->cap * sizeof(pp_sym *)); }
+    if (sc->n >= 255) perr(P, "too many lexical variables in one scope (max 255)");
+    sc->vars[sc->n] = sym;
+    return sc->n++;
+}
+static void scope_record(pp_parser *P, pp_node *node, int own, int target) {
+    pscopes *S = P->sc;
+    if (S->nrecs == S->caprecs) { S->caprecs = S->caprecs ? S->caprecs * 2 : 64; S->recs = pp_xrealloc(S->recs, S->caprecs * sizeof *S->recs); }
+    S->recs[S->nrecs].node = node; S->recs[S->nrecs].own = own; S->recs[S->nrecs].target = target;
+    S->nrecs++;
+}
+/* compute depths for records [from, nrecs); targets below min_target (outside a BEGIN/use subtree
+   that runs now) become globals. The records are then dropped. */
+static void scope_finalize(pp_parser *P, int from, int min_target) {
+    pscopes *S = P->sc;
+    for (int i = from; i < S->nrecs; i++) {
+        pp_node *node = S->recs[i].node;
+        int own = S->recs[i].own, target = S->recs[i].target;
+        if (target < min_target) { node->flags &= ~PP_VAR_LEX; continue; }
+        int depth = 0, id = own;
+        while (id != target && id >= 0) { if (!S->collapsed[id]) depth++; id = S->parent_of[id]; }
+        if (id < 0 || depth > 250) perr(P, "internal: lexical scope chain broken");
+        node->aux = (uint8_t)depth;
+    }
+    S->nrecs = from;
+}
+static int is_special_var(char sigil, const char *name, int len) {
+    if (len == 1) {
+        char c = name[0];
+        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^')) return 1;
+        if (sigil == '@' && c == '_') return 1;
+    }
+    if (sigil == '%' && len == 3 && !memcmp(name, "SIG", 3)) return 1;
+    if (sigil == '$' && ((len == 6 && !memcmp(name, "STDOUT", 6)) || (len == 6 && !memcmp(name, "STDERR", 6)) || (len == 5 && !memcmp(name, "STDIN", 5)))) return 1;
+    if (sigil == '$' && len > 0 && name[0] >= '1' && name[0] <= '9') return 1;
+    if (sigil == '@' && ((len == 4 && !memcmp(name, "ARGV", 4)) || (len == 3 && !memcmp(name, "INC", 3)))) return 1;
+    if (sigil == '%' && ((len == 3 && !memcmp(name, "ENV", 3)) || (len == 3 && !memcmp(name, "INC", 3)))) return 1;
+    for (int i = 0; i + 1 < len; i++) if (name[i] == ':' && name[i+1] == ':') return 1;   /* qualified */
+    return 0;
+}
+static void ours_add(pp_parser *P, pp_sym *sym) {
+    pscopes *S = P->sc;
+    if (S->nours == S->capours) { S->capours = S->capours ? S->capours * 2 : 8; S->ours = pp_xrealloc(S->ours, S->capours * sizeof(pp_sym *)); }
+    S->ours[S->nours++] = sym;
+}
+static int ours_has(pp_parser *P, pp_sym *sym) {
+    for (int i = 0; i < P->sc->nours; i++) if (P->sc->ours[i] == sym) return 1;
+    return 0;
+}
+/* resolve a variable use: lexical (depth/slot) or global; enforces strict vars */
+static void resolve_var(pp_parser *P, pp_node *node, const char *name, int len) {
+    pscopes *S = P->sc;
+    for (int i = S->n - 1; i >= 0; i--) {
+        pscope *sc = &S->st[i];
+        for (int k = sc->n - 1; k >= 0; k--) {
+            if (sc->vars[k] == node->sym) {
+                node->flags |= PP_VAR_LEX;
+                node->op = (uint8_t)k;          /* slot */
+                scope_record(P, node, S->st[S->n - 1].id, sc->id);
+                return;
+            }
+        }
+    }
+    node->flags &= ~PP_VAR_LEX;
+    pscope *top = scope_top(P);
+    if (top && top->strict_vars && !is_special_var(node->sym->name[0], name, len) && !ours_has(P, node->sym) && !node->sym->gcell)
+        perr(P, "Global symbol \"%s\" requires explicit package name (did you forget to declare \"my %s\"?)", node->sym->name, node->sym->name);
+}
+
+static int peekc(pp_lex *L, int off) { return L->pos + off < L->len ? (unsigned char)L->src[L->pos + off] : 0; }
+static int is_ident_start(int c) { return isalpha(c) || c == '_'; }
+static int is_ident_char(int c) { return isalnum(c) || c == '_'; }
+
+static void skip_pod(pp_lex *L) {
+    for (;;) {
+        if (L->pos + 4 <= L->len && strncmp(L->src + L->pos, "=cut", 4) == 0) {
+            while (L->pos < L->len && L->src[L->pos] != '\n') L->pos++;
+            return;
+        }
+        while (L->pos < L->len && L->src[L->pos] != '\n') L->pos++;
+        if (L->pos >= L->len) return;
+        L->pos++; L->line++;
+    }
+}
+
+static void skip_ws(pp_lex *L) {
+    if (L->pos == 0 && peekc(L, 0) == '=' && is_ident_start(peekc(L, 1))) skip_pod(L);
+    for (;;) {
+        int c = peekc(L, 0);
+        if (c == '\n') {
+            L->line++; L->pos++;
+            if (peekc(L, 0) == '=' && is_ident_start(peekc(L, 1))) skip_pod(L);
+        }
+        else if (c == ' ' || c == '\t' || c == '\r' || c == '\f') L->pos++;
+        else if (c == '#') { while (L->pos < L->len && L->src[L->pos] != '\n') L->pos++; }
+        else break;
+    }
+}
+
+static int tok_is_ident_raw(pp_tok *t, const char *id) {
+    return t->type == T_IDENT && (int)strlen(id) == t->len && memcmp(t->s, id, t->len) == 0;
+}
+static int closing_delim(int c) {
+    switch (c) { case '(': return ')'; case '[': return ']'; case '{': return '}'; case '<': return '>'; default: return c; }
+}
+
+/* read a delimited body starting after the opening delimiter */
+static const char *lex_delimited(pp_parser *P, int open, int *outlen) {
+    pp_lex *L = &P->L;
+    int close = closing_delim(open);
+    int depth = 1;
+    int start = L->pos;
+    int startline = L->line;
+    for (;;) {
+        if (L->pos >= L->len) { L->line = startline; perr(P, "Can't find string terminator '%c' anywhere before EOF", close); }
+        int c = L->src[L->pos];
+        if (c == '\\' && L->pos + 1 < L->len) { if (L->src[L->pos+1] == '\n') L->line++; L->pos += 2; continue; }
+        if (c == '\n') L->line++;
+        if (open != close && c == open) depth++;
+        else if (c == close) { if (--depth == 0) break; }
+        L->pos++;
+    }
+    *outlen = L->pos - start;
+    const char *body = lex_strdup(L, L->src + start, *outlen);
+    L->pos++;
+    return body;
+}
+
+static const char *three_char_ops[] = { "<=>", "**=", "||=", "&&=", "//=", "...", "<<=", ">>=", NULL };
+static const char *two_char_ops[] = { "=>", "->", "++", "--", "**", "=~", "!~", "==", "!=", "<=", ">=", "&&", "||", "//", "..", "::",
+    "+=", "-=", "*=", "/=", ".=", "%=", "|=", "&=", "^=", "<<", ">>", NULL };
+
+static void lex_number(pp_parser *P, pp_tok *t) {
+    pp_lex *L = &P->L;
+    t->type = T_NUM;
+    if (peekc(L, 0) == '0' && (peekc(L, 1) == 'x' || peekc(L, 1) == 'X')) {
+        L->pos += 2; int64_t v = 0;
+        while (isxdigit(peekc(L, 0)) || peekc(L, 0) == '_') { int c = peekc(L, 0); if (c != '_') v = v * 16 + (isdigit(c) ? c - '0' : (tolower(c) - 'a' + 10)); L->pos++; }
+        t->num = pp_int(v); return;
+    }
+    if (peekc(L, 0) == '0' && (peekc(L, 1) == 'b' || peekc(L, 1) == 'B')) {
+        L->pos += 2; int64_t v = 0;
+        while (peekc(L, 0) == '0' || peekc(L, 0) == '1' || peekc(L, 0) == '_') { int c = peekc(L, 0); if (c != '_') v = v * 2 + (c - '0'); L->pos++; }
+        t->num = pp_int(v); return;
+    }
+    if (peekc(L, 0) == '0' && (isdigit(peekc(L, 1)) || peekc(L, 1) == 'o' || peekc(L, 1) == 'O')) {
+        L->pos += isdigit(peekc(L, 1)) ? 1 : 2; int64_t v = 0;
+        while (isdigit(peekc(L, 0)) || peekc(L, 0) == '_') { int c = peekc(L, 0); if (c != '_') v = v * 8 + (c - '0'); L->pos++; }
+        t->num = pp_int(v); return;
+    }
+    char buf[80]; int n = 0; int isfloat = 0;
+    while (isdigit(peekc(L, 0)) || peekc(L, 0) == '_') { if (peekc(L, 0) != '_' && n < 78) buf[n++] = L->src[L->pos]; L->pos++; }
+    if (peekc(L, 0) == '.' && peekc(L, 1) != '.') {
+        isfloat = 1; if (n < 78) buf[n++] = '.'; L->pos++;
+        while (isdigit(peekc(L, 0)) || peekc(L, 0) == '_') { if (peekc(L, 0) != '_' && n < 78) buf[n++] = L->src[L->pos]; L->pos++; }
+    }
+    if ((peekc(L, 0) == 'e' || peekc(L, 0) == 'E') && (isdigit(peekc(L, 1)) || ((peekc(L, 1) == '-' || peekc(L, 1) == '+') && isdigit(peekc(L, 2))))) {
+        isfloat = 1; if (n < 78) buf[n++] = 'e'; L->pos++;
+        if (peekc(L, 0) == '-' || peekc(L, 0) == '+') { if (n < 78) buf[n++] = L->src[L->pos]; L->pos++; }
+        while (isdigit(peekc(L, 0))) { if (n < 78) buf[n++] = L->src[L->pos]; L->pos++; }
+    }
+    buf[n] = 0;
+    if (isfloat) t->num = pp_num(strtod(buf, NULL));
+    else t->num = pp_str_to_num(buf, n);
+}
+
+static int lex_name(pp_lex *L) {
+    /* scan identifier with optional :: parts starting at pos; returns length */
+    int start = L->pos;
+    for (;;) {
+        while (is_ident_char(peekc(L, 0))) L->pos++;
+        if (peekc(L, 0) == ':' && peekc(L, 1) == ':' && is_ident_start(peekc(L, 2))) { L->pos += 2; continue; }
+        break;
+    }
+    return L->pos - start;
+}
+
+static void lex_next(pp_parser *P, pp_tok *t) {
+    pp_lex *L = &P->L;
+    int before = L->pos;
+    skip_ws(L);
+    memset(t, 0, sizeof *t);
+    t->space_before = L->pos != before;
+    t->line = L->line;
+    int term = 0;
+    if (L->pos >= L->len) { t->type = T_EOF; return; }
+    int c = peekc(L, 0);
+
+    if (isdigit(c) || (c == '.' && isdigit(peekc(L, 1)) && !L->prev_term)) {
+        lex_number(P, t); term = 1;
+    }
+    else if (is_ident_start(c)) {
+        int start = L->pos;
+        int len = lex_name(L);
+        const char *id = L->src + start;
+        if ((len == 1 && id[0] == 'q') || (len == 2 && (memcmp(id, "qq", 2) == 0 || memcmp(id, "qw", 2) == 0))) {
+            int save = L->pos, saveline = L->line;
+            skip_ws(L);
+            int d = peekc(L, 0);
+            if (d && !is_ident_char(d) && d != ',' && d != ';' && d != ')' && d != '=' && d != '}') {
+                L->pos++;
+                int blen; const char *body = lex_delimited(P, d, &blen);
+                t->s = body; t->len = blen;
+                if (len == 1) t->type = T_STR;
+                else if (id[1] == 'q') t->type = T_ISTR;
+                else t->type = T_QW;
+                if (d == '\'' && t->type == T_ISTR) t->type = T_STR;
+                L->prev_term = 1;
+                return;
+            }
+            L->pos = save; L->line = saveline;
+        }
+        if (len == 7 && memcmp(id, "__END__", 7) == 0) { L->pos = L->len; t->type = T_EOF; return; }
+        if (len == 8 && memcmp(id, "__DATA__", 8) == 0) { L->pos = L->len; t->type = T_EOF; return; }
+        t->type = T_IDENT; t->s = id; t->len = len;
+        term = 0;
+        if ((len == 8 && memcmp(id, "__LINE__", 8) == 0) || (len == 8 && memcmp(id, "__FILE__", 8) == 0)) term = 1;
+    }
+    else if (c == '"') { L->pos++; int blen; t->s = lex_delimited(P, '"', &blen); t->len = blen; t->type = T_ISTR; term = 1; }
+    else if (c == '\'') { L->pos++; int blen; t->s = lex_delimited(P, '\'', &blen); t->len = blen; t->type = T_STR; term = 1; }
+    else if (c == '`') { perr(P, "backticks are not supported"); }
+    else if (c == '/' && !L->prev_term && (L->prev_split || (peekc(L, 1) != '/' && peekc(L, 1) != ' ' && peekc(L, 1) != '='))) {
+        /* m/PATTERN/ literal: only usable as the first argument of split */
+        L->pos++; int blen; t->s = lex_delimited(P, '/', &blen); t->len = blen; t->type = T_STR; t->sigil = 'm';
+        while (isalpha(peekc(L, 0))) L->pos++;   /* flags ignored */
+        term = 1;
+    }
+    else if (c == '=' && peekc(L, 1) == '~') { perr(P, "regular expressions (=~) are not supported"); }
+    else if (c == '$') {
+        int c1 = peekc(L, 1);
+        if (c1 == '#') {
+            int c2 = peekc(L, 2);
+            if (c2 == '{' || c2 == '$') { L->pos += 2; t->type = T_CAST; strcpy(t->op, "$#"); term = 0; }
+            else if (is_ident_start(c2)) {
+                L->pos += 2; int start = L->pos; int len = lex_name(L);
+                t->type = T_VAR; t->sigil = '#'; t->s = L->src + start; t->len = len; term = 1;
+            }
+            else perr(P, "unexpected '$#'");
+        }
+        else if (is_ident_start(c1)) {
+            L->pos++; int start = L->pos; int len = lex_name(L);
+            t->type = T_VAR; t->sigil = '$'; t->s = L->src + start; t->len = len; term = 1;
+        }
+        else if (isdigit(c1)) {
+            L->pos++; int start = L->pos;
+            while (isdigit(peekc(L, 0))) L->pos++;
+            t->type = T_VAR; t->sigil = '$'; t->s = L->src + start; t->len = L->pos - start; term = 1;
+        }
+        else if (c1 == '{' || c1 == '$') {
+            if (c1 == '$' && !(is_ident_start(peekc(L, 2)) || peekc(L, 2) == '{' || peekc(L, 2) == '$')) {
+                L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = "$"; t->len = 1; term = 1;
+            } else {
+                L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0;
+            }
+        }
+        else if (c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^') {
+            L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
+        }
+        else perr(P, "unexpected character after '$'");
+    }
+    else if (c == '@' && (!L->prev_term || L->prev_brace)) {
+        int c1 = peekc(L, 1);
+        if (is_ident_start(c1)) {
+            L->pos++; int start = L->pos; int len = lex_name(L);
+            t->type = T_VAR; t->sigil = '@'; t->s = L->src + start; t->len = len; term = 1;
+        }
+        else if (c1 == '{' || c1 == '$') { L->pos++; t->type = T_CAST; strcpy(t->op, "@"); term = 0; }
+        else perr(P, "unexpected '@'");
+    }
+    else if (c == '%' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
+        if (is_ident_start(peekc(L, 1))) {
+            L->pos++; int start = L->pos; int len = lex_name(L);
+            t->type = T_VAR; t->sigil = '%'; t->s = L->src + start; t->len = len; term = 1;
+        } else { L->pos++; t->type = T_CAST; strcpy(t->op, "%"); term = 0; }
+    }
+    else if (c == '&' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
+        if (is_ident_start(peekc(L, 1))) {
+            L->pos++; int start = L->pos; int len = lex_name(L);
+            t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
+        } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
+    }
+    else {
+        t->type = T_OP;
+        for (int i = 0; three_char_ops[i]; i++)
+            if (L->pos + 3 <= L->len && memcmp(L->src + L->pos, three_char_ops[i], 3) == 0) { strcpy(t->op, three_char_ops[i]); L->pos += 3; goto done_op; }
+        for (int i = 0; two_char_ops[i]; i++)
+            if (L->pos + 2 <= L->len && memcmp(L->src + L->pos, two_char_ops[i], 2) == 0) { strcpy(t->op, two_char_ops[i]); L->pos += 2; goto done_op; }
+        t->op[0] = (char)c; t->op[1] = 0; L->pos++;
+    done_op:
+        term = (c == ')' || c == ']' || c == '}');
+    }
+    L->prev_term = term;
+    L->prev_brace = t->type == T_OP && t->op[0] == '}' && t->op[1] == 0;
+    L->prev_split = tok_is_ident_raw(t, "split") || (L->prev_split && t->type == T_OP && t->op[0] == '(' && t->op[1] == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Parser helpers                                                      */
+/* ------------------------------------------------------------------ */
+
+static pp_node *node(pp_parser *P, int type) {
+    pp_node *n;
+    if (P->sc->heap_depth) { n = pp_xmalloc(sizeof(pp_node)); memset(n, 0, sizeof *n); n->flags = PP_NODE_HEAP; }
+    else { n = pp_arena_alloc(P->sc->arena, sizeof(pp_node)); memset(n, 0, sizeof *n); P->sc->arena->nnodes++; }
+    pp_stat_nodes++;
+    n->type = (uint8_t)type;
+    n->line = (uint16_t)P->cur.line;
+    return n;
+}
+/* temporary node (list shells etc.): always malloc'd so it can be dropped */
+static pp_node *node_tmp(pp_parser *P, int type) {
+    pp_node *n = pp_xmalloc(sizeof(pp_node));
+    memset(n, 0, sizeof *n);
+    pp_stat_nodes++;
+    n->flags = PP_NODE_HEAP;
+    n->type = (uint8_t)type;
+    n->line = (uint16_t)P->cur.line;
+    return n;
+}
+/* a temporary that stays in the tree: move it into the arena (unless the subtree is heap anyway) */
+static pp_node *adopt(pp_parser *P, pp_node *n) {
+    if (!(n->flags & PP_NODE_HEAP) || P->sc->heap_depth) return n;
+    pp_node *a = pp_arena_alloc(P->sc->arena, sizeof(pp_node));
+    P->sc->arena->nnodes++;
+    *a = *n;
+    a->flags &= ~PP_NODE_HEAP;
+    free(n);
+    return a;
+}
+static void drop_shell(pp_node *l) {
+    free(l->list);
+    if (l->flags & PP_NODE_HEAP) { free(l); pp_stat_nodes--; }
+}
+static void node_add(pp_node *n, pp_node *child) {
+    if ((n->n & (n->n - 1)) == 0) {
+        int cap = n->n ? n->n * 2 : 1;
+        n->list = pp_xrealloc(n->list, cap * sizeof(pp_node *));
+    }
+    n->list[n->n++] = child;
+}
+
+/* Run a `use`, `use constant` or BEGIN block now, like perl does at compile time, so that
+   imported subs are known to the parser (they may override builtins such as time/sleep). */
+static int keeps_code_p(pp_node *n) {
+    if (!n) return 0;
+    if (n->type == N_ANONSUB) return 1;
+    if (n->type == N_CONST) return 0;
+    if (keeps_code_p(n->a) || keeps_code_p(n->b) || keeps_code_p(n->c) || keeps_code_p(n->d)) return 1;
+    for (int i = 0; i < n->n; i++) if (keeps_code_p(n->list[i])) return 1;
+    return 0;
+}
+static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start) {
+    pp_interp *I = P->I;
+    scope_finalize(P, rec_start, id_start);
+    pp_env *saved = I->env; int made = 0;
+    if (!I->env) { I->env = pp_env_new(NULL, 0); made = 1; }
+    const char *sf = I->file; int sl = I->line;
+    I->file = P->file; I->line = n->line;
+    pp_val v = pp_eval(I, n, CTX_VOID, NULL);
+    pp_release(v);
+    I->file = sf; I->line = sl;
+    if (made) pp_env_decref(I->env);
+    I->env = saved;
+    if (I->ctl == CTL_DIE) {
+        pp_str *s = pp_to_str(I->err);
+        int len = s->len; while (len > 0 && s->d[len - 1] == '\n') len--;
+        snprintf(P->errmsg, sizeof P->errmsg, "%.*s", len, s->d);
+        pp_str_decref(s);
+        pp_release(I->err); I->err = pp_undef();
+        I->ctl = CTL_NONE;
+        P->err_has_loc = 1;
+        longjmp(P->jb, 1);
+    }
+    if (I->ctl) I->ctl = CTL_NONE;
+    if (keeps_code_p(n)) {   /* a closure may still point into it: keep until pp_free */
+        I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
+        I->all_subdefs[I->nall_subdefs++] = n;
+    } else pp_free_ast(n);
+}
+
+static void advance(pp_parser *P) {
+    if (P->has_nxt) { P->cur = P->nxt; P->has_nxt = 0; }
+    else lex_next(P, &P->cur);
+}
+static pp_tok *peek(pp_parser *P) {
+    if (!P->has_nxt) { lex_next(P, &P->nxt); P->has_nxt = 1; }
+    return &P->nxt;
+}
+static int is_op(pp_tok *t, const char *op) { return t->type == T_OP && strcmp(t->op, op) == 0; }
+static int cur_is_op(pp_parser *P, const char *op) { return is_op(&P->cur, op); }
+static int tok_is_ident(pp_tok *t, const char *id) {
+    return t->type == T_IDENT && (int)strlen(id) == t->len && memcmp(t->s, id, t->len) == 0;
+}
+static int cur_is_ident(pp_parser *P, const char *id) { return tok_is_ident(&P->cur, id); }
+
+static void tok_desc(pp_tok *t, char *buf, int cap) {
+    switch (t->type) {
+    case T_EOF: snprintf(buf, cap, "end of file"); break;
+    case T_NUM: snprintf(buf, cap, "number"); break;
+    case T_STR: case T_ISTR: case T_QW: snprintf(buf, cap, "string"); break;
+    case T_IDENT: snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
+    case T_VAR: snprintf(buf, cap, "'%c%.*s'", t->sigil == '#' ? '$' : t->sigil, t->len, t->s); break;
+    default: snprintf(buf, cap, "'%s'", t->op); break;
+    }
+}
+static void expect_op(pp_parser *P, const char *op) {
+    if (!cur_is_op(P, op)) {
+        char d[64]; tok_desc(&P->cur, d, sizeof d);
+        perr(P, "syntax error: expected '%s' near %s", op, d);
+    }
+    advance(P);
+}
+static int accept_op(pp_parser *P, const char *op) {
+    if (cur_is_op(P, op)) { advance(P); return 1; }
+    return 0;
+}
+
+static int has_pkg_sep(const char *name, int len) {
+    for (int i = 0; i + 1 < len; i++) if (name[i] == ':' && name[i+1] == ':') return 1;
+    return 0;
+}
+
+/* symbol for sigil+name, qualified with the current package where perl would do so */
+static pp_sym *sym_sigil(pp_parser *P, char sigil, const char *name, int len) {
+    char buf[256];
+    if (len > 200) perr(P, "identifier too long");
+    if (has_pkg_sep(name, len)) {
+        if (len > 6 && memcmp(name, "main::", 6) == 0) { name += 6; len -= 6; }
+        else if (len > 2 && name[0] == ':' && name[1] == ':') { name += 2; len -= 2; }
+        else {
+            buf[0] = sigil; memcpy(buf + 1, name, len); buf[len + 1] = 0;
+            return pp_intern(P->I, buf, len + 1);
+        }
+    }
+    else if (strcmp(P->pkg, "main") != 0) {
+        if (sigil == '&') {
+            int n = snprintf(buf, sizeof buf, "&%s::%.*s", P->pkg, len, name);
+            return pp_intern(P->I, buf, n);
+        }
+        for (int i = 0; i < P->nours; i++)
+            if (P->our_names[i][0] == sigil && (int)strlen(P->our_names[i]) == len + 1 && memcmp(P->our_names[i] + 1, name, len) == 0)
+                return P->our_syms[i];
+    }
+    buf[0] = sigil; memcpy(buf + 1, name, len); buf[len + 1] = 0;
+    return pp_intern(P->I, buf, len + 1);
+}
+
+static pp_node *node(pp_parser *P, int type);
+static pp_node *parse_expr_shared(pp_parser *parent, const char *src, int len, int line, int *err);
+/* N_VAR for a variable use */
+static pp_node *mkvar(pp_parser *P, char sigil, const char *name, int len) {
+    pp_node *v = node(P, N_VAR);
+    v->sym = sym_sigil(P, sigil, name, len);
+    resolve_var(P, v, name, len);
+    return v;
+}
+/* N_VAR for a `my` declaration in the current scope */
+static pp_node *mkvar_decl(pp_parser *P, char sigil, const char *name, int len) {
+    pp_node *v = node(P, N_VAR);
+    char buf[256];
+    if (len > 250) perr(P, "identifier too long");
+    buf[0] = sigil; memcpy(buf + 1, name, len); buf[len + 1] = 0;
+    v->sym = pp_intern(P->I, buf, len + 1);
+    v->flags |= PP_VAR_LEX;
+    v->op = (uint8_t)scope_declare(P, v->sym);
+    scope_record(P, v, scope_top(P)->id, scope_top(P)->id);
+    return v;
+}
+
+/* `our $x` inside package P: later references to $x in this file mean $P::x */
+static pp_sym *declare_our(pp_parser *P, char sigil, const char *name, int len) {
+    if (strcmp(P->pkg, "main") == 0 || has_pkg_sep(name, len)) { pp_sym *q = sym_sigil(P, sigil, name, len); ours_add(P, q); return q; }
+    char buf[256];
+    int n = snprintf(buf, sizeof buf, "%c%s::%.*s", sigil, P->pkg, len, name);
+    pp_sym *q = pp_intern(P->I, buf, n);
+    if (P->nours == P->capours) {
+        P->capours = P->capours ? P->capours * 2 : 8;
+        P->our_names = pp_xrealloc(P->our_names, P->capours * sizeof(char *));
+        P->our_syms = pp_xrealloc(P->our_syms, P->capours * sizeof(pp_sym *));
+    }
+    char *un = pp_xmalloc(len + 2); un[0] = sigil; memcpy(un + 1, name, len); un[len + 1] = 0;
+    P->our_names[P->nours] = un; P->our_syms[P->nours] = q; P->nours++;
+    ours_add(P, q);
+    return q;
+}
+
+static void declare_sub(pp_parser *P, pp_sym *s, int noargs) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) { P->declnoargs[i] |= (unsigned char)noargs; return; }
+    if (P->ndecl == P->capdecl) {
+        P->capdecl = P->capdecl ? P->capdecl * 2 : 16;
+        P->decl = pp_xrealloc(P->decl, P->capdecl * sizeof(pp_sym *));
+        P->declnoargs = pp_xrealloc(P->declnoargs, P->capdecl);
+    }
+    P->declnoargs[P->ndecl] = (unsigned char)noargs;
+    P->decl[P->ndecl++] = s;
+}
+/* 0: unknown, 1: declared (list operator), 2: declared with no args */
+static int is_declared(pp_parser *P, pp_sym *s) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return P->declnoargs[i] ? 2 : 1;
+    pp_obj *c = pp_lookup_sub(P->I, s);
+    if (!c) return 0;
+    return (c->u.code.is_const || (c->u.code.native == NULL && c->u.code.body == NULL)) ? 2 : 1;
+}
+
+static pp_node *parse_block(pp_parser *P);
+static pp_node *parse_expr(pp_parser *P);
+static pp_node *parse_assign(pp_parser *P);
+static pp_node *parse_comma_list(pp_parser *P);
+static pp_node *parse_binary(pp_parser *P, int minprec);
+static pp_node *parse_unary(pp_parser *P);
+static pp_node *parse_term(pp_parser *P);
+static pp_node *parse_statement(pp_parser *P);
+static pp_node *parse_ident_term(pp_parser *P);
+
+static pp_node *unwrap_single(pp_node *l);
+static pp_node *const_str(pp_parser *P, const char *s, int len) {
+    pp_node *n = node(P, N_CONST);
+    n->val = pp_strn(s, len);
+    return n;
+}
+static pp_node *const_int(pp_parser *P, int64_t i) {
+    pp_node *n = node(P, N_CONST);
+    n->val = pp_int(i);
+    return n;
+}
+static pp_node *wrap_list(pp_parser *P, pp_node *n) {
+    if (n->type == N_LIST) return n;
+    pp_node *l = node_tmp(P, N_LIST);
+    node_add(l, n);
+    return l;
+}
+/* move the children of temporary list node l into dst and free l's shell */
+static void take_children(pp_node *dst, pp_node *l) {
+    for (int i = 0; i < l->n; i++) node_add(dst, l->list[i]);
+    drop_shell(l);
+}
+static pp_node *unwrap_single(pp_node *l) {
+    pp_node *only = l->list[0];
+    drop_shell(l);
+    return only;
+}
+
+/* ------------------------------------------------------------------ */
+/* String literals & interpolation                                     */
+/* ------------------------------------------------------------------ */
+
+static int hexval(int c) { return isdigit(c) ? c - '0' : tolower(c) - 'a' + 10; }
+
+static pp_node *single_quoted(pp_parser *P, const char *s, int len) {
+    char *buf = pp_xmalloc(len + 1); int n = 0;
+    for (int i = 0; i < len; i++) {
+        if (s[i] == '\\' && i + 1 < len && (s[i+1] == '\\' || s[i+1] == '\'')) buf[n++] = s[++i];
+        else buf[n++] = s[i];
+    }
+    pp_node *r = const_str(P, buf, n);
+    free(buf);
+    return r;
+}
+
+static void append_char(char **buf, int *n, int *cap, int c) {
+    if (*n + 1 >= *cap) { *cap = *cap ? *cap * 2 : 32; *buf = pp_xrealloc(*buf, *cap); }
+    (*buf)[(*n)++] = (char)c;
+}
+static void append_utf8(char **buf, int *n, int *cap, int v) {
+    if (v < 0x80) append_char(buf, n, cap, v);
+    else if (v < 0x800) { append_char(buf, n, cap, 0xC0 | (v >> 6)); append_char(buf, n, cap, 0x80 | (v & 0x3F)); }
+    else if (v < 0x10000) { append_char(buf, n, cap, 0xE0 | (v >> 12)); append_char(buf, n, cap, 0x80 | ((v >> 6) & 0x3F)); append_char(buf, n, cap, 0x80 | (v & 0x3F)); }
+    else { append_char(buf, n, cap, 0xF0 | (v >> 18)); append_char(buf, n, cap, 0x80 | ((v >> 12) & 0x3F)); append_char(buf, n, cap, 0x80 | ((v >> 6) & 0x3F)); append_char(buf, n, cap, 0x80 | (v & 0x3F)); }
+}
+
+static int match_bracket(const char *s, int len, int i) {
+    int open = s[i], close = open == '[' ? ']' : '}';
+    int depth = 0;
+    for (; i < len; i++) {
+        if (s[i] == open) depth++;
+        else if (s[i] == close) { if (--depth == 0) return i + 1; }
+        else if (s[i] == '\\') i++;
+    }
+    return -1;
+}
+
+/* extent of an interpolated expression starting at s[i] ('$' or '@'); 0 if none */
+static int interp_extent(const char *s, int len, int i) {
+    int j = i + 1;
+    if (j >= len) return 0;
+    if (s[i] == '$' && s[j] == '#' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{' || s[j+1] == '$')) {
+        if (s[j+1] == '{') { int e = match_bracket(s, len, j + 1); return e < 0 ? 0 : e; }
+        if (s[j+1] == '$') { int e = interp_extent(s, len, j + 1); return e ? e : 0; }
+        j += 2;
+        while (j < len && is_ident_char((unsigned char)s[j])) j++;
+        return j;
+    }
+    if (s[j] == '{') {
+        int e = match_bracket(s, len, j);
+        if (e < 0) return 0;
+        j = e;
+    }
+    else if (is_ident_start((unsigned char)s[j])) {
+        while (j < len && (is_ident_char((unsigned char)s[j]) || (s[j] == ':' && j + 2 < len && s[j+1] == ':' && is_ident_start((unsigned char)s[j+2])))) j += (s[j] == ':') ? 2 : 1;
+    }
+    else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
+        return interp_extent(s, len, j);
+    }
+    else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&')) {
+        j++;
+        while (isdigit((unsigned char)s[j-1]) && j < len && isdigit((unsigned char)s[j])) j++;
+    }
+    else return 0;
+    for (;;) {
+        if (j < len && s[j] == '[') {
+            int e = match_bracket(s, len, j);
+            if (e < 0) break;
+            int k = j + 1; int ok = 0;
+            while (k < e - 1 && isspace((unsigned char)s[k])) k++;
+            if (k < e - 1 && (s[k] == '$' || s[k] == '-' || isdigit((unsigned char)s[k]))) ok = 1;
+            if (!ok) break;
+            j = e;
+        }
+        else if (j < len && s[j] == '{') {
+            int e = match_bracket(s, len, j);
+            if (e < 0) break;
+            j = e;
+        }
+        else if (j + 2 < len && s[j] == '-' && s[j+1] == '>' && (s[j+2] == '[' || s[j+2] == '{')) {
+            int e = match_bracket(s, len, j + 2);
+            if (e < 0) break;
+            j = e;
+        }
+        else break;
+    }
+    return j;
+}
+
+static pp_node *parse_interp_expr(pp_parser *P, const char *s, int len, int line) {
+    char *tmp = NULL;
+    if (len >= 3 && s[1] == '{') {   /* ${name} -> $name */
+        int k = 2; while (k < len - 1 && isspace((unsigned char)s[k])) k++;
+        int e = k; while (e < len - 1 && is_ident_char((unsigned char)s[e])) e++;
+        int e2 = e; while (e2 < len - 1 && isspace((unsigned char)s[e2])) e2++;
+        if (e > k && e2 == len - 1) {
+            tmp = pp_xmalloc(len);
+            tmp[0] = s[0]; memcpy(tmp + 1, s + k, e - k); tmp[1 + e - k] = 0;
+            s = tmp; len = 1 + e - k;
+        }
+    }
+    int err = 0;
+    pp_node *n = parse_expr_shared(P, s, len, line, &err);
+    free(tmp);
+    if (err || !n) longjmp(P->jb, 1);   /* errmsg was set by the sub-parser */
+    return n;
+}
+
+static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
+    pp_node *r = node_tmp(P, N_INTERP);
+    char *buf = NULL; int n = 0, cap = 0;
+    int line = P->cur.line;
+    for (int i = 0; i < len; ) {
+        int c = (unsigned char)s[i];
+        if (c == '\\' && i + 1 < len) {
+            int d = (unsigned char)s[i+1]; i += 2;
+            switch (d) {
+            case 'n': append_char(&buf, &n, &cap, '\n'); break;
+            case 't': append_char(&buf, &n, &cap, '\t'); break;
+            case 'r': append_char(&buf, &n, &cap, '\r'); break;
+            case 'f': append_char(&buf, &n, &cap, '\f'); break;
+            case 'a': append_char(&buf, &n, &cap, '\a'); break;
+            case 'e': append_char(&buf, &n, &cap, 27); break;
+            case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
+                int v = d - '0', k = 1;
+                while (k < 3 && i < len && s[i] >= '0' && s[i] <= '7') { v = v * 8 + (s[i] - '0'); i++; k++; }
+                append_char(&buf, &n, &cap, v); break;
+            }
+            case 'x': {
+                int v = 0;
+                if (i < len && s[i] == '{') { i++; while (i < len && s[i] != '}') { v = v * 16 + hexval(s[i]); i++; } i++; append_utf8(&buf, &n, &cap, v); }
+                else { int k = 0; while (k < 2 && i < len && isxdigit((unsigned char)s[i])) { v = v * 16 + hexval(s[i]); i++; k++; } append_char(&buf, &n, &cap, v); }
+                break;
+            }
+            case '\n': line++; break;
+            default: append_char(&buf, &n, &cap, d); break;
+            }
+            continue;
+        }
+        if (c == '$' || c == '@') {
+            int e = interp_extent(s, len, i);
+            if (e > i + 1) {
+                if (n) { node_add(r, const_str(P, buf, n)); n = 0; }
+                pp_node *ex = parse_interp_expr(P, s + i, e - i, line);
+                if (c == '@') {
+                    pp_node *j = node(P, N_BUILTIN);
+                    j->op = (uint8_t)pp_builtin_id("join", 4, NULL);
+                    node_add(j, const_str(P, " ", 1));
+                    node_add(j, ex);
+                    ex = j;
+                }
+                node_add(r, ex);
+                i = e;
+                continue;
+            }
+        }
+        if (c == '\n') line++;
+        append_char(&buf, &n, &cap, c);
+        i++;
+    }
+    if (n || r->n == 0) node_add(r, const_str(P, buf ? buf : "", n));
+    free(buf);
+    if (r->n == 1 && r->list[0]->type == N_CONST) return unwrap_single(r);
+    return adopt(P, r);
+}
+
+static pp_node *qw_list(pp_parser *P, const char *s, int len) {
+    pp_node *r = node(P, N_LIST);
+    int i = 0;
+    while (i < len) {
+        while (i < len && isspace((unsigned char)s[i])) i++;
+        int st = i;
+        while (i < len && !isspace((unsigned char)s[i])) i++;
+        if (i > st) node_add(r, const_str(P, s + st, i - st));
+    }
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Expressions                                                         */
+/* ------------------------------------------------------------------ */
+
+static int binop_of(pp_tok *t, int *prec, int *rassoc) {
+    *rassoc = 0;
+    if (t->type == T_OP) {
+        const char *o = t->op;
+        if (!strcmp(o, "**")) { *prec = 15; *rassoc = 1; return OP_POW; }
+        if (!strcmp(o, "*")) { *prec = 13; return OP_MUL; }
+        if (!strcmp(o, "/")) { *prec = 13; return OP_DIV; }
+        if (!strcmp(o, "%")) { *prec = 13; return OP_MOD; }
+        if (!strcmp(o, "+")) { *prec = 12; return OP_ADD; }
+        if (!strcmp(o, "-")) { *prec = 12; return OP_SUB; }
+        if (!strcmp(o, ".")) { *prec = 12; return OP_CONCAT; }
+        if (!strcmp(o, "<<")) { *prec = 11; return OP_SHL; }
+        if (!strcmp(o, ">>")) { *prec = 11; return OP_SHR; }
+        if (!strcmp(o, "<")) { *prec = 9; return OP_NUM_LT; }
+        if (!strcmp(o, ">")) { *prec = 9; return OP_NUM_GT; }
+        if (!strcmp(o, "<=")) { *prec = 9; return OP_NUM_LE; }
+        if (!strcmp(o, ">=")) { *prec = 9; return OP_NUM_GE; }
+        if (!strcmp(o, "==")) { *prec = 8; return OP_NUM_EQ; }
+        if (!strcmp(o, "!=")) { *prec = 8; return OP_NUM_NE; }
+        if (!strcmp(o, "<=>")) { *prec = 8; return OP_NUM_CMP; }
+        if (!strcmp(o, "&")) { *prec = 7; return OP_BAND; }
+        if (!strcmp(o, "|")) { *prec = 6; return OP_BOR; }
+        if (!strcmp(o, "^")) { *prec = 6; return OP_BXOR; }
+        if (!strcmp(o, "&&")) { *prec = 5; return OP_LOGAND; }
+        if (!strcmp(o, "||")) { *prec = 4; return OP_LOGOR; }
+        if (!strcmp(o, "//")) { *prec = 4; return OP_DEFOR; }
+        return 0;
+    }
+    if (t->type == T_IDENT) {
+        if (tok_is_ident(t, "x")) { *prec = 13; return OP_REPEAT; }
+        if (tok_is_ident(t, "lt")) { *prec = 9; return OP_STR_LT; }
+        if (tok_is_ident(t, "gt")) { *prec = 9; return OP_STR_GT; }
+        if (tok_is_ident(t, "le")) { *prec = 9; return OP_STR_LE; }
+        if (tok_is_ident(t, "ge")) { *prec = 9; return OP_STR_GE; }
+        if (tok_is_ident(t, "eq")) { *prec = 8; return OP_STR_EQ; }
+        if (tok_is_ident(t, "ne")) { *prec = 8; return OP_STR_NE; }
+        if (tok_is_ident(t, "cmp")) { *prec = 8; return OP_STR_CMP; }
+    }
+    return 0;
+}
+
+#define PREC_NAMED_UNARY 10
+
+static pp_node *parse_binary(pp_parser *P, int minprec) {
+    pp_node *lhs = parse_unary(P);
+    for (;;) {
+        int prec, rassoc;
+        int op = binop_of(&P->cur, &prec, &rassoc);
+        if (!op || prec < minprec) break;
+        /* `x=` assignment */
+        if (op == OP_REPEAT && peek(P)->type == T_OP && !strcmp(peek(P)->op, "=") && !peek(P)->space_before) break;
+        advance(P);
+        pp_node *rhs = parse_binary(P, rassoc ? prec : prec + 1);
+        pp_node *n;
+        if (op == OP_LOGAND) n = node(P, N_LOGAND);
+        else if (op == OP_LOGOR) n = node(P, N_LOGOR);
+        else if (op == OP_DEFOR) n = node(P, N_DEFOR);
+        else if (op == OP_REPEAT) { n = node(P, N_REPEAT); n->op = (lhs->type == N_LIST && (lhs->flags & 1)) ? 1 : 0; }
+        else { n = node(P, N_BINOP); n->op = (uint8_t)op; }
+        n->a = lhs; n->b = rhs;
+        lhs = n;
+    }
+    return lhs;
+}
+
+static pp_node *parse_range(pp_parser *P) {
+    pp_node *lhs = parse_binary(P, 0);
+    if (cur_is_op(P, "..") || cur_is_op(P, "...")) {
+        advance(P);
+        pp_node *rhs = parse_binary(P, 0);
+        pp_node *n = node(P, N_RANGE); n->a = lhs; n->b = rhs;
+        return n;
+    }
+    return lhs;
+}
+
+static pp_node *parse_ternary(pp_parser *P) {
+    pp_node *c = parse_range(P);
+    if (cur_is_op(P, "?")) {
+        advance(P);
+        pp_node *n = node(P, N_TERNARY);
+        n->a = c;
+        n->b = parse_assign(P);
+        expect_op(P, ":");
+        n->c = parse_assign(P);
+        return n;
+    }
+    return c;
+}
+
+static int assign_op_of(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    if (t->type == T_IDENT && tok_is_ident(t, "x") && peek(P)->type == T_OP && !strcmp(peek(P)->op, "=") && !peek(P)->space_before) return OP_REPEAT;
+    if (t->type != T_OP) return -1;
+    const char *o = t->op;
+    if (!strcmp(o, "=")) return OP_NONE;
+    if (!strcmp(o, "+=")) return OP_ADD;
+    if (!strcmp(o, "-=")) return OP_SUB;
+    if (!strcmp(o, "*=")) return OP_MUL;
+    if (!strcmp(o, "/=")) return OP_DIV;
+    if (!strcmp(o, "%=")) return OP_MOD;
+    if (!strcmp(o, "**=")) return OP_POW;
+    if (!strcmp(o, ".=")) return OP_CONCAT;
+    if (!strcmp(o, "|=")) return OP_BOR;
+    if (!strcmp(o, "&=")) return OP_BAND;
+    if (!strcmp(o, "^=")) return OP_BXOR;
+    if (!strcmp(o, "<<=")) return OP_SHL;
+    if (!strcmp(o, ">>=")) return OP_SHR;
+    if (!strcmp(o, "||=")) return OP_LOGOR;
+    if (!strcmp(o, "&&=")) return OP_LOGAND;
+    if (!strcmp(o, "//=")) return OP_DEFOR;
+    return -1;
+}
+
+static pp_node *parse_assign(pp_parser *P) {
+    pp_node *lhs = parse_ternary(P);
+    int op = assign_op_of(P);
+    if (op >= 0) {
+        if (op == OP_REPEAT) advance(P);
+        advance(P);
+        pp_node *n = node(P, N_ASSIGN);
+        n->op = (uint8_t)op;
+        n->a = lhs;
+        n->b = parse_assign(P);
+        return n;
+    }
+    return lhs;
+}
+
+static int at_list_end(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    if (t->type == T_EOF) return 1;
+    if (t->type == T_OP) {
+        const char *o = t->op;
+        return !strcmp(o, ")") || !strcmp(o, "]") || !strcmp(o, "}") || !strcmp(o, ";") || !strcmp(o, ":") || !strcmp(o, "?") || !strcmp(o, "=");
+    }
+    if (t->type == T_IDENT) {
+        pp_tok *nx = peek(P);
+        if (nx->type == T_OP && !strcmp(nx->op, "=>")) return 0;
+        if (tok_is_ident(t, "not") && nx->type == T_OP && !strcmp(nx->op, "(")) return 0;
+        return tok_is_ident(t, "if") || tok_is_ident(t, "unless") || tok_is_ident(t, "while") || tok_is_ident(t, "until")
+            || tok_is_ident(t, "for") || tok_is_ident(t, "foreach") || tok_is_ident(t, "or") || tok_is_ident(t, "and")
+            || tok_is_ident(t, "xor") || tok_is_ident(t, "not") || tok_is_ident(t, "x") || tok_is_ident(t, "eq") || tok_is_ident(t, "ne")
+            || tok_is_ident(t, "lt") || tok_is_ident(t, "gt") || tok_is_ident(t, "le") || tok_is_ident(t, "ge") || tok_is_ident(t, "cmp");
+    }
+    return 0;
+}
+
+static pp_node *parse_comma_list(pp_parser *P) {
+    pp_node *l = node_tmp(P, N_LIST);
+    while (!at_list_end(P)) {
+        node_add(l, parse_assign(P));
+        if (cur_is_op(P, ",") || cur_is_op(P, "=>")) { advance(P); continue; }
+        break;
+    }
+    return l;
+}
+
+static pp_node *parse_not(pp_parser *P) {
+    if (cur_is_ident(P, "not")) {
+        advance(P);
+        pp_node *n = node(P, N_NOT);
+        n->a = parse_not(P);
+        return n;
+    }
+    pp_node *l = parse_comma_list(P);
+    if (l->n == 1 && !(l->flags & 1)) return unwrap_single(l);
+    return adopt(P, l);
+}
+static pp_node *parse_and(pp_parser *P) {
+    pp_node *lhs = parse_not(P);
+    while (cur_is_ident(P, "and")) {
+        advance(P);
+        pp_node *n = node(P, N_LOGAND); n->a = lhs; n->b = parse_not(P); lhs = n;
+    }
+    return lhs;
+}
+static pp_node *parse_expr(pp_parser *P) {
+    pp_node *lhs = parse_and(P);
+    while (cur_is_ident(P, "or") || cur_is_ident(P, "xor")) {
+        int is_xor = cur_is_ident(P, "xor");
+        advance(P);
+        pp_node *rhs = parse_and(P);
+        pp_node *n;
+        if (is_xor) { n = node(P, N_BINOP); n->op = OP_NUM_NE; pp_node *na = node(P, N_NOT); na->a = lhs; pp_node *nb = node(P, N_NOT); nb->a = rhs; n->a = na; n->b = nb; lhs = n; continue; }
+        n = node(P, N_LOGOR);
+        n->a = lhs; n->b = rhs; lhs = n;
+    }
+    return lhs;
+}
+
+static pp_node *parse_unary(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    if (t->type == T_OP) {
+        if (!strcmp(t->op, "!")) { advance(P); pp_node *n = node(P, N_NOT); n->a = parse_unary(P); return n; }
+        if (!strcmp(t->op, "-")) {
+            advance(P);
+            if (P->cur.type == T_IDENT && !P->cur.space_before) {
+                pp_tok *nx = peek(P);
+                int kind;
+                if (!(nx->type == T_OP && !strcmp(nx->op, "(")) && pp_builtin_id(P->cur.s, P->cur.len, &kind) <= 0 && !is_declared(P, sym_sigil(P, '&', P->cur.s, P->cur.len))) {
+                    char buf[128]; int len = P->cur.len; if (len > 126) len = 126;
+                    buf[0] = '-'; memcpy(buf + 1, P->cur.s, len);
+                    pp_node *n = const_str(P, buf, len + 1);
+                    advance(P);
+                    return n;
+                }
+            }
+            pp_node *n = node(P, N_NEG); n->a = parse_binary(P, 15);
+            if (n->a->type == N_CONST && n->a->val.t == PP_INT) { n->a->val.u.i = -n->a->val.u.i; return n->a; }
+            if (n->a->type == N_CONST && n->a->val.t == PP_NUM) { n->a->val.u.n = -n->a->val.u.n; return n->a; }
+            return n;
+        }
+        if (!strcmp(t->op, "+")) { advance(P); return parse_unary(P); }
+        if (!strcmp(t->op, "~")) { advance(P); pp_node *n = node(P, N_BINOP); n->op = OP_BXOR; n->a = const_int(P, -1); n->b = parse_unary(P); return n; }
+        if (!strcmp(t->op, "\\")) { advance(P); pp_node *n = node(P, N_REF); n->a = parse_unary(P); return n; }
+        if (!strcmp(t->op, "++")) { advance(P); pp_node *n = node(P, N_PREINC); n->a = parse_unary(P); return n; }
+        if (!strcmp(t->op, "--")) { advance(P); pp_node *n = node(P, N_PREDEC); n->a = parse_unary(P); return n; }
+    }
+    pp_node *n = parse_term(P);
+    if (cur_is_op(P, "**")) {
+        /* ** binds tighter than unary minus: handled here so -2**2 == -4 */
+        advance(P);
+        pp_node *m = node(P, N_BINOP); m->op = OP_POW; m->a = n; m->b = parse_unary(P);
+        n = m;
+    }
+    if (cur_is_op(P, "++")) { advance(P); pp_node *m = node(P, N_POSTINC); m->a = n; return m; }
+    if (cur_is_op(P, "--")) { advance(P); pp_node *m = node(P, N_POSTDEC); m->a = n; return m; }
+    return n;
+}
+
+static pp_node *parse_hash_key(pp_parser *P) {
+    if (P->cur.type == T_IDENT) {
+        pp_tok *nx = peek(P);
+        if (nx->type == T_OP && !strcmp(nx->op, "}")) {
+            pp_node *k = const_str(P, P->cur.s, P->cur.len);
+            advance(P);
+            return k;
+        }
+    }
+    if (cur_is_op(P, "-") && peek(P)->type == T_IDENT) {
+        advance(P);
+        char buf[128]; int len = P->cur.len; if (len > 126) len = 126;
+        buf[0] = '-'; memcpy(buf + 1, P->cur.s, len);
+        pp_tok *nx = peek(P);
+        if (nx->type == T_OP && !strcmp(nx->op, "}")) { pp_node *k = const_str(P, buf, len + 1); advance(P); return k; }
+        perr(P, "syntax error in hash subscript");
+    }
+    return parse_expr(P);
+}
+
+static pp_node *parse_subscripts(pp_parser *P, pp_node *base, int allow_implicit) {
+    for (;;) {
+        if (cur_is_op(P, "->")) {
+            pp_tok *nx = peek(P);
+            if (nx->type == T_OP && !strcmp(nx->op, "[")) {
+                advance(P); advance(P);
+                pp_node *av = node(P, N_RV2AV); av->a = base;
+                pp_node *n = node(P, N_AELEM); n->a = av; n->b = parse_expr(P);
+                expect_op(P, "]");
+                base = n; allow_implicit = 1; continue;
+            }
+            if (nx->type == T_OP && !strcmp(nx->op, "{")) {
+                advance(P); advance(P);
+                pp_node *hv = node(P, N_RV2HV); hv->a = base;
+                pp_node *n = node(P, N_HELEM); n->a = hv; n->b = parse_hash_key(P);
+                expect_op(P, "}");
+                base = n; allow_implicit = 1; continue;
+            }
+            if (nx->type == T_OP && !strcmp(nx->op, "(")) {
+                advance(P); advance(P);
+                pp_node *n = node(P, N_CALLREF); n->a = base;
+                pp_node *args = parse_comma_list(P);
+                expect_op(P, ")");
+                take_children(n, args);
+                base = n; allow_implicit = 1; continue;
+            }
+            if (nx->type == T_OP && !strcmp(nx->op, "@")) {
+                advance(P); advance(P); expect_op(P, "*");
+                pp_node *av = node(P, N_RV2AV); av->a = base; base = av; allow_implicit = 0; continue;
+            }
+            if (nx->type == T_OP && !strcmp(nx->op, "%")) {
+                advance(P); advance(P); expect_op(P, "*");
+                pp_node *hv = node(P, N_RV2HV); hv->a = base; base = hv; allow_implicit = 0; continue;
+            }
+            if (nx->type == T_CAST) {
+                advance(P);
+                if (!strcmp(P->cur.op, "$")) { advance(P); expect_op(P, "*"); pp_node *sv = node(P, N_RV2SV); sv->a = base; base = sv; allow_implicit = 0; continue; }
+                if (!strcmp(P->cur.op, "$#")) { advance(P); expect_op(P, "*"); pp_node *av = node(P, N_RV2AV); av->a = base; pp_node *li = node(P, N_LASTIDX); li->a = av; base = li; allow_implicit = 0; continue; }
+                perr(P, "syntax error after '->'");
+            }
+            if (nx->type == T_IDENT || (nx->type == T_VAR && nx->sigil == '$')) {
+                /* $obj->method(args) / Class->method / $obj->$name(args) */
+                advance(P);
+                pp_node *n = node(P, N_METHOD); n->a = base;
+                if (P->cur.type == T_IDENT) n->sym = pp_intern(P->I, P->cur.s, P->cur.len);
+                else n->b = mkvar(P, '$', P->cur.s, P->cur.len);
+                n->c = const_str(P, P->pkg, (int)strlen(P->pkg));
+                advance(P);
+                if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
+                base = n; allow_implicit = 0; continue;
+            }
+            perr(P, "syntax error after '->'");
+        }
+        if (allow_implicit && cur_is_op(P, "[")) {
+            advance(P);
+            pp_node *av = node(P, N_RV2AV); av->a = base;
+            pp_node *n = node(P, N_AELEM); n->a = av; n->b = parse_expr(P);
+            expect_op(P, "]");
+            base = n; continue;
+        }
+        if (allow_implicit && cur_is_op(P, "{")) {
+            advance(P);
+            pp_node *hv = node(P, N_RV2HV); hv->a = base;
+            pp_node *n = node(P, N_HELEM); n->a = hv; n->b = parse_hash_key(P);
+            expect_op(P, "}");
+            base = n; continue;
+        }
+        return base;
+    }
+}
+
+static pp_node *parse_postfix(pp_parser *P, pp_node *n) { return parse_subscripts(P, n, 0); }
+
+static pp_node *parse_scalar_var_subscript(pp_parser *P, const char *name, int len) {
+    if (cur_is_op(P, "[")) {
+        advance(P);
+        pp_node *av = mkvar(P, '@', name, len);
+        pp_node *n = node(P, N_AELEM); n->a = av; n->b = parse_expr(P);
+        expect_op(P, "]");
+        return parse_subscripts(P, n, 1);
+    }
+    if (cur_is_op(P, "{")) {
+        advance(P);
+        pp_node *hv = mkvar(P, '%', name, len);
+        pp_node *n = node(P, N_HELEM); n->a = hv; n->b = parse_hash_key(P);
+        expect_op(P, "}");
+        return parse_subscripts(P, n, 1);
+    }
+    pp_node *v = mkvar(P, '$', name, len);
+    return parse_subscripts(P, v, 0);
+}
+
+static pp_node *parse_cast_target(pp_parser *P) {
+    if (cur_is_op(P, "{")) {
+        advance(P);
+        pp_node *e = parse_expr(P);
+        expect_op(P, "}");
+        return e;
+    }
+    if (P->cur.type == T_VAR && P->cur.sigil == '$') {
+        pp_node *v = mkvar(P, '$', P->cur.s, P->cur.len);
+        advance(P);
+        return v;
+    }
+    if (P->cur.type == T_CAST && !strcmp(P->cur.op, "$")) {
+        advance(P);
+        pp_node *inner = parse_cast_target(P);
+        pp_node *sv = node(P, N_RV2SV); sv->a = inner;
+        return sv;
+    }
+    perr(P, "syntax error after sigil");
+    return NULL;
+}
+
+static pp_node *decl_var(pp_parser *P, int kind, char sigil, const char *name, int len) {
+    if (kind == 'm') return mkvar_decl(P, sigil, name, len);
+    if (kind == 'o') { pp_node *v = node(P, N_VAR); v->sym = declare_our(P, sigil, name, len); return v; }
+    pp_node *v = mkvar(P, sigil, name, len);          /* local: an existing global */
+    if (v->flags & PP_VAR_LEX) perr(P, "Can't localize lexical variable %s", v->sym->name);
+    return v;
+}
+static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
+    pp_node *m = node(P, N_MY); m->op = (uint8_t)kind;
+    if (cur_is_op(P, "(")) {
+        advance(P);
+        while (!cur_is_op(P, ")")) {
+            if (P->cur.type != T_VAR) {
+                if (cur_is_ident(P, "undef")) { advance(P); node_add(m, node(P, N_NOP)); }
+                else perr(P, "syntax error in variable declaration");
+            } else {
+                pp_node *v = decl_var(P, kind, P->cur.sigil, P->cur.s, P->cur.len);
+                advance(P);
+                node_add(m, v);
+            }
+            if (!accept_op(P, ",")) break;
+        }
+        expect_op(P, ")");
+        m->flags |= 1;
+        return m;
+    }
+    if (P->cur.type != T_VAR) perr(P, "syntax error in variable declaration");
+    char sigil = P->cur.sigil; const char *name = P->cur.s; int len = P->cur.len;
+    advance(P);
+    if (kind == 'l' && sigil == '$') { node_add(m, parse_scalar_var_subscript(P, name, len)); return m; }
+    node_add(m, decl_var(P, kind, sigil, name, len));
+    return m;
+}
+
+static pp_node *parse_term(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    switch (t->type) {
+    case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
+    case T_STR: {
+        if (t->sigil == 'm') { pp_node *n = const_str(P, t->s, t->len); n->flags |= 8; advance(P); return n; }
+        pp_node *n = single_quoted(P, t->s, t->len); advance(P); return n;
+    }
+    case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return n; }
+    case T_QW: {
+        pp_node *n = qw_list(P, t->s, t->len); n->flags |= 1; advance(P);
+        if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_LSLICE); s->a = n; s->b = parse_expr(P); expect_op(P, "]"); return s; }
+        return n;
+    }
+    case T_VAR: {
+        char sigil = t->sigil; const char *name = t->s; int len = t->len;
+        advance(P);
+        if (sigil == '$') return parse_scalar_var_subscript(P, name, len);
+        if (sigil == '@') {
+            if (cur_is_op(P, "{")) { advance(P); pp_node *hv = mkvar(P, '%', name, len);
+                pp_node *s = node(P, N_HSLICE); s->a = hv; s->b = parse_expr(P); expect_op(P, "}"); return s; }
+            pp_node *v = mkvar(P, '@', name, len);
+            if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_ASLICE); s->a = v; s->b = parse_expr(P); expect_op(P, "]"); return s; }
+            return v;
+        }
+        if (sigil == '%') { return mkvar(P, '%', name, len); }
+        if (sigil == '#') { pp_node *v = mkvar(P, '@', name, len); pp_node *n = node(P, N_LASTIDX); n->a = v; return n; }
+        if (sigil == '&') {
+            pp_node *n = node(P, N_CALL); n->sym = sym_sigil(P, '&', name, len);
+            if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
+            else n->flags |= 2;
+            return parse_postfix(P, n);
+        }
+        perr(P, "bad variable");
+    }
+    case T_CAST: {
+        char op[4]; strcpy(op, t->op);
+        advance(P);
+        if (!strcmp(op, "$")) {
+            pp_node *inner = parse_cast_target(P);
+            if (cur_is_op(P, "[")) { advance(P); pp_node *av = node(P, N_RV2AV); av->a = inner; pp_node *n = node(P, N_AELEM); n->a = av; n->b = parse_expr(P); expect_op(P, "]"); return parse_subscripts(P, n, 1); }
+            if (cur_is_op(P, "{")) { advance(P); pp_node *hv = node(P, N_RV2HV); hv->a = inner; pp_node *n = node(P, N_HELEM); n->a = hv; n->b = parse_hash_key(P); expect_op(P, "}"); return parse_subscripts(P, n, 1); }
+            pp_node *sv = node(P, N_RV2SV); sv->a = inner;
+            return parse_subscripts(P, sv, 0);
+        }
+        if (!strcmp(op, "@")) {
+            pp_node *inner = parse_cast_target(P);
+            pp_node *av = node(P, N_RV2AV); av->a = inner;
+            if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_ASLICE); s->a = av; s->b = parse_expr(P); expect_op(P, "]"); return s; }
+            if (cur_is_op(P, "{")) { advance(P); pp_node *hv = node(P, N_RV2HV); hv->a = inner; pp_node *s = node(P, N_HSLICE); s->a = hv; s->b = parse_expr(P); expect_op(P, "}"); return s; }
+            return av;
+        }
+        if (!strcmp(op, "%")) { pp_node *inner = parse_cast_target(P); pp_node *hv = node(P, N_RV2HV); hv->a = inner; return hv; }
+        if (!strcmp(op, "$#")) { pp_node *inner = parse_cast_target(P); pp_node *av = node(P, N_RV2AV); av->a = inner; pp_node *n = node(P, N_LASTIDX); n->a = av; return n; }
+        if (!strcmp(op, "&")) {
+            pp_node *inner = parse_cast_target(P);
+            pp_node *n = node(P, N_CALLREF); n->a = inner;
+            if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
+            else n->flags |= 2;
+            return parse_postfix(P, n);
+        }
+        perr(P, "bad cast");
+    }
+    case T_OP: {
+        if (!strcmp(t->op, "(")) {
+            advance(P);
+            pp_node *l;
+            if (cur_is_op(P, ")")) l = node(P, N_LIST);
+            else l = adopt(P, wrap_list(P, parse_expr(P)));
+            expect_op(P, ")");
+            l->flags |= 1;
+            if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_LSLICE); s->a = l; s->b = parse_expr(P); expect_op(P, "]"); return s; }
+            return l;
+        }
+        if (!strcmp(t->op, "[")) {
+            advance(P);
+            pp_node *n = node(P, N_ANONARRAY);
+            if (!cur_is_op(P, "]")) take_children(n, wrap_list(P, parse_expr(P)));
+            expect_op(P, "]");
+            return parse_postfix(P, n);
+        }
+        if (!strcmp(t->op, "{")) {
+            advance(P);
+            pp_node *n = node(P, N_ANONHASH);
+            if (!cur_is_op(P, "}")) take_children(n, wrap_list(P, parse_expr(P)));
+            expect_op(P, "}");
+            return parse_postfix(P, n);
+        }
+        if (!strcmp(t->op, "<")) {
+            advance(P);
+            if (cur_is_ident(P, "STDIN")) { advance(P); expect_op(P, ">"); pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL); return n; }
+            perr(P, "syntax error near '<'");
+        }
+        if (!strcmp(t->op, "-") || !strcmp(t->op, "!") || !strcmp(t->op, "\\") || !strcmp(t->op, "+") || !strcmp(t->op, "~") || !strcmp(t->op, "++") || !strcmp(t->op, "--")) return parse_unary(P);
+        perr(P, "syntax error near '%s'", t->op);
+    }
+    case T_IDENT: return parse_ident_term(P);
+    case T_EOF: perr(P, "syntax error: unexpected end of file");
+    }
+    perr(P, "syntax error");
+    return NULL;
+}
+
+static void parse_call_args(pp_parser *P, pp_node *n) {
+    if (cur_is_op(P, "(")) {
+        advance(P);
+        if (!cur_is_op(P, ")")) take_children(n, wrap_list(P, parse_expr(P)));
+        expect_op(P, ")");
+        return;
+    }
+    take_children(n, parse_comma_list(P));
+}
+
+/* sort/map/grep: optional block or expression, then list */
+static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
+    int parens = accept_op(P, "(");
+    if (cur_is_op(P, "{")) {
+        n->a = parse_block(P);
+        accept_op(P, ",");
+        take_children(n, parse_comma_list(P));
+        if (parens) expect_op(P, ")");
+        return n;
+    }
+    if (is_sort && P->cur.type == T_IDENT && !at_list_end(P)) {
+        int kind;
+        pp_tok *nx = peek(P);
+        int nx_ends = nx->type == T_OP && (!strcmp(nx->op, ",") || !strcmp(nx->op, "=>") || !strcmp(nx->op, "->") || !strcmp(nx->op, ")") || !strcmp(nx->op, ";"));
+        if (pp_builtin_id(P->cur.s, P->cur.len, &kind) <= 0 && !cur_is_ident(P, "reverse") && !cur_is_ident(P, "map") && !cur_is_ident(P, "grep") && !cur_is_ident(P, "keys") && !cur_is_ident(P, "values") && !nx_ends && (nx->type != T_OP || !strcmp(nx->op, "(") || !strcmp(nx->op, "@"))) {
+            pp_node *call = node(P, N_CALL); call->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
+            advance(P);
+            pp_node *blk = node(P, N_BLOCK); node_add(blk, call); n->a = blk;
+            pp_node *l2 = parse_comma_list(P);
+            if (parens) expect_op(P, ")");
+            take_children(n, l2);
+            return n;
+        }
+    }
+    pp_node *l = parse_comma_list(P);
+    if (parens) expect_op(P, ")");
+    if (l->n >= 1 && !is_sort) {
+        /* map EXPR, LIST */
+        pp_node *blk = node(P, N_BLOCK);
+        node_add(blk, l->list[0]);
+        n->a = blk;
+        for (int i = 1; i < l->n; i++) node_add(n, l->list[i]);
+        drop_shell(l);
+        return n;
+    }
+    if (l->n >= 2 && is_sort && l->list[0]->type == N_CALL && (l->list[0]->flags & 1)) {
+        /* sort subname LIST */
+        pp_node *blk = node(P, N_BLOCK);
+        pp_node *call = l->list[0]; call->flags &= ~1;
+        node_add(blk, call);
+        n->a = blk;
+        for (int i = 1; i < l->n; i++) node_add(n, l->list[i]);
+        drop_shell(l);
+        return n;
+    }
+    take_children(n, l);
+    return n;
+}
+
+static int starts_term(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    switch (t->type) {
+    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: return 1;
+    case T_IDENT: return !at_list_end(P);
+    case T_OP: return !strcmp(t->op, "(") || !strcmp(t->op, "[") || !strcmp(t->op, "{") || !strcmp(t->op, "\\") || !strcmp(t->op, "!")
+        || !strcmp(t->op, "-") || !strcmp(t->op, "+") || !strcmp(t->op, "++") || !strcmp(t->op, "--") || !strcmp(t->op, "~") || !strcmp(t->op, "<");
+    default: return 0;
+    }
+}
+
+static pp_node *parse_ident_term(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    const char *id = t->s; int len = t->len;
+    int line = t->line;
+
+    pp_tok *nx = peek(P);
+    if (nx->type == T_OP && !strcmp(nx->op, "=>")) { pp_node *n = const_str(P, id, len); advance(P); return n; }
+
+    if (len == 8 && !memcmp(id, "__LINE__", 8)) { advance(P); return const_int(P, line); }
+    if (len == 8 && !memcmp(id, "__FILE__", 8)) { advance(P); return const_str(P, P->file, (int)strlen(P->file)); }
+    if (len == 11 && !memcmp(id, "__PACKAGE__", 11)) { advance(P); return parse_postfix(P, const_str(P, P->pkg, (int)strlen(P->pkg))); }
+    if (len == 2 && !memcmp(id, "my", 2)) { advance(P); return parse_var_decl_list(P, 'm'); }
+    if (len == 3 && !memcmp(id, "our", 3)) { advance(P); return parse_var_decl_list(P, 'o'); }
+    if (len == 5 && !memcmp(id, "local", 5)) { advance(P); return parse_var_decl_list(P, 'l'); }
+    if (len == 3 && !memcmp(id, "sub", 3)) {
+        advance(P);
+        pp_node *n = node(P, N_ANONSUB);
+        if (cur_is_op(P, "(")) { advance(P); while (!cur_is_op(P, ")") && P->cur.type != T_EOF) advance(P); expect_op(P, ")"); }
+        int save = P->in_sub; P->in_sub = 1;
+        scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
+        n->a = parse_block(P);
+        scope_pop(P);
+        P->in_sub = save;
+        return parse_postfix(P, n);
+    }
+    if (len == 2 && !memcmp(id, "do", 2)) {
+        advance(P);
+        if (cur_is_op(P, "{")) { pp_node *n = node(P, N_DOBLOCK); n->a = parse_block(P); return n; }
+        pp_node *n = node(P, N_REQUIRE); n->op = 1; n->a = parse_unary(P); return n;
+    }
+    if (len == 4 && !memcmp(id, "eval", 4)) {
+        advance(P);
+        if (cur_is_op(P, "{")) { pp_node *n = node(P, N_EVALBLOCK); n->a = parse_block(P); return n; }
+        perr(P, "eval STRING is not supported");
+    }
+    if (len == 3 && !memcmp(id, "not", 3) && nx->type == T_OP && !strcmp(nx->op, "(")) {
+        advance(P); advance(P);
+        pp_node *n = node(P, N_NOT);
+        n->a = cur_is_op(P, ")") ? const_int(P, 0) : parse_expr(P);
+        expect_op(P, ")");
+        return n;
+    }
+    if (len == 9 && !memcmp(id, "wantarray", 9)) { advance(P); if (accept_op(P, "(")) expect_op(P, ")"); return node(P, N_WANTARRAY); }
+    if (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6))) {
+        pp_node *n = node(P, N_FILEHANDLE); n->op = id[3] == 'O' ? 1 : 2; advance(P); return n;
+    }
+    if (len == 7 && !memcmp(id, "require", 7)) {
+        advance(P);
+        pp_node *n = node(P, N_REQUIRE);
+        if (P->cur.type == T_IDENT) {   /* require Module::Name; -> "Module/Name.pm" */
+            char buf[256]; int bn = 0;
+            for (int i = 0; i < P->cur.len && bn < 240; i++) {
+                if (P->cur.s[i] == ':' && i + 1 < P->cur.len && P->cur.s[i+1] == ':') { buf[bn++] = '/'; i++; }
+                else buf[bn++] = P->cur.s[i];
+            }
+            memcpy(buf + bn, ".pm", 4); bn += 3;
+            n->a = const_str(P, buf, bn);
+            advance(P);
+            return n;
+        }
+        n->a = parse_unary(P);
+        return n;
+    }
+    if (len == 6 && !memcmp(id, "return", 6)) {
+        advance(P);
+        pp_node *n = node(P, N_RETURN);
+        if (!at_list_end(P)) n->a = adopt(P, parse_comma_list(P));
+        return n;
+    }
+    if (len == 4 && !memcmp(id, "redo", 4)) {
+        advance(P);
+        if (P->cur.type == T_IDENT && !at_list_end(P)) advance(P);
+        pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("die", 3, NULL);
+        node_add(n, const_str(P, "redo is not supported by picoperl\n", 33));
+        return n;
+    }
+    if (len == 4 && (!memcmp(id, "last", 4) || !memcmp(id, "next", 4))) {
+        pp_node *n = node(P, id[0] == 'l' ? N_LAST : N_NEXT);
+        advance(P);
+        if (P->cur.type == T_IDENT && !at_list_end(P)) { n->sym = pp_intern(P->I, P->cur.s, P->cur.len); advance(P); }
+        return n;
+    }
+
+    int kind;
+    int bid = pp_builtin_id(id, len, &kind);
+    if (bid > 0) {
+        /* a sub imported into (or defined in) this package overrides an overridable builtin (Time::HiRes::time) */
+        static const char *core_only[] = { "print", "printf", "say", "defined", "undef", "scalar", "exists", "delete", "bless", "die", "warn", "sort", "map", "grep", "push", "pop", "shift", "unshift", "keys", "values", "each", "split", "join", "ref", NULL };
+        int core = 0;
+        for (int i = 0; core_only[i]; i++) if ((int)strlen(core_only[i]) == len && !memcmp(core_only[i], id, len)) core = 1;
+        if (!core && pp_lookup_sub(P->I, sym_sigil(P, '&', id, len))) bid = 0;
+    }
+    if (bid > 0) {
+        advance(P);
+        pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)bid; n->line = line;
+        int is_sort = len == 4 && !memcmp(id, "sort", 4);
+        int is_mapgrep = (len == 4 && !memcmp(id, "grep", 4)) || (len == 3 && !memcmp(id, "map", 3));
+        if (is_sort || is_mapgrep) return parse_block_or_expr_arg(P, n, is_sort);
+        int is_print = (len == 5 && !memcmp(id, "print", 5)) || (len == 6 && !memcmp(id, "printf", 6)) || (len == 3 && !memcmp(id, "say", 3));
+        if (is_print) {
+            int parens = accept_op(P, "(");
+            if (cur_is_ident(P, "STDERR") || cur_is_ident(P, "STDOUT")) {
+                pp_tok *nx2 = peek(P);
+                if (!(nx2->type == T_OP && (!strcmp(nx2->op, ",") || !strcmp(nx2->op, "(") || !strcmp(nx2->op, "->")))) {
+                    pp_node *fh = node(P, N_FILEHANDLE); fh->op = P->cur.s[3] == 'O' ? 1 : 2; n->a = fh; advance(P);
+                }
+            }
+            else if (cur_is_op(P, "{")) { advance(P); n->a = parse_expr(P); expect_op(P, "}"); }
+            take_children(n, parse_comma_list(P));
+            if (parens) expect_op(P, ")");
+            return n;
+        }
+        if (kind == BK_NOARG) { if (accept_op(P, "(")) expect_op(P, ")"); return parse_postfix(P, n); }
+        if (kind == BK_UNARY) {
+            if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); return parse_postfix(P, n); }
+            if (starts_term(P) && !(cur_is_op(P, "<") && !tok_is_ident(peek(P), "STDIN"))) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
+            return n;
+        }
+        parse_call_args(P, n);
+        if (bid == pp_builtin_id("bless", 5, NULL) && n->n == 1) node_add(n, const_str(P, P->pkg, (int)strlen(P->pkg)));
+        return parse_postfix(P, n);
+    }
+
+    pp_sym *s = sym_sigil(P, '&', id, len);
+    advance(P);
+    pp_node *n = node(P, N_CALL); n->sym = s; n->line = line;
+    if (cur_is_op(P, "(")) { parse_call_args(P, n); return parse_postfix(P, n); }
+    int decl = is_declared(P, s);
+    if (decl) {
+        if (decl == 2) return parse_postfix(P, n);
+        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) parse_call_args(P, n);
+        return parse_postfix(P, n);
+    }
+    n->flags |= 1;   /* bareword: call sub if it exists at runtime, else string */
+    if (!has_pkg_sep(id, len)) n->flags |= 4;   /* written without a package: the string is the bare name */
+    if (scope_top(P)->strict_subs && !cur_is_op(P, "->") && !has_pkg_sep(id, len))
+        perr(P, "Bareword \"%.*s\" not allowed while \"strict subs\" in use", len, id);
+    return parse_postfix(P, n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Statements                                                          */
+/* ------------------------------------------------------------------ */
+
+static pp_node *parse_block(pp_parser *P) {
+    expect_op(P, "{");
+    pp_node *b = node(P, N_BLOCK);
+    scope_push(P, SCOPE_BLOCK);
+    while (!cur_is_op(P, "}")) {
+        if (P->cur.type == T_EOF) perr(P, "Missing right curly bracket");
+        pp_node *s = parse_statement(P);
+        if (s) node_add(b, s);
+    }
+    expect_op(P, "}");
+    int nv = scope_pop(P);
+    if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
+    return b;
+}
+
+/* if (COND) BLOCK elsif ... else ...: a scope around the whole chain for `my` in conditions */
+static pp_node *parse_cond_block(pp_parser *P, int is_unless) {
+    pp_node *n = node(P, N_IF); n->op = (uint8_t)is_unless;
+    scope_push(P, SCOPE_BLOCK);
+    expect_op(P, "(");
+    n->a = parse_expr(P);
+    expect_op(P, ")");
+    n->b = parse_block(P);
+    if (cur_is_ident(P, "elsif")) { advance(P); n->c = parse_cond_block(P, 0); }
+    else if (cur_is_ident(P, "else")) { advance(P); n->c = parse_block(P); }
+    int nv = scope_pop(P);
+    if (nv) { n->flags |= 4; n->aux = (uint8_t)nv; }
+    return n;
+}
+
+static const char *ignored_modules[] = {
+    "utf8", "feature", "lib", "Exporter", "vars", "integer", "bytes",
+    "overload", "diagnostics", "experimental", "Carp", "FindBin", "English", NULL
+};
+
+static pp_node *parse_use(pp_parser *P) {
+    int is_no = cur_is_ident(P, "no");
+    advance(P);
+    if (cur_is_ident(P, "strict") || cur_is_ident(P, "warnings")) {
+        int is_strict = cur_is_ident(P, "strict");
+        pscope *top = scope_top(P);
+        int vars = 1, subs = 1;
+        advance(P);
+        if (!cur_is_op(P, ";")) {   /* use strict 'vars'; use strict qw(subs refs); */
+            vars = subs = 0;
+            pp_node *l = wrap_list(P, parse_expr(P));
+            for (int i = 0; i < l->n; i++) {
+                if (l->list[i]->type == N_CONST && l->list[i]->val.t == PP_STR) {
+                    const char *w = l->list[i]->val.u.s->d;
+                    if (!strcmp(w, "vars")) vars = 1;
+                    if (!strcmp(w, "subs")) subs = 1;
+                    if (!strcmp(w, "all")) vars = subs = 1;
+                }
+            }
+            pp_free_ast(l);
+            if (!is_strict) vars = subs = 1;
+        }
+        if (is_strict) {
+            if (vars) top->strict_vars = !is_no;
+            if (subs) top->strict_subs = !is_no;
+        } else top->warnings = !is_no;
+        expect_op(P, ";");
+        return NULL;
+    }
+    if (cur_is_ident(P, "constant") && !is_no) {
+        advance(P);
+        pp_node *n = node(P, N_CONSTDEF);
+        n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+        pp_node *e = adopt(P, parse_expr(P));
+        n->a = e;
+        if (e->type == N_LIST && e->n >= 1 && e->list[0]->type == N_CONST && e->list[0]->val.t == PP_STR)
+            declare_sub(P, sym_sigil(P, '&', e->list[0]->val.u.s->d, e->list[0]->val.u.s->len), 1);
+        else if (e->type == N_ANONHASH) {
+            for (int i = 0; i + 1 < e->n; i += 2)
+                if (e->list[i]->type == N_CONST && e->list[i]->val.t == PP_STR)
+                    declare_sub(P, sym_sigil(P, '&', e->list[i]->val.u.s->d, e->list[i]->val.u.s->len), 1);
+        }
+        expect_op(P, ";");
+        return n;
+    }
+    if (P->cur.type == T_IDENT && !is_no) {
+        int ignored = 0;
+        for (int i = 0; ignored_modules[i]; i++) if (cur_is_ident(P, ignored_modules[i])) ignored = 1;
+        if (!ignored) {
+            pp_node *n = node(P, N_USE);
+            if (cur_is_ident(P, "parent") || cur_is_ident(P, "base")) n->op = 1;
+            n->a = const_str(P, P->cur.s, P->cur.len);
+            n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+            advance(P);
+            if (P->cur.type == T_NUM) advance(P);   /* version */
+            if (!cur_is_op(P, ";")) take_children(n, wrap_list(P, parse_expr(P)));
+            expect_op(P, ";");
+            return n;
+        }
+    }
+    while (!cur_is_op(P, ";") && P->cur.type != T_EOF) advance(P);
+    accept_op(P, ";");
+    return NULL;
+}
+
+static pp_node *parse_statement_inner(pp_parser *P) {
+    pp_tok *t = &P->cur;
+    pp_sym *label = P->pending_label;
+    P->pending_label = NULL;
+    if (t->type == T_OP) {
+        if (!strcmp(t->op, ";")) { advance(P); return NULL; }
+        if (!strcmp(t->op, "{")) {
+            pp_node *n = node(P, N_WHILE); n->flags |= 16; n->sym = label; n->b = parse_block(P);   /* bare block: loop once */
+            return n;
+        }
+    }
+    if (t->type == T_IDENT) {
+        pp_tok *nx = peek(P);
+        if (nx->type == T_OP && !strcmp(nx->op, ":") && t->len > 0 && isupper((unsigned char)t->s[0])) {
+            pp_sym *lab = pp_intern(P->I, t->s, t->len);
+            advance(P); advance(P);
+            P->pending_label = lab;
+            return parse_statement(P);
+        }
+
+        if (tok_is_ident(t, "sub") && nx->type == T_IDENT) {
+            advance(P);
+            pp_node *n = node(P, N_SUBDEF);
+            n->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
+            advance(P);
+            int noargs = 0;
+            if (cur_is_op(P, "(")) { advance(P); noargs = cur_is_op(P, ")"); while (!cur_is_op(P, ")") && P->cur.type != T_EOF) advance(P); expect_op(P, ")"); }
+            declare_sub(P, n->sym, noargs);
+            if (cur_is_op(P, ";")) { advance(P); return NULL; }
+            int save = P->in_sub; P->in_sub = 1;
+            scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
+            n->a = parse_block(P);
+            scope_pop(P);
+            P->in_sub = save;
+            pp_interp *I = P->I;
+            I->subdefs = pp_xrealloc(I->subdefs, (I->nsubdefs + 1) * sizeof(pp_node *));
+            I->subdefs[I->nsubdefs++] = n;
+            I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
+            I->all_subdefs[I->nall_subdefs++] = n;
+            return NULL;
+        }
+        if (tok_is_ident(t, "if")) { advance(P); return parse_cond_block(P, 0); }
+        if (tok_is_ident(t, "unless")) { advance(P); return parse_cond_block(P, 1); }
+        if (tok_is_ident(t, "while") || tok_is_ident(t, "until")) {
+            int until = t->s[0] == 'u';
+            advance(P);
+            pp_node *n = node(P, N_WHILE); n->op = (uint8_t)until; n->sym = label;
+            scope_push(P, SCOPE_BLOCK);
+            expect_op(P, "(");
+            n->a = cur_is_op(P, ")") ? const_int(P, 1) : parse_expr(P);
+            expect_op(P, ")");
+            n->b = parse_block(P);
+            if (cur_is_ident(P, "continue")) { advance(P); n->c = parse_block(P); }
+            int nv = scope_pop(P);
+            if (nv) { n->flags |= 4; n->aux = (uint8_t)nv; }
+            return n;
+        }
+        if (tok_is_ident(t, "for") || tok_is_ident(t, "foreach")) {
+            advance(P);
+            int is_my = 0; const char *vname = NULL; int vlen = 0;
+            if (cur_is_ident(P, "my") || cur_is_ident(P, "our")) {
+                advance(P);
+                if (P->cur.type != T_VAR || P->cur.sigil != '$') perr(P, "syntax error in foreach");
+                is_my = 1; vname = P->cur.s; vlen = P->cur.len;
+                advance(P);
+            } else if (P->cur.type == T_VAR && P->cur.sigil == '$') {
+                vname = P->cur.s; vlen = P->cur.len;
+                advance(P);
+            }
+            expect_op(P, "(");
+            if (!vname) {
+                scope_push(P, SCOPE_BLOCK);   /* for (my $i = 0; ...) */
+                pp_node *init = cur_is_op(P, ";") ? NULL : parse_expr(P);
+                if (cur_is_op(P, ";")) {
+                    advance(P);
+                    pp_node *n = node(P, N_FOR); n->sym = label;
+                    n->a = init;
+                    n->b = cur_is_op(P, ";") ? NULL : parse_expr(P);
+                    expect_op(P, ";");
+                    n->c = cur_is_op(P, ")") ? NULL : parse_expr(P);
+                    expect_op(P, ")");
+                    n->d = parse_block(P);
+                    int nv = scope_pop(P);
+                    if (nv) { n->flags |= 4; n->aux = (uint8_t)nv; }
+                    return n;
+                }
+                expect_op(P, ")");
+                pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); n->c = parse_block(P);
+                int nv = scope_pop(P);
+                if (nv) perr(P, "internal: unexpected declaration in foreach list");
+                return n;
+            }
+            pp_node *n = node(P, N_FOREACH); n->sym = label;
+            /* the list is parsed before the loop variable comes into scope */
+            n->b = cur_is_op(P, ")") ? node(P, N_LIST) : parse_expr(P);
+            expect_op(P, ")");
+            if (is_my) {
+                scope_push(P, SCOPE_LOOPVAR);
+                pp_node *var = node(P, N_MY); var->op = 'm';
+                node_add(var, mkvar_decl(P, '$', vname, vlen));
+                n->a = var;
+                n->c = parse_block(P);
+                scope_pop(P);
+            } else {
+                n->a = mkvar(P, '$', vname, vlen);
+                n->c = parse_block(P);
+            }
+            return n;
+        }
+        if (tok_is_ident(t, "use") || tok_is_ident(t, "no")) {
+            int rs = P->sc->nrecs, is = P->sc->nids;
+            P->sc->heap_depth++;                     /* this subtree runs now and is freed afterwards */
+            pp_node *u = parse_use(P);
+            P->sc->heap_depth--;
+            if (u) exec_at_parse(P, u, rs, is);
+            return NULL;
+        }
+        if (tok_is_ident(t, "package")) {
+            advance(P);
+            if (P->cur.type != T_IDENT) perr(P, "syntax error after package");
+            char saved[96]; strcpy(saved, P->pkg);
+            snprintf(P->pkg, sizeof P->pkg, "%.*s", P->cur.len, P->cur.s);
+            advance(P);
+            if (P->cur.type == T_NUM) advance(P);   /* version */
+            if (cur_is_op(P, "{")) { pp_node *b = parse_block(P); strcpy(P->pkg, saved); return b; }
+            accept_op(P, ";");
+            return NULL;
+        }
+        if (tok_is_ident(t, "BEGIN")) {
+            advance(P);
+            int rs = P->sc->nrecs, is = P->sc->nids;
+            P->sc->heap_depth++;
+            pp_node *b = parse_block(P);
+            P->sc->heap_depth--;
+            exec_at_parse(P, b, rs, is);
+            return NULL;
+        }
+        if (tok_is_ident(t, "END")) { advance(P); return parse_block(P); }
+    }
+
+    pp_node *e = parse_expr(P);
+    for (;;) {
+        if (cur_is_ident(P, "if") || cur_is_ident(P, "unless")) {
+            int un = P->cur.s[0] == 'u'; advance(P);
+            pp_node *n = node(P, N_IF); n->op = (uint8_t)un; n->a = parse_expr(P); n->b = e; n->flags |= 2;
+            e = n; continue;
+        }
+        if (cur_is_ident(P, "while") || cur_is_ident(P, "until")) {
+            int un = P->cur.s[0] == 'u'; advance(P);
+            pp_node *n = node(P, N_WHILE); n->op = (uint8_t)un; n->a = parse_expr(P); n->b = e; n->flags |= 2;
+            if (e->type == N_DOBLOCK) { n->flags |= 8; n->b = e->a; }
+            e = n; continue;
+        }
+        if (cur_is_ident(P, "for") || cur_is_ident(P, "foreach")) {
+            advance(P);
+            pp_node *n = node(P, N_FOREACH); n->a = NULL; n->b = parse_expr(P); n->c = e; n->flags |= 2;
+            e = n; continue;
+        }
+        break;
+    }
+    if (!cur_is_op(P, "}") && P->cur.type != T_EOF) expect_op(P, ";");
+    return e;
+}
+static pp_node *parse_statement(pp_parser *P) {
+    pp_node *st = parse_statement_inner(P);
+    if (st && scope_top(P)->warnings) st->flags |= PP_STMT_WARN;
+    return st;
+}
+
+/* ------------------------------------------------------------------ */
+/* Entry points                                                        */
+/* ------------------------------------------------------------------ */
+
+static void parser_init(pp_parser *P, pp_interp *I, const char *file, const char *src, int len, int line, pp_parser *parent) {
+    memset(P, 0, sizeof *P);
+    P->I = I; P->file = file;
+    strcpy(P->pkg, parent ? parent->pkg : "main");
+    P->L.src = src; P->L.len = len; P->L.pos = 0; P->L.line = line;
+    if (parent) { P->sc = parent->sc; P->decl = parent->decl; P->ndecl = parent->ndecl; P->declnoargs = parent->declnoargs; P->our_names = parent->our_names; P->our_syms = parent->our_syms; P->nours = parent->nours; }
+    else { P->sc = pp_xmalloc(sizeof(pscopes)); memset(P->sc, 0, sizeof(pscopes)); P->sc->arena = I->arena; P->owns_sc = 1; }
+}
+static void parser_free(pp_parser *P) {
+    for (int i = 0; i < P->L.nstrs; i++) free(P->L.strs[i]);
+    free(P->L.strs);
+    if (P->owns_sc) {
+        free(P->decl);
+        free(P->declnoargs);
+        for (int i = 0; i < P->nours; i++) free(P->our_names[i]);
+        free(P->our_names); free(P->our_syms);
+        pscopes *S = P->sc;
+        while (S->n) scope_pop(P);
+        free(S->st); free(S->collapsed); free(S->parent_of); free(S->recs); free(S->ours);
+        free(S);
+    }
+}
+
+/* list arrays grow by doubling while parsing; once the tree is final they are copied
+   into the arena (exact size, no malloc header). Heap nodes keep malloc'd lists. */
+static void shrink_ast(pp_arena *arena, pp_node *n) {
+    if (!n) return;
+    shrink_ast(arena, n->a); shrink_ast(arena, n->b);
+    if (n->type == N_CONST) return;
+    shrink_ast(arena, n->c); shrink_ast(arena, n->d);
+    for (int i = 0; i < n->n; i++) shrink_ast(arena, n->list[i]);
+    if (!n->list) return;
+    if (n->flags & PP_NODE_HEAP) { if (n->n) n->list = pp_xrealloc(n->list, n->n * sizeof(pp_node *)); return; }
+    pp_node **nl = NULL;
+    if (n->n) { nl = pp_arena_alloc(arena, n->n * sizeof(pp_node *)); memcpy(nl, n->list, n->n * sizeof(pp_node *)); }
+    free(n->list);
+    n->list = nl;
+}
+
+pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err) {
+    pp_parser P;
+    parser_init(&P, I, filename, src, (int)strlen(src), 1, NULL);
+    *err = 0;
+    if (setjmp(P.jb)) {
+        char buf[512];
+        int n = P.err_has_loc ? snprintf(buf, sizeof buf, "%s\n", P.errmsg)
+                              : snprintf(buf, sizeof buf, "%s at %s line %d.\n", P.errmsg, filename, P.cur.line);
+        pp_host_write(2, buf, n);
+        *err = 1;
+        parser_free(&P);      /* the partial tree stays in the arena until pp_free */
+        return NULL;
+    }
+    advance(&P);
+    pp_node *unit = node(&P, N_BLOCK);
+    scope_push(&P, SCOPE_UNIT);
+    while (P.cur.type != T_EOF) {
+        pp_node *s = parse_statement(&P);
+        if (s) node_add(unit, s);
+    }
+    int nv = scope_pop(&P);
+    unit->flags |= 1;
+    unit->aux = (uint8_t)nv;
+    scope_finalize(&P, 0, -1);
+    shrink_ast(P.sc->arena, unit);
+    for (int i = 0; i < I->nsubdefs; i++) shrink_ast(P.sc->arena, I->subdefs[i]);
+    parser_free(&P);
+    return unit;
+}
+
+/* parse an interpolated expression with the scopes of the enclosing parser */
+static pp_node *parse_expr_shared(pp_parser *parent, const char *src, int len, int line, int *err) {
+    pp_parser P;
+    parser_init(&P, parent->I, parent->file, src, len, line, parent);
+    *err = 0;
+    if (setjmp(P.jb)) {
+        snprintf(parent->errmsg, sizeof parent->errmsg, "%s", P.errmsg);
+        parent->err_has_loc = P.err_has_loc;
+        *err = 1; parser_free(&P); return NULL;
+    }
+    advance(&P);
+    pp_node *e = parse_expr(&P);
+    if (P.cur.type != T_EOF) { snprintf(parent->errmsg, sizeof parent->errmsg, "syntax error in interpolated string"); *err = 1; parser_free(&P); return NULL; }
+    parser_free(&P);
+    return e;
+}
+pp_node *pp_parse_expr_string(pp_interp *I, const char *src, int len, int line, const char *file, int *err) {
+    (void)I; (void)src; (void)len; (void)line; (void)file;
+    *err = 1;
+    return NULL;
+}

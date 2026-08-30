@@ -1,0 +1,292 @@
+/* USB HID keyboard usage codes (page 0x07) and picoperl pseudo keycodes.
+ * Shared by the firmware and the host CLI: constants such as KC_A are created
+ * on demand from this table (pp_host_const), so unused names cost no RAM.
+ * Names follow QMK. Generated from the former Keycodes.pm table. */
+#include <string.h>
+#include "picoperl.h"
+
+typedef struct { const char *name; uint16_t code; } pp_keycode;
+
+static const pp_keycode keycodes[] = {
+    { "KC_NO", 0x0000 },
+    { "KC_TRNS", 0x0001 },
+    { "KC_A", 0x0004 },
+    { "KC_B", 0x0005 },
+    { "KC_C", 0x0006 },
+    { "KC_D", 0x0007 },
+    { "KC_E", 0x0008 },
+    { "KC_F", 0x0009 },
+    { "KC_G", 0x000A },
+    { "KC_H", 0x000B },
+    { "KC_I", 0x000C },
+    { "KC_J", 0x000D },
+    { "KC_K", 0x000E },
+    { "KC_L", 0x000F },
+    { "KC_M", 0x0010 },
+    { "KC_N", 0x0011 },
+    { "KC_O", 0x0012 },
+    { "KC_P", 0x0013 },
+    { "KC_Q", 0x0014 },
+    { "KC_R", 0x0015 },
+    { "KC_S", 0x0016 },
+    { "KC_T", 0x0017 },
+    { "KC_U", 0x0018 },
+    { "KC_V", 0x0019 },
+    { "KC_W", 0x001A },
+    { "KC_X", 0x001B },
+    { "KC_Y", 0x001C },
+    { "KC_Z", 0x001D },
+    { "KC_1", 0x001E },
+    { "KC_2", 0x001F },
+    { "KC_3", 0x0020 },
+    { "KC_4", 0x0021 },
+    { "KC_5", 0x0022 },
+    { "KC_6", 0x0023 },
+    { "KC_7", 0x0024 },
+    { "KC_8", 0x0025 },
+    { "KC_9", 0x0026 },
+    { "KC_0", 0x0027 },
+    { "KC_ENTER", 0x0028 },
+    { "KC_ENT", 0x0028 },
+    { "KC_ESCAPE", 0x0029 },
+    { "KC_ESC", 0x0029 },
+    { "KC_BACKSPACE", 0x002A },
+    { "KC_BSPC", 0x002A },
+    { "KC_TAB", 0x002B },
+    { "KC_SPACE", 0x002C },
+    { "KC_SPC", 0x002C },
+    { "KC_MINUS", 0x002D },
+    { "KC_MINS", 0x002D },
+    { "KC_EQUAL", 0x002E },
+    { "KC_EQL", 0x002E },
+    { "KC_LEFT_BRACKET", 0x002F },
+    { "KC_LBRC", 0x002F },
+    { "KC_RIGHT_BRACKET", 0x0030 },
+    { "KC_RBRC", 0x0030 },
+    { "KC_BACKSLASH", 0x0031 },
+    { "KC_BSLS", 0x0031 },
+    { "KC_NONUS_HASH", 0x0032 },
+    { "KC_NUHS", 0x0032 },
+    { "KC_SEMICOLON", 0x0033 },
+    { "KC_SCLN", 0x0033 },
+    { "KC_QUOTE", 0x0034 },
+    { "KC_QUOT", 0x0034 },
+    { "KC_GRAVE", 0x0035 },
+    { "KC_GRV", 0x0035 },
+    { "KC_COMMA", 0x0036 },
+    { "KC_COMM", 0x0036 },
+    { "KC_DOT", 0x0037 },
+    { "KC_SLASH", 0x0038 },
+    { "KC_SLSH", 0x0038 },
+    { "KC_CAPS_LOCK", 0x0039 },
+    { "KC_CAPS", 0x0039 },
+    { "KC_F1", 0x003A },
+    { "KC_F2", 0x003B },
+    { "KC_F3", 0x003C },
+    { "KC_F4", 0x003D },
+    { "KC_F5", 0x003E },
+    { "KC_F6", 0x003F },
+    { "KC_F7", 0x0040 },
+    { "KC_F8", 0x0041 },
+    { "KC_F9", 0x0042 },
+    { "KC_F10", 0x0043 },
+    { "KC_F11", 0x0044 },
+    { "KC_F12", 0x0045 },
+    { "KC_PRINT_SCREEN", 0x0046 },
+    { "KC_PSCR", 0x0046 },
+    { "KC_SCROLL_LOCK", 0x0047 },
+    { "KC_SCRL", 0x0047 },
+    { "KC_PAUSE", 0x0048 },
+    { "KC_PAUS", 0x0048 },
+    { "KC_INSERT", 0x0049 },
+    { "KC_INS", 0x0049 },
+    { "KC_HOME", 0x004A },
+    { "KC_PAGE_UP", 0x004B },
+    { "KC_PGUP", 0x004B },
+    { "KC_DELETE", 0x004C },
+    { "KC_DEL", 0x004C },
+    { "KC_END", 0x004D },
+    { "KC_PAGE_DOWN", 0x004E },
+    { "KC_PGDN", 0x004E },
+    { "KC_RIGHT", 0x004F },
+    { "KC_RGHT", 0x004F },
+    { "KC_LEFT", 0x0050 },
+    { "KC_DOWN", 0x0051 },
+    { "KC_UP", 0x0052 },
+    { "KC_NUM_LOCK", 0x0053 },
+    { "KC_NUM", 0x0053 },
+    { "KC_KP_SLASH", 0x0054 },
+    { "KC_PSLS", 0x0054 },
+    { "KC_KP_ASTERISK", 0x0055 },
+    { "KC_PAST", 0x0055 },
+    { "KC_KP_MINUS", 0x0056 },
+    { "KC_PMNS", 0x0056 },
+    { "KC_KP_PLUS", 0x0057 },
+    { "KC_PPLS", 0x0057 },
+    { "KC_KP_ENTER", 0x0058 },
+    { "KC_PENT", 0x0058 },
+    { "KC_KP_1", 0x0059 },
+    { "KC_P1", 0x0059 },
+    { "KC_KP_2", 0x005A },
+    { "KC_P2", 0x005A },
+    { "KC_KP_3", 0x005B },
+    { "KC_P3", 0x005B },
+    { "KC_KP_4", 0x005C },
+    { "KC_P4", 0x005C },
+    { "KC_KP_5", 0x005D },
+    { "KC_P5", 0x005D },
+    { "KC_KP_6", 0x005E },
+    { "KC_P6", 0x005E },
+    { "KC_KP_7", 0x005F },
+    { "KC_P7", 0x005F },
+    { "KC_KP_8", 0x0060 },
+    { "KC_P8", 0x0060 },
+    { "KC_KP_9", 0x0061 },
+    { "KC_P9", 0x0061 },
+    { "KC_KP_0", 0x0062 },
+    { "KC_P0", 0x0062 },
+    { "KC_KP_DOT", 0x0063 },
+    { "KC_PDOT", 0x0063 },
+    { "KC_NONUS_BACKSLASH", 0x0064 },
+    { "KC_NUBS", 0x0064 },
+    { "KC_APPLICATION", 0x0065 },
+    { "KC_APP", 0x0065 },
+    { "KC_KB_POWER", 0x0066 },
+    { "KC_KP_EQUAL", 0x0067 },
+    { "KC_PEQL", 0x0067 },
+    { "KC_F13", 0x0068 },
+    { "KC_F14", 0x0069 },
+    { "KC_F15", 0x006A },
+    { "KC_F16", 0x006B },
+    { "KC_F17", 0x006C },
+    { "KC_F18", 0x006D },
+    { "KC_F19", 0x006E },
+    { "KC_F20", 0x006F },
+    { "KC_F21", 0x0070 },
+    { "KC_F22", 0x0071 },
+    { "KC_F23", 0x0072 },
+    { "KC_F24", 0x0073 },
+    { "KC_KB_MUTE", 0x007F },
+    { "KC_KB_VOLUME_UP", 0x0080 },
+    { "KC_KB_VOLUME_DOWN", 0x0081 },
+    { "KC_INTERNATIONAL_1", 0x0087 },
+    { "KC_INT1", 0x0087 },
+    { "KC_INTERNATIONAL_2", 0x0088 },
+    { "KC_INT2", 0x0088 },
+    { "KC_INTERNATIONAL_3", 0x0089 },
+    { "KC_INT3", 0x0089 },
+    { "KC_INTERNATIONAL_4", 0x008A },
+    { "KC_INT4", 0x008A },
+    { "KC_INTERNATIONAL_5", 0x008B },
+    { "KC_INT5", 0x008B },
+    { "KC_LANGUAGE_1", 0x0090 },
+    { "KC_LNG1", 0x0090 },
+    { "KC_LANGUAGE_2", 0x0091 },
+    { "KC_LNG2", 0x0091 },
+    { "KC_LEFT_CTRL", 0x00E0 },
+    { "KC_LCTL", 0x00E0 },
+    { "KC_LCTRL", 0x00E0 },
+    { "KC_LEFT_SHIFT", 0x00E1 },
+    { "KC_LSFT", 0x00E1 },
+    { "KC_LSHIFT", 0x00E1 },
+    { "KC_LEFT_ALT", 0x00E2 },
+    { "KC_LALT", 0x00E2 },
+    { "KC_LEFT_GUI", 0x00E3 },
+    { "KC_LGUI", 0x00E3 },
+    { "KC_LWIN", 0x00E3 },
+    { "KC_LCMD", 0x00E3 },
+    { "KC_RIGHT_CTRL", 0x00E4 },
+    { "KC_RCTL", 0x00E4 },
+    { "KC_RCTRL", 0x00E4 },
+    { "KC_RIGHT_SHIFT", 0x00E5 },
+    { "KC_RSFT", 0x00E5 },
+    { "KC_RSHIFT", 0x00E5 },
+    { "KC_RIGHT_ALT", 0x00E6 },
+    { "KC_RALT", 0x00E6 },
+    { "KC_RIGHT_GUI", 0x00E7 },
+    { "KC_RGUI", 0x00E7 },
+    { "KC_RWIN", 0x00E7 },
+    { "KC_RCMD", 0x00E7 },
+    { "PP_LAYER_MO", 0x1000 },
+    { "PP_LAYER_TG", 0x2000 },
+    { "PP_BOOTSEL", 0x3000 },
+    { "PP_CONSUMER", 0x4000 },   /* consumer control (media) keys: 0x4000 | usage (page 0x0C) */
+    { "KC_AUDIO_MUTE", 0x40E2 },
+    { "KC_MUTE", 0x40E2 },
+    { "KC_AUDIO_VOL_UP", 0x40E9 },
+    { "KC_VOLU", 0x40E9 },
+    { "KC_AUDIO_VOL_DOWN", 0x40EA },
+    { "KC_VOLD", 0x40EA },
+    { "KC_MEDIA_PLAY_PAUSE", 0x40CD },
+    { "KC_MPLY", 0x40CD },
+    { "KC_MEDIA_NEXT_TRACK", 0x40B5 },
+    { "KC_MNXT", 0x40B5 },
+    { "KC_MEDIA_PREV_TRACK", 0x40B6 },
+    { "KC_MPRV", 0x40B6 },
+    { "KC_MEDIA_STOP", 0x40B7 },
+    { "KC_MSTP", 0x40B7 },
+    { "KC_MEDIA_EJECT", 0x40B8 },
+    { "KC_EJCT", 0x40B8 },
+    { "KC_BRIGHTNESS_UP", 0x406F },
+    { "KC_BRIU", 0x406F },
+    { "KC_BRIGHTNESS_DOWN", 0x4070 },
+    { "KC_BRID", 0x4070 },
+    { "KC_CALCULATOR", 0x4192 },
+    { "KC_CALC", 0x4192 },
+    { "KC_MAIL", 0x418A },
+    { "KC_MY_COMPUTER", 0x4194 },
+    { "KC_MYCM", 0x4194 },
+    { "KC_WWW_HOME", 0x4223 },
+    { "KC_WHOM", 0x4223 },
+    { "KC_WWW_SEARCH", 0x4221 },
+    { "KC_WSCH", 0x4221 },
+    { "KC_WWW_BACK", 0x4224 },
+    { "KC_WBAK", 0x4224 },
+    { "KC_WWW_FORWARD", 0x4225 },
+    { "KC_WFWD", 0x4225 },
+};
+
+#define NKEYCODES (sizeof keycodes / sizeof keycodes[0])
+
+int pp_keycode_value(const char *name) {
+    for (size_t i = 0; i < NKEYCODES; i++)
+        if (strcmp(keycodes[i].name, name) == 0) return keycodes[i].code;
+    return -1;
+}
+
+const char *pp_keycode_name(int code) {
+    for (size_t i = 0; i < NKEYCODES; i++)
+        if (keycodes[i].code == code) return keycodes[i].name;
+    return NULL;
+}
+
+/* natives: keycode_value("KC_A") -> 4 / undef, keycode_name(4) -> "KC_A" / undef */
+static pp_val n_keycode_value(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    pp_str *tmp; const char *name = pp_to_cstr(a->v[0], &tmp);
+    int v = pp_keycode_value(name);
+    if (tmp) { pp_val t; t.t = PP_STR; t.u.s = tmp; pp_release(t); }
+    return v < 0 ? pp_undef() : pp_int(v);
+}
+static pp_val n_keycode_name(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    const char *name = pp_keycode_name((int)pp_to_int(a->v[0]));
+    return name ? pp_cstr(name) : pp_undef();
+}
+
+void pp_keycodes_register(pp_interp *I) {
+    pp_register(I, "PicoPerl::Keycodes::_value", n_keycode_value);
+    pp_register(I, "PicoPerl::Keycodes::_name", n_keycode_name);
+}
+
+/* host hook helper: "PicoPerl::Keycodes::KC_A" -> 4 (only that package sees the table) */
+int pp_keycodes_const(const char *name, pp_val *out) {
+    static const char prefix[] = "PicoPerl::Keycodes::";
+    if (strncmp(name, prefix, sizeof prefix - 1) != 0) return 0;
+    int v = pp_keycode_value(name + sizeof prefix - 1);
+    if (v < 0) return 0;
+    *out = pp_int(v);
+    return 1;
+}

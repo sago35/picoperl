@@ -1,0 +1,17 @@
+build/
+firmware/build*/
+dist/
+*.o
+*.su
+.claude/
+.idea
+.vscode
+.mcp.json
+.bashrc
+.bash_profile
+.profile
+.zshrc
+.zprofile
+.gitconfig
+.gitmodules
+.ripgreprc
