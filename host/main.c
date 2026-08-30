@@ -125,6 +125,16 @@ static pp_val n_matrix_scan(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return r;
 }
 static pp_val n_encoder_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+/* ADC simulation: PICOPERL_SIM_ADC="29:0x7440,28:0x8000" gives 16-bit values per pin (default mid scale) */
+static pp_val n_adc_configure(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, -1); return (p >= 26 && p <= 29) || p == 4 ? pp_int(1) : pp_undef(); }
+static pp_val n_adc_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    int pin = pp_list_arg_int(a, 0, -1);
+    long v16 = 0x8000;
+    const char *env = getenv("PICOPERL_SIM_ADC");
+    if (env) { const char *q = env; while (*q) { int p; long v; if (sscanf(q, "%d:%li", &p, &v) == 2 && p == pin) v16 = v; while (*q && *q != ',') q++; if (*q == ',') q++; } }
+    return pp_int((v16 >> 4) & 0xFFF);   /* natives return the raw 12-bit sample */
+}
 static int ws_pins[4] = { -1, -1, -1, -1 };
 static pp_val n_ws2812_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
@@ -212,6 +222,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
+    pp_register(I, "Adc::_configure", n_adc_configure);
+    pp_register(I, "Adc::_read", n_adc_read);
     pp_register(I, "Ws2812::_init", n_ws2812_init);
     pp_register(I, "Ws2812::_write_raw", n_ws2812_write_raw);
     pp_register(I, "Ws2812::_put_color", n_ws2812_put_color);

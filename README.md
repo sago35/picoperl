@@ -142,6 +142,7 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 | `Gpio` | `my $p = Gpio->new(2, 'input_pullup')` (`'input'`, `'input_pulldown'`, `'output'`); `$p->read`, `$p->write($v)`, `$p->high`, `$p->low`, `$p->toggle`。関数形式 `Gpio::configure($pin, $mode)`, `Gpio::get($pin)`, `Gpio::put($pin, $v)` |
 | `Ws2812` | `my $ws = Ws2812->new($pin)`; `$ws->put_color({ R => .., G => .., B => .. })`; `$ws->write_raw(@grb)` (LED ごとに `0xGGRRBBxx`); `$ws->write([r,g,b], ...)`; `Ws2812::rgb($r,$g,$b)` |
 | `Encoder` | `my $e = Encoder->new($a, $b, precision => 4)`; `$e->read` (前回からのクリック数), `$e->position`, `$e->read_raw` (割り込みデコード) |
+| `Adc` | `my $a = Adc->new(29)` (GPIO26-29); `$a->get` (0..0xFFFF、TinyGo 互換), `$a->read_raw` (0..4095), `$a->voltage`; `Adc->new(Adc::TEMPERATURE)->temperature` |
 | `Hid` | `Hid::keyboard_report($mod, @keys)`, `Hid::ready()`, `Hid::leds()`, `Hid::consumer_report($usage)` (0xE2 ミュート, 0xE9/0xEA 音量, 0 で離す), `Hid::consumer_ready()`。`use Hid qw(keyboard_report)` で import 可 |
 | `Matrix` | `Matrix::scan(\@drive, \@read, $active_high, $settle_us)` → 0/1 の配列リファレンス (C 実装、`PicoPerl::Keyboard` が使用) |
 | `Time::HiRes` | `use Time::HiRes qw(usleep sleep time)`: `usleep($us)`, `sleep(0.5)`, `time()` (起動からの秒、小数)。組み込みの `sleep` も小数秒を受け付ける |

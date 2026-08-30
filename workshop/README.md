@@ -14,4 +14,5 @@ make uf2 SCRIPT=workshop/01_blinky1/main.pl NAME=01_blinky1   # -> dist/picoperl
 | `02_blinky2` | 12 キーの LED (GPIO1) を順に点灯 | `ws2812_init`, `ws2812_write_raw` |
 | `03_usbcdc-serial` | USB シリアルに 1 秒ごとに hello world | `print`, `sleep_ms` |
 | `04_usbcdc-echo` | USB シリアルから 1 行読んでエコー | `<STDIN>`, `chomp` |
-| `05_rotary` | ロータリーエンコーダの位置を表示 | `encoder_init`, `encoder_read` |
+| `05_rotary` | ロータリーエンコーダの位置を表示 | `Encoder->new`, `position` |
+| `06_joystick` | ジョイスティックの X/Y (ADC) とボタンを表示 | `Adc->new`, `get`, `Gpio->new` |

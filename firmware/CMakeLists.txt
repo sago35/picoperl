@@ -69,6 +69,7 @@ target_link_libraries(picoperl
     pico_bootrom
     hardware_flash
     hardware_pio
+    hardware_adc
     tinyusb_device
     tinyusb_board
 )

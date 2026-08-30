@@ -23,6 +23,7 @@
 #include "hardware/watchdog.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "hardware/adc.h"
 #include "tusb.h"
 #include "picoperl.h"
 #include "pp_internal.h"
@@ -258,6 +259,31 @@ NATIVE(n_ws2812_put_color) {
     return pp_int(1);
 }
 
+/* ---- ADC: GPIO26-29 (channels 0-3), plus channel 4 = on-chip temperature sensor ---- */
+static bool adc_inited;
+static int adc_channel_of(int pin) {
+    if (pin >= 26 && pin <= 29) return pin - 26;
+    if (pin == 4) return 4;             /* temperature sensor (Adc::TEMPERATURE) */
+    return -1;
+}
+/* Adc::_configure($pin) -> 1, or undef for a pin without ADC */
+NATIVE(n_adc_configure) {
+    UNUSED;
+    int pin = ARG_INT(0, -1), ch = adc_channel_of(pin);
+    if (ch < 0) return pp_undef();
+    if (!adc_inited) { adc_init(); adc_inited = true; }
+    if (ch == 4) adc_set_temp_sensor_enabled(true); else adc_gpio_init((uint)pin);
+    return pp_int(1);
+}
+/* Adc::_read($pin) -> raw 12-bit sample (0..4095) */
+NATIVE(n_adc_read) {
+    UNUSED;
+    int ch = adc_channel_of(ARG_INT(0, -1));
+    if (ch < 0 || !adc_inited) return pp_undef();
+    adc_select_input((uint)ch);
+    return pp_int(adc_read());
+}
+
 /* consumer control: hid_consumer_report(usage) e.g. 0xE2 mute, 0xE9 vol+, 0xEA vol-; 0 = release */
 NATIVE(n_hid_consumer_ready)  { UNUSED; return pp_int(tud_hid_n_ready(1) ? 1 : 0); }
 NATIVE(n_hid_consumer_report) {
@@ -394,6 +420,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Fs::_write", n_fs_write);
     pp_register(I, "Fs::_mounted", n_fs_mounted);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
+    pp_register(I, "Adc::_configure", n_adc_configure);
+    pp_register(I, "Adc::_read", n_adc_read);
     pp_register(I, "Ws2812::_init", n_ws2812_init);
     pp_register(I, "Ws2812::_write_raw", n_ws2812_write_raw);
     pp_register(I, "Ws2812::_put_color", n_ws2812_put_color);
