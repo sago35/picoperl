@@ -12,10 +12,12 @@ bool  flashfs_mounted(void);
 char *flashfs_read_file(const char *path);
 /* search "/lib/<name>" then "/<name>" */
 char *flashfs_find_file(const char *name);
-/* call often: flushes the write cache; sets the reload request after the host changed files */
+/* call often: flushes the write cache; requests a reload after the host changed the
+ * content of /main.pl or /lib (other writes, e.g. Windows metadata, are ignored) */
 void  flashfs_poll(void);
 bool  flashfs_reload_pending(void);
 bool  flashfs_take_reload_request(void);   /* returns and clears the request */
+const char *flashfs_change_info(void);     /* what the last detected change was (for the log) */
 /* write a file (used to populate defaults) */
 bool  flashfs_write_file(const char *path, const char *data, unsigned len);
 

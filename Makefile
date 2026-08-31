@@ -30,7 +30,8 @@ clean:
 uf2:
 	@test -n "$(SCRIPT)" || (echo "usage: make uf2 SCRIPT=path/main.pl NAME=name [BOARD=waveshare_rp2040_zero]"; exit 1)
 	mkdir -p firmware/build-uf2-$(NAME) dist
-	cd firmware/build-uf2-$(NAME) && cmake .. -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=$(or $(BOARD),waveshare_rp2040_zero) -DPICOPERL_FS_RESET=ON -DPICOPERL_SCRIPT=$(CURDIR)/$(SCRIPT) > cmake.log && $(MAKE) --no-print-directory 2>&1 | grep -E "error|warning: " || true
+	rm -f firmware/build-uf2-$(NAME)/picoperl.uf2
+	cd firmware/build-uf2-$(NAME) && cmake .. -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=$(or $(BOARD),waveshare_rp2040_zero) -DPICOPERL_FS_RESET=ON -DPICOPERL_SCRIPT=$(CURDIR)/$(SCRIPT) > cmake.log && { $(MAKE) --no-print-directory > build.log 2>&1 || { grep -E "error|Error" build.log | head -20; exit 1; }; grep "warning: " build.log | grep -v "pico-sdk\|tinyusb\|fatfs" || true; }
 	cp firmware/build-uf2-$(NAME)/picoperl.uf2 dist/picoperl-$(NAME).uf2
 	@ls -la dist/picoperl-$(NAME).uf2
 

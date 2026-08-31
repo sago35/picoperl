@@ -195,6 +195,88 @@ static void populate_defaults(void) {
     flashfs_write_file("/README.TXT", readme_txt, (unsigned)strlen(readme_txt));
 }
 
+/* ---- change detection ---------------------------------------------------- */
+/* Reload only when the script files really change. Windows writes to the drive
+   just after mounting it (System Volume Information, FAT metadata, indexer
+   files), which must not restart the script: compare a content hash of
+   /main.pl and everything under /lib instead of trusting the write itself. */
+
+static uint32_t script_hash;
+
+/* per-file snapshot so a spurious reload can be diagnosed over serial */
+#define SNAP_MAX 48
+typedef struct { uint32_t ch; char path[40]; } snap_ent;
+static snap_ent snap[SNAP_MAX]; static int nsnap;
+static snap_ent scan[SNAP_MAX]; static int nscan;
+static char change_info[176] = "no scan yet";
+
+const char *flashfs_change_info(void) { return change_info; }
+
+static uint32_t fnv1a(uint32_t h, const void *p, uint32_t n) {
+    const uint8_t *b = p;
+    while (n--) { h ^= *b++; h *= 16777619u; }
+    return h;
+}
+
+static uint32_t hash_file(const char *path) {
+    FIL f;
+    if (f_open(&f, path, FA_READ) != FR_OK) return 0;
+    uint32_t h = fnv1a(2166136261u, path, (uint32_t)strlen(path) + 1);
+    uint8_t buf[256];
+    UINT br;
+    while (f_read(&f, buf, sizeof buf, &br) == FR_OK && br > 0) h = fnv1a(h, buf, br);
+    f_close(&f);
+    if (nscan < SNAP_MAX) { scan[nscan].ch = h; snprintf(scan[nscan].path, sizeof scan[nscan].path, "%s", path); nscan++; }
+    return h;
+}
+
+/* order-independent sum, so directory-entry shuffling does not count as a change */
+static void hash_dir(const char *dir, int depth, uint32_t *total) {
+    DIR d;
+    static FILINFO fi;               /* FILINFO is large (LFN); single-threaded here */
+    if (depth > 4 || f_opendir(&d, dir) != FR_OK) return;
+    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        char path[192];
+        snprintf(path, sizeof path, "%s/%s", dir, fi.fname);
+        if (fi.fattrib & AM_DIR) hash_dir(path, depth + 1, total);
+        else *total += hash_file(path);
+    }
+    f_closedir(&d);
+}
+
+static uint32_t compute_script_hash(void) {
+    nscan = 0;
+    remount_if_stale();
+    if (!mounted) return 0;
+    uint32_t total = hash_file("/main.pl");
+    hash_dir("/lib", 0, &total);
+    return total;
+}
+
+/* describe the difference between snap[] and scan[] in change_info */
+static void describe_change(uint32_t oldh, uint32_t newh) {
+    const char *what = NULL; const char *which = "";
+    for (int i = 0; i < nscan && !what; i++) {
+        int j = 0;
+        while (j < nsnap && strcmp(snap[j].path, scan[i].path) != 0) j++;
+        if (j == nsnap) { what = "new"; which = scan[i].path; }
+        else if (snap[j].ch != scan[i].ch) { what = "edited"; which = scan[i].path; }
+    }
+    for (int j = 0; j < nsnap && !what; j++) {
+        int i = 0;
+        while (i < nscan && strcmp(snap[j].path, scan[i].path) != 0) i++;
+        if (i == nscan) { what = "removed"; which = snap[j].path; }
+    }
+    if (!what) what = mounted ? "same names, sum differs" : "not mounted";
+    snprintf(change_info, sizeof change_info, "hash %08lx->%08lx files %d->%d %s %s",
+             (unsigned long)oldh, (unsigned long)newh, nsnap, nscan, what, which);
+}
+
+static void take_snapshot(void) {
+    memcpy(snap, scan, sizeof snap[0] * (size_t)nscan);
+    nsnap = nscan;
+}
+
 bool flashfs_init(void) {
 #if PICOPERL_FS_RESET
     /* development mode: the drive is recreated from the built-in files on every boot,
@@ -217,6 +299,7 @@ bool flashfs_init(void) {
     }
     mounted = (r == FR_OK);
     cache_flush();
+    if (mounted) { script_hash = compute_script_hash(); take_snapshot(); }
     return mounted;
 }
 
@@ -226,7 +309,13 @@ void flashfs_poll(void) {
     if (host_wrote && now - last_host_write_ms > 1500) {
         cache_flush();
         host_wrote = false;
-        reload_requested = true;
+        uint32_t h = compute_script_hash();
+        if (h != script_hash) {
+            describe_change(script_hash, h);
+            take_snapshot();
+            script_hash = h;
+            reload_requested = true;
+        }
     }
 }
 

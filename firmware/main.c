@@ -662,7 +662,7 @@ static void idle_until_reload(int blink) {
 }
 
 static void run_scripts_forever(void) {
-    char banner[128];
+    char banner[240];
     int n;
     for (;;) {
         flashfs_take_reload_request();
@@ -690,13 +690,15 @@ static void run_scripts_forever(void) {
         pp_free(I);
 
         if (rc == PP_EXIT_RELOAD) {
-            pp_host_write(1, "picoperl: files changed, reloading\n", 35);
+            n = snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
+            pp_host_write(1, banner, n);
             continue;
         }
         n = snprintf(banner, sizeof banner, "picoperl: script finished (rc=%d); waiting for changes\n", rc);
         pp_host_write(rc ? 2 : 1, banner, n);
         idle_until_reload(rc != 0);
-        pp_host_write(1, "picoperl: files changed, reloading\n", 35);
+        n = snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
+        pp_host_write(1, banner, n);
     }
 }
 
