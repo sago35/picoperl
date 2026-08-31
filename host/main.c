@@ -1,6 +1,7 @@
 /* picoperl host CLI: runs a script on a desktop OS (for tests / development). */
 #include "../src/picoperl.h"
 #include "../src/pp_internal.h"
+#include "../src/pp_gfx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +43,7 @@ char *pp_host_read_file(const char *name) {
 void pp_host_poll(void) {}
 void pp_host_fatal(const char *msg) { fputs(msg, stderr); exit(255); }
 int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out); }
+
 uint32_t pp_host_millis(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -135,6 +137,34 @@ static pp_val n_adc_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (env) { const char *q = env; while (*q) { int p; long v; if (sscanf(q, "%d:%li", &p, &v) == 2 && p == pin) v16 = v; while (*q && *q != ',') q++; if (*q == ',') q++; } }
     return pp_int((v16 >> 4) & 0xFFF);   /* natives return the raw 12-bit sample */
 }
+/* SSD1306 simulation: the display handle is the Gfx handle; PICOPERL_SIM_OLED=1 prints the frame as ASCII
+   (one character per 2x4 pixel block), PICOPERL_SIM_OLED=count prints only the number of refreshes. */
+static long oled_refreshes;
+static pp_val n_ssd_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(pp_list_arg_int(a, 0, 0)); }
+static pp_val n_ssd_display(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_gfx *g = pp_gfx_handle(pp_list_arg_int(a, 0, 0));
+    if (!g) return pp_int(0);
+    oled_refreshes++;
+    const char *mode = getenv("PICOPERL_SIM_OLED");
+    if (!mode) return pp_int(1);
+    if (strcmp(mode, "count") == 0) { printf("[oled] refresh #%ld\n", oled_refreshes); fflush(stdout); return pp_int(1); }
+    printf("[oled] frame #%ld (%dx%d, 2x4 pixels per char)\n", oled_refreshes, g->w, g->h);
+    for (int by = 0; by < g->h; by += 4) {
+        putchar('|');
+        for (int bx = 0; bx < g->w; bx += 2) {
+            int n = 0;
+            for (int y = by; y < by + 4 && y < g->h; y++) for (int x = bx; x < bx + 2 && x < g->w; x++) n += (g->buf[(y >> 3) * g->w + x] >> (y & 7)) & 1;
+            putchar(n == 0 ? ' ' : n < 4 ? '.' : n < 7 ? '+' : '#');
+        }
+        puts("|");
+    }
+    fflush(stdout);
+    return pp_int(1);
+}
+static pp_val n_ssd_noop(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_i2c_write(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(a->n > 2 && a->v[2].t == PP_STR ? a->v[2].u.s->len : 0); }
+static pp_val n_i2c_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int n = pp_list_arg_int(a, 2, 1); char z[256]; if (n > 256) n = 256; memset(z, 0, sizeof z); return pp_strn(z, n); }
 static int ws_pins[4] = { -1, -1, -1, -1 };
 static pp_val n_ws2812_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
@@ -223,6 +253,14 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_heap_free", n_heap_free);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
     pp_register(I, "Adc::_configure", n_adc_configure);
+    pp_register(I, "I2c::_init", n_ssd_noop);
+    pp_register(I, "I2c::_write", n_i2c_write);
+    pp_register(I, "I2c::_read", n_i2c_read);
+    pp_register(I, "Ssd1306::_init", n_ssd_init);
+    pp_register(I, "Ssd1306::_display", n_ssd_display);
+    pp_register(I, "Ssd1306::_invert", n_ssd_noop);
+    pp_register(I, "Ssd1306::_contrast", n_ssd_noop);
+    pp_gfx_register(I);
     pp_register(I, "Adc::_read", n_adc_read);
     pp_register(I, "Ws2812::_init", n_ws2812_init);
     pp_register(I, "Ws2812::_write_raw", n_ws2812_write_raw);

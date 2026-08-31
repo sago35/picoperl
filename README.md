@@ -20,7 +20,7 @@ PICOPERL/
 ## できること
 
 - USB HID キーボード (boot protocol、6KRO) + USB CDC シリアルコンソール + USB マスストレージ
-- GPIO の入出力、フラッシュ上の FAT ファイルシステム (1 MiB、`fs_read`/`fs_write` からも使える)
+- GPIO の入出力、ADC、I2C (SSD1306 OLED)、WS2812 LED、ロータリーエンコーダ、フラッシュ上の FAT ファイルシステム (1 MiB、`Fs::read`/`Fs::write` からも使える)
 - Perl のモジュール機構: `package`、`use Module qw(...)`、`require`、`@EXPORT`/`@EXPORT_OK`
   (Exporter 相当を内蔵)、`use constant`、`__PACKAGE__`
 - `KC_A` などのキーコード定数 (QMK 準拠、202 個) は `src/pp_keycodes.c` の C の表から
@@ -119,7 +119,7 @@ make -j
 - シリアルコンソール (CDC) を **1200 baud で開くと BOOTSEL モードで再起動** します
   (例: `stty -F /dev/ttyACM0 1200`)。
 - ファームウェアの更新でドライブの内容は消えません (UF2 は先頭側にだけ書き込まれます)。
-  初期化し直したいときは `main.pl` から `fs_write` するか、`picotool erase`/nuke UF2 で消してください。
+  初期化し直したいときは `main.pl` から `Fs::write` するか、`picotool erase`/nuke UF2 で消してください。
 
 ### ホスト (PC) 版
 
@@ -142,6 +142,10 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 | `Gpio` | `my $p = Gpio->new(2, 'input_pullup')` (`'input'`, `'input_pulldown'`, `'output'`); `$p->read`, `$p->write($v)`, `$p->high`, `$p->low`, `$p->toggle`。関数形式 `Gpio::configure($pin, $mode)`, `Gpio::get($pin)`, `Gpio::put($pin, $v)` |
 | `Ws2812` | `my $ws = Ws2812->new($pin)`; `$ws->put_color({ R => .., G => .., B => .. })`; `$ws->write_raw(@grb)` (LED ごとに `0xGGRRBBxx`); `$ws->write([r,g,b], ...)`; `Ws2812::rgb($r,$g,$b)` |
 | `Encoder` | `my $e = Encoder->new($a, $b, precision => 4)`; `$e->read` (前回からのクリック数), `$e->position`, `$e->read_raw` (割り込みデコード) |
+| `Ssd1306` | `my $d = Ssd1306->new(sda => 12, scl => 13, address => 0x3C, width => 128, height => 64, rotation => 180)`; `$d->clear_display`, `$d->set_pixel($x,$y,$c)`, `$d->display`, `$d->size`, `$d->set_rotation`, `$d->invert`, `$d->contrast` + `Gfx` の描画メソッド |
+| `Gfx` | フレームバッファ (C 実装): `line`, `rectangle`, `filled_rectangle`, `circle`, `filled_circle`, `triangle`, `filled_triangle`, `write_line($font, $x, $y, $text, $c, $scale)` (x,y はベースライン)、`Gfx::fonts()` |
+| `Tinydraw` / `Tinyfont` | tinygo 風の関数形式: `Tinydraw::Rectangle($d, ...)`, `Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, $x, $y, "hello", $c)`。内蔵フォント: `classic` (5x7), `freemono_bold_9pt`, `gophers_32pt`, `gophers_58pt` |
+| `I2c` (低レベル) | `I2c::_init($bus, $sda, $scl, $hz)`, `I2c::_write($bus, $addr, $bytes)`, `I2c::_read($bus, $addr, $n)` |
 | `Adc` | `my $a = Adc->new(29)` (GPIO26-29); `$a->get` (0..0xFFFF、TinyGo 互換), `$a->read_raw` (0..4095), `$a->voltage`; `Adc->new(Adc::TEMPERATURE)->temperature` |
 | `Hid` | `Hid::keyboard_report($mod, @keys)`, `Hid::ready()`, `Hid::leds()`, `Hid::consumer_report($usage)` (0xE2 ミュート, 0xE9/0xEA 音量, 0 で離す), `Hid::consumer_ready()`。`use Hid qw(keyboard_report)` で import 可 |
 | `Matrix` | `Matrix::scan(\@drive, \@read, $active_high, $settle_us)` → 0/1 の配列リファレンス (C 実装、`PicoPerl::Keyboard` が使用) |

@@ -27,6 +27,8 @@ set(PP_SRC
     ${PP_ROOT}/src/pp_eval.c
     ${PP_ROOT}/src/pp_builtin.c
     ${PP_ROOT}/src/pp_keycodes.c
+    ${PP_ROOT}/src/pp_gfx.c
+    ${PP_ROOT}/src/pp_fonts.c
 )
 
 # Embed the scripts as C string literals (perl is only needed on the build host).
@@ -70,6 +72,7 @@ target_link_libraries(picoperl
     hardware_flash
     hardware_pio
     hardware_adc
+    hardware_i2c
     tinyusb_device
     tinyusb_board
 )

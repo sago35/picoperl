@@ -24,6 +24,8 @@
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "hardware/adc.h"
+#include "hardware/i2c.h"
+#include "pp_gfx.h"
 #include "tusb.h"
 #include "picoperl.h"
 #include "pp_internal.h"
@@ -284,6 +286,105 @@ NATIVE(n_adc_read) {
     return pp_int(adc_read());
 }
 
+/* ---- I2C ---- */
+static i2c_inst_t *i2c_bus(int bus) { return bus == 1 ? i2c1 : i2c0; }
+/* I2c::_init($bus, $sda, $scl, $hz) -> actual hz */
+NATIVE(n_i2c_init) {
+    UNUSED;
+    int bus = ARG_INT(0, 0), sda = ARG_INT(1, 12), scl = ARG_INT(2, 13), hz = ARG_INT(3, 400000);
+    uint actual = i2c_init(i2c_bus(bus), (uint)hz);
+    gpio_set_function((uint)sda, GPIO_FUNC_I2C); gpio_set_function((uint)scl, GPIO_FUNC_I2C);
+    gpio_pull_up((uint)sda); gpio_pull_up((uint)scl);
+    return pp_int(actual);
+}
+/* I2c::_write($bus, $addr, $bytes) -> bytes written or undef (NAK) */
+NATIVE(n_i2c_write) {
+    UNUSED;
+    if (a->n < 3) return pp_undef();
+    pp_str *tmp; const char *d = pp_to_cstr(a->v[2], &tmp);
+    int len = tmp ? tmp->len : a->v[2].u.s->len;
+    int r = i2c_write_timeout_us(i2c_bus(ARG_INT(0, 0)), (uint8_t)ARG_INT(1, 0), (const uint8_t *)d, (size_t)len, false, 20000);
+    if (tmp) pp_str_decref(tmp);
+    return r < 0 ? pp_undef() : pp_int(r);
+}
+/* I2c::_read($bus, $addr, $n) -> bytes or undef */
+NATIVE(n_i2c_read) {
+    UNUSED;
+    int n = ARG_INT(2, 1);
+    if (n <= 0 || n > 256) return pp_undef();
+    uint8_t buf[256];
+    int r = i2c_read_timeout_us(i2c_bus(ARG_INT(0, 0)), (uint8_t)ARG_INT(1, 0), buf, (size_t)n, false, 20000);
+    return r < 0 ? pp_undef() : pp_strn((const char *)buf, r);
+}
+
+/* ---- SSD1306 over I2C, drawing into a Gfx frame buffer ---- */
+typedef struct { int gfx, bus, addr; bool used; } ssd_disp;
+static ssd_disp disps[2];
+
+static bool ssd_cmd(ssd_disp *d, const uint8_t *cmds, int n) {
+    uint8_t buf[32]; buf[0] = 0x00;
+    if (n > 31) n = 31;
+    memcpy(buf + 1, cmds, (size_t)n);
+    return i2c_write_timeout_us(i2c_bus(d->bus), (uint8_t)d->addr, buf, (size_t)n + 1, false, 20000) == n + 1;
+}
+/* Ssd1306::_init($gfx, $bus, $sda, $scl, $hz, $addr) -> display handle or undef */
+NATIVE(n_ssd_init) {
+    UNUSED;
+    pp_gfx *g = pp_gfx_handle(ARG_INT(0, -1));
+    if (!g) return pp_die(I, "Ssd1306: bad frame buffer");
+    int h = -1;
+    for (int i = 0; i < 2; i++) if (!disps[i].used) { h = i; break; }
+    if (h < 0) return pp_die(I, "Ssd1306: too many displays");
+    int bus = ARG_INT(1, 0), sda = ARG_INT(2, 12), scl = ARG_INT(3, 13), hz = ARG_INT(4, 1000000), addr = ARG_INT(5, 0x3C);
+    i2c_init(i2c_bus(bus), (uint)hz);
+    gpio_set_function((uint)sda, GPIO_FUNC_I2C); gpio_set_function((uint)scl, GPIO_FUNC_I2C);
+    gpio_pull_up((uint)sda); gpio_pull_up((uint)scl);
+    ssd_disp *d = &disps[h];
+    d->gfx = ARG_INT(0, 0); d->bus = bus; d->addr = addr; d->used = true;
+    uint8_t mux = (uint8_t)(g->h - 1);
+    uint8_t compins = g->h == 32 ? 0x02 : 0x12;
+    const uint8_t init[] = {
+        0xAE,             /* display off */
+        0xD5, 0x80,       /* clock divide */
+        0xA8, mux,        /* multiplex ratio */
+        0xD3, 0x00,       /* display offset */
+        0x40,             /* start line 0 */
+        0x8D, 0x14,       /* charge pump on */
+        0x20, 0x00,       /* horizontal addressing mode */
+        0xA1, 0xC8,       /* segment remap, COM scan direction */
+        0xDA, compins,    /* COM pins */
+        0x81, 0xCF,       /* contrast */
+        0xD9, 0xF1,       /* precharge */
+        0xDB, 0x40,       /* VCOM detect */
+        0xA4, 0xA6,       /* resume RAM content, normal (not inverted) */
+        0xAF,             /* display on */
+    };
+    if (!ssd_cmd(d, init, (int)sizeof init)) { d->used = false; return pp_undef(); }
+    return pp_int(h);
+}
+static ssd_disp *disp_arg(pp_interp *I, pp_list *a) {
+    int h = ARG_INT(0, -1);
+    if (h < 0 || h >= 2 || !disps[h].used) { pp_die(I, "Ssd1306: bad display handle"); return NULL; }
+    return &disps[h];
+}
+/* Ssd1306::_display($disp): send the frame buffer */
+NATIVE(n_ssd_display) {
+    UNUSED;
+    ssd_disp *d = disp_arg(I, a); if (!d) return pp_undef();
+    pp_gfx *g = pp_gfx_handle(d->gfx); if (!g) return pp_undef();
+    const uint8_t win[] = { 0x21, 0x00, (uint8_t)(g->w - 1), 0x22, 0x00, (uint8_t)(g->pages - 1) };
+    ssd_cmd(d, win, (int)sizeof win);
+    static uint8_t frame[1 + 128 * 8];
+    int n = g->w * g->pages;
+    if (n > 1024) n = 1024;
+    frame[0] = 0x40;
+    memcpy(frame + 1, g->buf, (size_t)n);
+    int r = i2c_write_timeout_us(i2c_bus(d->bus), (uint8_t)d->addr, frame, (size_t)n + 1, false, 100000);
+    return pp_int(r == n + 1);
+}
+NATIVE(n_ssd_invert)   { UNUSED; ssd_disp *d = disp_arg(I, a); if (!d) return pp_undef(); uint8_t c = ARG_INT(1, 0) ? 0xA7 : 0xA6; return pp_int(ssd_cmd(d, &c, 1)); }
+NATIVE(n_ssd_contrast) { UNUSED; ssd_disp *d = disp_arg(I, a); if (!d) return pp_undef(); uint8_t c[2] = { 0x81, (uint8_t)ARG_INT(1, 0xCF) }; return pp_int(ssd_cmd(d, c, 2)); }
+
 /* consumer control: hid_consumer_report(usage) e.g. 0xE2 mute, 0xE9 vol+, 0xEA vol-; 0 = release */
 NATIVE(n_hid_consumer_ready)  { UNUSED; return pp_int(tud_hid_n_ready(1) ? 1 : 0); }
 NATIVE(n_hid_consumer_report) {
@@ -421,6 +522,14 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Fs::_mounted", n_fs_mounted);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
     pp_register(I, "Adc::_configure", n_adc_configure);
+    pp_register(I, "I2c::_init", n_i2c_init);
+    pp_register(I, "I2c::_write", n_i2c_write);
+    pp_register(I, "I2c::_read", n_i2c_read);
+    pp_register(I, "Ssd1306::_init", n_ssd_init);
+    pp_register(I, "Ssd1306::_display", n_ssd_display);
+    pp_register(I, "Ssd1306::_invert", n_ssd_invert);
+    pp_register(I, "Ssd1306::_contrast", n_ssd_contrast);
+    pp_gfx_register(I);
     pp_register(I, "Adc::_read", n_adc_read);
     pp_register(I, "Ws2812::_init", n_ws2812_init);
     pp_register(I, "Ws2812::_write_raw", n_ws2812_write_raw);
