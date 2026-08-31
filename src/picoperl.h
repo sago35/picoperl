@@ -262,6 +262,7 @@ struct pp_interp {
     int      pos_next;
     pp_re_ent re_cache[4];       /* compiled dynamic patterns */
     int      re_next;
+    unsigned compat_warn;        /* once-only "picoperl behaves differently here" notes (bit 1 utf8, 2 map/grep, 4 foreach) */
 };
 
 /* ------------------------------------------------------------------ */

@@ -290,7 +290,11 @@ static pp_val do_map_grep(pp_interp *I, pp_node *n, int ctx, pp_list *out, int i
             if (!I->ctl && pp_truth(v)) { pp_list_push(&res, pp_copy(us->u.scalar)); }
             pp_release(v);
         }
-        /* write back $_ modifications for grep/map over arrays is not supported (copies) */
+        /* $_ is a copy here, not an alias like perl: say so once when it would matter */
+        if (!(I->compat_warn & 2) && !I->ctl && !pp_val_same(us->u.scalar, items.v[i])) {
+            I->compat_warn |= 2;
+            pp_warn(I, "picoperl: modifying $_ inside %s does not change the original list", is_map ? "map" : "grep");
+        }
     }
     pp_release(us->u.scalar); us->u.scalar = saved;
     pp_list_free(&items);

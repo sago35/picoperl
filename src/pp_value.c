@@ -270,6 +270,18 @@ void pp_list_free(pp_list *l) {
     free(l->v);
     l->v = NULL; l->n = l->cap = 0;
 }
+/* same type and same value/identity (strings and refs compare by pointer) */
+int pp_val_same(pp_val a, pp_val b) {
+    if (a.t != b.t) return 0;
+    switch (a.t) {
+    case PP_INT: return a.u.i == b.u.i;
+    case PP_NUM: return a.u.n == b.u.n;
+    case PP_STR: return a.u.s == b.u.s;
+    case PP_REF: return a.u.o == b.u.o;
+    default: return 1;
+    }
+}
+
 int pp_list_arg_int(pp_list *args, int i, int64_t dflt) {
     if (i >= args->n) return (int)dflt;
     return (int)pp_to_int(args->v[i]);

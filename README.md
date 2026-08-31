@@ -187,6 +187,11 @@ USB の処理 (`tud_task`) はインタプリタが `sleep` の中や一定ス�
 `Argument "abc" isn't numeric in ...`、`Odd number of elements in hash assignment` / `anonymous hash`
 (`no warnings` はブロック単位で有効)。コンパイル時警告 (`Useless use of ...` など) はありません。
 
+perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `picoperl:` で始まる注意を stderr に出します:
+`use utf8` (無視される、文字列はバイト列)、`map`/`grep` 内での `$_` の変更 (元のリストに反映されない)、
+`foreach` 変数の書き戻し (単一配列を回すときだけ反映)。比較演算子は perl と同じく非結合で、
+`0 < $x < 3` は構文エラーになります。
+
 **正規表現** は独自のバックトラックエンジン (`src/pp_regex.c`) で動きます:
 `m//` (`//`)、`s///`、`tr///` (`y///`)、`qr//`、`=~` / `!~`、`split /re/`、修飾子 `i m s x g e r` (`tr` は `c d s r`)、
 `$1`.. と `$&`、リストコンテキストでのキャプチャ取得、`/g` の `pos()`、`\Q..\E` と変数の補間。

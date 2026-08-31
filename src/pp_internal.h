@@ -57,6 +57,7 @@ int     pp_looks_like_number(const char *s, int len);
 pp_val  pp_numify(pp_val v);                       /* INT or NUM value */
 int     pp_str_cmp(pp_val a, pp_val b);
 int     pp_val_is_array_ref(pp_val v);
+int     pp_val_same(pp_val a, pp_val b);   /* same type and value (strings/refs by identity) */
 
 /* parser */
 pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err);

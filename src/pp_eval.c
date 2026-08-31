@@ -716,7 +716,7 @@ static NOINLINE pp_val call_named(pp_interp *I, pp_node *n, int ctx, pp_list *ou
             if (ctx == CTX_LIST && out) { pp_list_push(out, pp_cstr(name)); return pp_undef(); }
             return pp_cstr(name);
         }
-        return pp_die(I, "Undefined subroutine &main::%s called", n->sym->name + 1);
+        return pp_die(I, "Undefined subroutine &%s%s called", strstr(n->sym->name, "::") ? "" : "main::", n->sym->name + 1);
     }
     pp_list args = {0};
     if (n->flags & 2) {
@@ -895,7 +895,12 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
             else brk = loop_body(I, n->c, n->sym);
             if (src_arr && i < src_arr->u.arr.n) {
                 pp_val *slot = &src_arr->u.arr.v[i];
-                if (memcmp(slot, &cell->u.scalar, sizeof(pp_val)) != 0) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
+                if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
+            }
+            else if (!src_arr && !(I->compat_warn & 4) && !I->ctl && !pp_val_same(cell->u.scalar, items.v[i])) {
+                /* perl aliases the loop variable to the list element; we only write back for a single array */
+                I->compat_warn |= 4;
+                pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating one array");
             }
             if (brk) break;
         }
@@ -943,7 +948,7 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
     case N_CALL:
         if (a->n == 0) {
             pp_obj *code = pp_resolve_sub(I, a->sym);
-            if (!code) return pp_die(I, "Undefined subroutine &main::%s", a->sym->name + 1);
+            if (!code) return pp_die(I, "Undefined subroutine &%s%s", strstr(a->sym->name, "::") ? "" : "main::", a->sym->name + 1);
             return pp_ref(code);
         }
         break;

@@ -1116,12 +1116,27 @@ static int binop_of(pp_tok *t, int *prec, int *rassoc) {
 
 #define PREC_NAMED_UNARY 10
 
+/* comparison operators are non-associative: `$a < $b < $c` is a syntax error in perl */
+static int cmp_prec_of(int op) {
+    switch (op) {
+    case OP_NUM_LT: case OP_NUM_GT: case OP_NUM_LE: case OP_NUM_GE:
+    case OP_STR_LT: case OP_STR_GT: case OP_STR_LE: case OP_STR_GE: return 9;
+    case OP_NUM_EQ: case OP_NUM_NE: case OP_NUM_CMP:
+    case OP_STR_EQ: case OP_STR_NE: case OP_STR_CMP: return 8;
+    default: return 0;
+    }
+}
+
 static pp_node *parse_binary(pp_parser *P, int minprec) {
     pp_node *lhs = parse_unary(P);
     for (;;) {
         int prec, rassoc;
         int op = binop_of(&P->cur, &prec, &rassoc);
         if (!op || prec < minprec) break;
+        if ((prec == 8 || prec == 9) && lhs->type == N_BINOP && cmp_prec_of(lhs->op) == prec) {
+            if (P->cur.type == T_OP) perr(P, "syntax error near \"%s\" (comparison operators are non-associative)", P->cur.op);
+            perr(P, "syntax error near \"%.*s\" (comparison operators are non-associative)", P->cur.len, P->cur.s);
+        }
         /* `x=` assignment */
         if (op == OP_REPEAT && peek(P)->type == T_OP && !strcmp(peek(P)->op, "=") && !peek(P)->space_before) break;
         advance(P);
@@ -1880,6 +1895,12 @@ static pp_node *parse_use(pp_parser *P) {
     if (P->cur.type == T_IDENT && !is_no) {
         int ignored = 0;
         for (int i = 0; ignored_modules[i]; i++) if (cur_is_ident(P, ignored_modules[i])) ignored = 1;
+        if (cur_is_ident(P, "utf8") && !(P->I->compat_warn & 1)) {
+            P->I->compat_warn |= 1;
+            char msg[200];
+            int mn = snprintf(msg, sizeof msg, "picoperl: use utf8 is ignored, strings stay bytes at %s line %d.\n", P->file, P->cur.line);
+            pp_host_write(2, msg, mn);
+        }
         if (!ignored) {
             pp_node *n = node(P, N_USE);
             if (cur_is_ident(P, "parent") || cur_is_ident(P, "base")) n->op = 1;
