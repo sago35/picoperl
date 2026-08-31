@@ -187,9 +187,16 @@ USB の処理 (`tud_task`) はインタプリタが `sleep` の中や一定ス�
 `Argument "abc" isn't numeric in ...`、`Odd number of elements in hash assignment` / `anonymous hash`
 (`no warnings` はブロック単位で有効)。コンパイル時警告 (`Useless use of ...` など) はありません。
 
-非対応 (今のところ): **正規表現** (`=~`, `s///`, `tr///`; `split` の第 1 引数だけは
-`/,/` や `/\s+/` のような単純なパターンを受け付けます)、
-ファイルハンドル I/O (`open` など。ドライブは `Fs::read`/`Fs::write` で)、`sprintf("%v")`、
+**正規表現** は独自のバックトラックエンジン (`src/pp_regex.c`) で動きます:
+`m//` (`//`)、`s///`、`tr///` (`y///`)、`qr//`、`=~` / `!~`、`split /re/`、修飾子 `i m s x g e r` (`tr` は `c d s r`)、
+`$1`.. と `$&`、リストコンテキストでのキャプチャ取得、`/g` の `pos()`、`\Q..\E` と変数の補間。
+パターン側は文字クラス (`[a-z]`, `[^..]`, `\d \w \s`, `[[:alpha:]]`)、`.`、アンカー (`^ $ \A \z \Z \b \B`)、
+グループ (`( )`, `(?: )`, `(?= )`, `(?! )`, `(?i)`, `(?^i: )`)、`|`、量指定子 (`* + ? {n,m}` と非貪欲 `?`)、後方参照 `\1` に対応します。
+制限: 文字列はバイト列として扱う (UTF-8 の 1 文字に `.` は一致しない)、後読み (`(?<=`) と名前付きキャプチャは未対応、
+`$1` などは perl のようにスコープごとに復元されずグローバル、`pos($x) = n` の代入と `@-`/`@+` は未対応、
+極端なバックトラック (`(a+)+b` のような) は途中で `Regexp backtracking limit exceeded` で die します。
+
+非対応 (今のところ): ファイルハンドル I/O (`open` など。ドライブは `Fs::read`/`Fs::write` で)、`sprintf("%v")`、
 `DESTROY`、`AUTOLOAD`、`local` の配列/ハッシュ、`eval STRING`、`each`、ヒアドキュメント、
 `foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。

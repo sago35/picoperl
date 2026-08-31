@@ -52,6 +52,7 @@ static inline pp_obj *var_cell(pp_interp *I, pp_node *n) {
     }
     return n->sym->gcell ? n->sym->gcell : pp_global(I, n->sym);
 }
+pp_obj *pp_var_cell(pp_interp *I, pp_node *n) { return var_cell(I, n); }
 /* @_ of the innermost sub, or NULL at file level */
 static pp_obj *current_args(pp_interp *I) {
     for (pp_env *e = I->env; e; e = e->parent)
@@ -230,6 +231,8 @@ static void warn_uninit(pp_interp *I, const char *what, const char *var) {
     if (var) pp_warn(I, "Use of uninitialized value %s in %s", var, what);
     else pp_warn(I, "Use of uninitialized value in %s", what);
 }
+void pp_warn_uninit(pp_interp *I, const char *what, const char *var) { warn_uninit(I, what, var); }
+const char *pp_var_name_of(pp_node *n) { return var_name_of(n); }
 static void warn_operand(pp_interp *I, int op, pp_val v, const char *var) {
     if (v.t == PP_UNDEF) { warn_uninit(I, binop_name(op), var); return; }
     int numeric = op != OP_CONCAT && op != OP_REPEAT && !(op >= OP_STR_EQ && op <= OP_STR_CMP);
@@ -475,7 +478,9 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
         pp_val v = pp_eval(I, n, CTX_VOID, NULL);
         pp_release(v);
         if (I->ctl) return NULL;
-        return pp_lvalue(I, n->a);
+        pp_node *t = n->a;
+        if (t->type == N_MY && t->n == 1 && t->list[0]->type == N_VAR) t = t->list[0];   /* (my $x = ...) =~ s///: already declared */
+        return pp_lvalue(I, t);
     }
     case N_LOGOR: case N_LOGAND: case N_DEFOR: {
         pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
@@ -1705,6 +1710,9 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_WANTARRAY:
         return scalar_or_push(ctx, out, I->call_ctx == CTX_LIST ? pp_int(1) : I->call_ctx == CTX_SCALAR ? pp_int(0) : pp_undef());
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
+    case N_MATCH: I->line = n->line; return pp_eval_match(I, n, ctx, out);
+    case N_SUBST: I->line = n->line; return pp_eval_subst(I, n, ctx, out);
+    case N_TRANS: I->line = n->line; return pp_eval_trans(I, n, ctx, out);
     default: break;
     }
     return pp_die(I, "internal: unknown node type %d", n->type);
@@ -1787,6 +1795,7 @@ void pp_free(pp_interp *I) {
     pp_list_free(&I->ret);
     pp_release(I->err);
     pp_obj_decref(I->loaded);
+    pp_regex_cleanup(I);
     pp_env_decref(I->globals);
     for (int i = 0; i < PP_SYM_BUCKETS; i++) { pp_sym *s = I->syms[i]; while (s) { pp_sym *n = s->next; free(s); s = n; } }
     free(I->subdefs);

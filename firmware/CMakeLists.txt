@@ -30,6 +30,8 @@ set(PP_SRC
     ${PP_ROOT}/src/pp_gfx.c
     ${PP_ROOT}/src/pp_fonts.c
     ${PP_ROOT}/src/pp_tone.c
+    ${PP_ROOT}/src/pp_regex.c
+    ${PP_ROOT}/src/pp_match.c
 )
 
 # Embed the scripts as C string literals (perl is only needed on the build host).
@@ -62,6 +64,8 @@ target_include_directories(picoperl PRIVATE
 
 target_compile_definitions(picoperl PRIVATE
     PP_STACK_BYTES=0xC000       # 48 KiB stack for the interpreter, allocated from the heap at boot
+    PP_RE_MAX_STACK=2048        # regex backtrack entries (16 bytes each)
+    PP_RE_MAX_STEPS=1000000     # give up on catastrophic backtracking after this many VM steps
     PP_MAX_DEPTH=200            # perl call depth limit (the C stack is also checked at run time)
     PICOPERL_FS_SIZE=${PICOPERL_FS_SIZE}
     PICOPERL_FS_RESET=$<BOOL:${PICOPERL_FS_RESET}>

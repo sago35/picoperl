@@ -77,6 +77,19 @@ pp_val   pp_die_val(pp_interp *I, pp_val msg);
 int      pp_builtin_id(const char *name, int len, int *kind);
 pp_obj  *pp_lookup_sub(pp_interp *I, pp_sym *sym);
 
+/* regular expressions (pp_match.c) */
+pp_val   pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out);
+pp_val   pp_eval_subst(pp_interp *I, pp_node *n, int ctx, pp_list *out);
+pp_val   pp_eval_trans(pp_interp *I, pp_node *n, int ctx, pp_list *out);
+pp_obj  *pp_regex_of(pp_interp *I, pp_node *pat, int cflags);      /* new reference to a PP_OREGEX object; NULL after die */
+pp_obj  *pp_regex_from_val(pp_interp *I, pp_val v, int cflags);    /* qr object or pattern text -> new reference */
+int      pp_split_regex(pp_interp *I, pp_obj *ro, const char *s, int len, int limit, pp_list *res);   /* 0 after die */
+pp_val   pp_pos_of(pp_interp *I, pp_obj *cell);                     /* pos() of a scalar cell */
+void     pp_regex_cleanup(pp_interp *I);
+pp_obj  *pp_var_cell(pp_interp *I, pp_node *n);
+void     pp_warn_uninit(pp_interp *I, const char *what, const char *var);
+const char *pp_var_name_of(pp_node *n);
+
 /* builtin arg-parsing kinds */
 enum { BK_LIST = 0, BK_UNARY, BK_NOARG, BK_SPECIAL };
 

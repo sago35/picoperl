@@ -1,4 +1,5 @@
 #include "pp_internal.h"
+#include "pp_regex.h"
 #include <math.h>
 #include <ctype.h>
 
@@ -110,6 +111,7 @@ static const char *ref_name(pp_obj *o) {
     case PP_OARRAY: return "ARRAY";
     case PP_OHASH:  return "HASH";
     case PP_OCODE:  return "CODE";
+    case PP_OREGEX: return "Regexp";
     default:
         if (o->u.scalar.t == PP_REF) return "REF";
         return "SCALAR";
@@ -125,6 +127,22 @@ pp_str *pp_to_str(pp_val v) {
         return pp_str_new(buf, n);
     }
     case PP_REF: {
+        if (v.u.o->kind == PP_OREGEX) {
+            /* qr// stringifies like perl: (?^i:pattern) */
+            const pp_regex *re = v.u.o->u.re;
+            pp_str *r = pp_str_new(NULL, 0);
+            r = pp_str_reserve(r, re->srclen + 8);
+            int n = 0;
+            r->d[n++] = '('; r->d[n++] = '?'; r->d[n++] = '^';
+            if (re->flags & PP_RE_M) r->d[n++] = 'm';
+            if (re->flags & PP_RE_S) r->d[n++] = 's';
+            if (re->flags & PP_RE_I) r->d[n++] = 'i';
+            if (re->flags & PP_RE_X) r->d[n++] = 'x';
+            r->d[n++] = ':';
+            memcpy(r->d + n, re->source, (size_t)re->srclen); n += re->srclen;
+            r->d[n++] = ')'; r->d[n] = 0; r->len = n;
+            return r;
+        }
         int n = snprintf(buf, sizeof buf, "%s(0x%lx)", ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
         return pp_str_new(buf, n);
     }
@@ -282,6 +300,9 @@ void pp_obj_decref(pp_obj *o) {
     case PP_OCODE:
         if (o->u.code.env) pp_env_decref(o->u.code.env);
         pp_release(o->u.code.constval);
+        break;
+    case PP_OREGEX:
+        pp_re_free(o->u.re);
         break;
     }
     free(o);

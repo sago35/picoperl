@@ -10,7 +10,7 @@ enum {
     B_ATAN2, B_LENGTH, B_LC, B_UC, B_LCFIRST, B_UCFIRST, B_CHR, B_ORD, B_INT, B_ABS, B_SQRT,
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
-    B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_ABS_END
+    B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS, B_ABS_END
 };
 
 static const struct { const char *name; int id; int kind; } builtins[] = {
@@ -28,7 +28,7 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "values", B_VALUES, BK_UNARY }, { "each", B_EACH, BK_UNARY }, { "exit", B_EXIT, BK_UNARY }, { "undef", B_UNDEF, BK_UNARY },
     { "chomp", B_CHOMP, BK_UNARY }, { "chop", B_CHOP, BK_UNARY }, { "rand", B_RAND, BK_UNARY }, { "srand", B_SRAND, BK_UNARY },
     { "time", B_TIME, BK_NOARG }, { "sleep", B_SLEEP, BK_UNARY }, { "readline", B_READLINE, BK_NOARG }, { "binmode", B_BINMODE, BK_LIST },
-    { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
+    { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "pos", B_POS, BK_UNARY }, { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
     { NULL, 0, 0 }
 };
 
@@ -306,13 +306,29 @@ static pp_val do_map_grep(pp_interp *I, pp_node *n, int ctx, pp_list *out, int i
 
 static pp_val do_split(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_list args = {0};
-    if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
-    pp_str *pat = args.n > 0 ? pp_to_str(args.v[0]) : pp_str_new(" ", 1);
+    pp_obj *ro = NULL;
+    int from = 0;
+    /* split /PATTERN/, ... : the first argument is a pattern, not a match */
+    if (n->n > 0 && n->list[0]->type == N_MATCH && !n->list[0]->a && !(n->list[0]->op & PP_M_QR)) {
+        ro = pp_regex_of(I, n->list[0]->b, n->list[0]->aux);
+        if (!ro) return pp_undef();
+        from = 1;
+        pp_list_push(&args, pp_undef());
+    }
+    if (!eval_args(I, n, from, &args)) { if (ro) pp_obj_decref(ro); pp_list_free(&args); return pp_undef(); }
+    pp_str *pat = NULL;
+    if (!ro) {
+        pat = args.n > 0 ? pp_to_str(args.v[0]) : pp_str_new(" ", 1);
+        if (!(pat->len == 1 && pat->d[0] == ' ')) {
+            ro = pp_regex_from_val(I, args.n > 0 ? args.v[0] : pp_strn("", 0), 0);
+            if (!ro) { pp_str_decref(pat); pp_list_free(&args); return pp_undef(); }
+        }
+    }
     pp_str *s = args.n > 1 ? pp_to_str(args.v[1]) : pp_to_str(I->g_underscore->u.scalar);
     int limit = args.n > 2 ? (int)pp_to_int(args.v[2]) : 0;
     pp_list res = {0};
     const char *p = s->d; int len = s->len;
-    if (pat->len == 1 && pat->d[0] == ' ') {
+    if (!ro) {
         /* awk mode: split on whitespace runs, skip leading whitespace */
         int i = 0;
         while (i < len) {
@@ -323,47 +339,15 @@ static pp_val do_split(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             while (i < len && !isspace((unsigned char)p[i])) i++;
             pp_list_push(&res, pp_strn(p + st, i - st));
         }
-    } else if (pat->len == 0) {
-        for (int i = 0; i < len; i++) {
-            if (limit > 0 && res.n == limit - 1) { pp_list_push(&res, pp_strn(p + i, len - i)); break; }
-            pp_list_push(&res, pp_strn(p + i, 1));
-        }
-    } else {
-        /* literal separator; a few regex-ish escapes are understood: \s+ \t \n \| \. \, \/ */
-        char sep[64]; int sl = 0; int ws_mode = 0;
-        for (int i = 0; i < pat->len && sl < 63; i++) {
-            if (pat->d[i] == '\\' && i + 1 < pat->len) {
-                char e = pat->d[++i];
-                if (e == 's') { ws_mode = 1; if (i + 1 < pat->len && (pat->d[i+1] == '+' || pat->d[i+1] == '*')) i++; continue; }
-                if (e == 't') sep[sl++] = '\t';
-                else if (e == 'n') sep[sl++] = '\n';
-                else sep[sl++] = e;
-            } else sep[sl++] = pat->d[i];
-        }
-        if (ws_mode && sl == 0) {
-            int i = 0;
-            if (i < len && isspace((unsigned char)p[i])) { pp_list_push(&res, pp_strn("", 0)); while (i < len && isspace((unsigned char)p[i])) i++; }
-            while (i < len) {
-                if (limit > 0 && res.n == limit - 1) { pp_list_push(&res, pp_strn(p + i, len - i)); i = len; break; }
-                int st = i;
-                while (i < len && !isspace((unsigned char)p[i])) i++;
-                pp_list_push(&res, pp_strn(p + st, i - st));
-                while (i < len && isspace((unsigned char)p[i])) i++;
-            }
-        } else if (sl > 0) {
-            int i = 0, st = 0;
-            while (i <= len - sl) {
-                if (memcmp(p + i, sep, sl) == 0 && !(limit > 0 && res.n == limit - 1)) {
-                    pp_list_push(&res, pp_strn(p + st, i - st));
-                    i += sl; st = i;
-                } else i++;
-            }
-            pp_list_push(&res, pp_strn(p + st, len - st));
-        }
+    } else if (!pp_split_regex(I, ro, p, len, limit, &res)) {
+        pp_obj_decref(ro); if (pat) pp_str_decref(pat); pp_str_decref(s); pp_list_free(&args); pp_list_free(&res);
+        return pp_undef();
     }
     /* remove trailing empty fields when limit == 0 */
-    if (limit == 0) while (res.n > 0 && res.v[res.n - 1].t == PP_STR && res.v[res.n - 1].u.s->len == 0) { pp_release(res.v[res.n - 1]); res.n--; }
-    pp_str_decref(pat); pp_str_decref(s);
+    if (limit == 0) while (res.n > 0 && (res.v[res.n - 1].t == PP_UNDEF || (res.v[res.n - 1].t == PP_STR && res.v[res.n - 1].u.s->len == 0))) { pp_release(res.v[res.n - 1]); res.n--; }
+    if (ro) pp_obj_decref(ro);
+    if (pat) pp_str_decref(pat);
+    pp_str_decref(s);
     pp_list_free(&args);
     if (ctx != CTX_LIST || !out) { int c = res.n; pp_list_free(&res); return pp_int(c); }
     return ret_list(ctx, out, &res);
@@ -478,6 +462,11 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return ret(ctx, out, pp_str_val(r));
     }
     case B_SPLIT: return do_split(I, n, ctx, out);
+    case B_POS: {
+        pp_node *v = n->n ? n->list[0] : NULL;
+        if (v && !(v->type == N_VAR && v->sym->name[0] == '$')) return pp_die(I, "pos() needs a scalar variable");
+        return ret(ctx, out, pp_pos_of(I, v ? pp_var_cell(I, v) : I->g_underscore));
+    }
     case B_SPRINTF: {
         pp_list args = {0};
         if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
@@ -695,6 +684,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             case PP_OARRAY: r = "ARRAY"; break;
             case PP_OHASH: r = "HASH"; break;
             case PP_OCODE: r = "CODE"; break;
+            case PP_OREGEX: r = "Regexp"; break;
             default: r = v.u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR"; break;
             }
         }

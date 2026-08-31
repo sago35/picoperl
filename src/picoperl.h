@@ -27,6 +27,7 @@ typedef struct pp_list   pp_list;
 typedef struct pp_node   pp_node;
 typedef struct pp_env    pp_env;
 typedef struct pp_sym    pp_sym;
+struct pp_regex;
 
 enum { PP_UNDEF = 0, PP_INT, PP_NUM, PP_STR, PP_REF };
 
@@ -51,7 +52,7 @@ struct pp_list {
     int n, cap;
 };
 
-enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE };
+enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE, PP_OREGEX };
 
 typedef struct pp_hent {
     char    *key;
@@ -79,6 +80,7 @@ struct pp_obj {
             pp_val     constval;   /* for `use constant` */
             int        is_const;
         } code;
+        struct pp_regex *re;   /* PP_OREGEX (qr//) */
     } u;
 };
 
@@ -162,7 +164,14 @@ enum {
     N_FILEHANDLE,   /* op: 1 stdout, 2 stderr */
     N_USE,          /* a: module name (const), b: package to import into, list: import list; op 1: use parent/base */
     N_METHOD,       /* a: invocant, sym: method name (plain) or b: dynamic method expr, c: current package (const), list: args */
+    N_MATCH,        /* a: target (NULL = $_), b: pattern (N_CONST regex ref, or expr), op: PP_M_* flags, aux: compile flags */
+    N_SUBST,        /* a: target, b: pattern, c: replacement expr, op: PP_M_* flags, aux: compile flags */
+    N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
 };
+/* N_MATCH / N_SUBST op bits */
+enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16 };
+/* N_TRANS op bits */
+enum { PP_TR_C = 1, PP_TR_D = 2, PP_TR_S = 4, PP_TR_R = 8 };
 
 /* binary operator codes */
 enum {
@@ -204,6 +213,8 @@ void      pp_arena_free(pp_arena *a);
 /* ------------------------------------------------------------------ */
 
 #define PP_SYM_BUCKETS 128
+typedef struct pp_pos_ent { pp_obj *cell; pp_str *s; int pos, empty; } pp_pos_ent;
+typedef struct pp_re_ent { pp_str *src; int flags; pp_obj *re; } pp_re_ent;
 #ifndef PP_DEFAULT_STACK_LIMIT
 #define PP_DEFAULT_STACK_LIMIT (1024 * 1024)
 #endif
@@ -244,6 +255,13 @@ struct pp_interp {
     pp_sym  *sym_args;           /* @_ */
     pp_sym  *sym_underscore;     /* $_ */
     pp_sym  *sym_a, *sym_b;
+    /* regular expressions */
+    pp_sym  *sym_cap[10];        /* $& and $1..$9 (interned on first use) */
+    int      m_nset;             /* how many $N cells currently hold captures */
+    pp_pos_ent pos_tab[4];       /* pos() of scalars matched with /g */
+    int      pos_next;
+    pp_re_ent re_cache[4];       /* compiled dynamic patterns */
+    int      re_next;
 };
 
 /* ------------------------------------------------------------------ */

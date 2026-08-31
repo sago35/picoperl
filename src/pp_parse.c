@@ -1,5 +1,6 @@
 /* Lexer + recursive-descent parser for the picoperl Perl subset. */
 #include "pp_internal.h"
+#include "pp_regex.h"
 #include <ctype.h>
 #include <setjmp.h>
 
@@ -7,7 +8,7 @@
 /* Lexer                                                               */
 /* ------------------------------------------------------------------ */
 
-enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW };
+enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW, T_PAT };
 
 typedef struct {
     int    type;
@@ -18,6 +19,12 @@ typedef struct {
     char   sigil;       /* T_VAR: '$','@','%','&','#' ($#name) */
     char   op[4];       /* T_OP / T_CAST */
     int    space_before;
+    /* T_PAT: m// s/// tr/// qr// */
+    const char *s2;     /* replacement body (s, tr) */
+    int    len2;
+    char   kind;        /* 'm', 's', 't' (tr), 'q' (qr) */
+    char   delim;       /* opening delimiter of the pattern */
+    char   flags[10];   /* trailing modifiers */
 } pp_tok;
 
 typedef struct {
@@ -27,6 +34,8 @@ typedef struct {
     int   prev_term;    /* previous token ends a term (so '/', '%', '@' are operators) */
     int   prev_brace;   /* previous token was '}' (block end: sigils are more likely than operators) */
     int   prev_split;   /* previous token was the identifier 'split' (so // is a pattern) */
+    int   prev_arrow;   /* previous token was '->' (so s, y, m, tr are method names) */
+    int   prev_op;      /* previous token was an operator (so '/' must start a pattern) */
     char **strs; int nstrs, capstrs;
 } pp_lex;
 
@@ -149,6 +158,7 @@ static int is_special_var(char sigil, const char *name, int len) {
         if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^')) return 1;
         if (sigil == '@' && c == '_') return 1;
     }
+    if (sigil == '$' && len >= 1 && isdigit((unsigned char)name[0])) return 1;   /* $1 .. */
     if (sigil == '%' && len == 3 && !memcmp(name, "SIG", 3)) return 1;
     if (sigil == '$' && ((len == 6 && !memcmp(name, "STDOUT", 6)) || (len == 6 && !memcmp(name, "STDERR", 6)) || (len == 5 && !memcmp(name, "STDIN", 5)))) return 1;
     if (sigil == '$' && len > 0 && name[0] >= '1' && name[0] <= '9') return 1;
@@ -245,6 +255,30 @@ static const char *lex_delimited(pp_parser *P, int open, int *outlen) {
     return body;
 }
 
+/* m/PAT/flags, s/PAT/REPL/flags, tr/A/B/flags, qr/PAT/flags: fills a T_PAT token.
+   The lexer is at the opening delimiter. */
+static void lex_pattern(pp_parser *P, pp_tok *t, char kind) {
+    pp_lex *L = &P->L;
+    int d = peekc(L, 0);
+    L->pos++;
+    t->type = T_PAT; t->kind = kind; t->delim = (char)d;
+    int blen;
+    t->s = lex_delimited(P, d, &blen); t->len = blen;
+    if (kind == 's' || kind == 't') {
+        int d2 = d;
+        if (closing_delim(d) != d) {      /* s{...}{...}: whitespace, then any bracket pair or delimiter */
+            skip_ws(L);
+            d2 = peekc(L, 0);
+            if (!d2 || is_ident_char(d2) || d2 == '#') perr(P, "Substitution replacement not terminated");
+            L->pos++;
+        }
+        t->s2 = lex_delimited(P, d2, &blen); t->len2 = blen;
+    }
+    int nf = 0;
+    while (isalpha(peekc(L, 0))) { if (nf < 9) t->flags[nf++] = (char)peekc(L, 0); L->pos++; }
+    t->flags[nf] = 0;
+}
+
 static const char *three_char_ops[] = { "<=>", "**=", "||=", "&&=", "//=", "...", "<<=", ">>=", NULL };
 static const char *two_char_ops[] = { "=>", "->", "++", "--", "**", "=~", "!~", "==", "!=", "<=", ">=", "&&", "||", "//", "..", "::",
     "+=", "-=", "*=", "/=", ".=", "%=", "|=", "&=", "^=", "<<", ">>", NULL };
@@ -329,6 +363,23 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             }
             L->pos = save; L->line = saveline;
         }
+        char pk = 0;
+        if (len == 1 && (id[0] == 'm' || id[0] == 's' || id[0] == 'y')) pk = id[0] == 'y' ? 't' : id[0];
+        else if (len == 2 && id[0] == 'q' && id[1] == 'r') pk = 'q';
+        else if (len == 2 && id[0] == 't' && id[1] == 'r') pk = 't';
+        if (pk && !L->prev_arrow) {
+            int save = L->pos, saveline = L->line;
+            int spaced = 0;
+            if (isspace(peekc(L, 0))) { skip_ws(L); spaced = 1; }
+            int d = peekc(L, 0);
+            if (d && !is_ident_char(d) && d != ',' && d != ';' && d != ')' && d != '=' && d != '}' && d != ']' && !(spaced && d == '#')
+                && !(d == '-' && peekc(L, 1) == '>')) {
+                lex_pattern(P, t, pk);
+                L->prev_term = 1; L->prev_brace = 0; L->prev_split = 0; L->prev_arrow = 0;
+                return;
+            }
+            L->pos = save; L->line = saveline;
+        }
         if (len == 7 && memcmp(id, "__END__", 7) == 0) { L->pos = L->len; t->type = T_EOF; return; }
         if (len == 8 && memcmp(id, "__DATA__", 8) == 0) { L->pos = L->len; t->type = T_EOF; return; }
         t->type = T_IDENT; t->s = id; t->len = len;
@@ -338,13 +389,11 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     else if (c == '"') { L->pos++; int blen; t->s = lex_delimited(P, '"', &blen); t->len = blen; t->type = T_ISTR; term = 1; }
     else if (c == '\'') { L->pos++; int blen; t->s = lex_delimited(P, '\'', &blen); t->len = blen; t->type = T_STR; term = 1; }
     else if (c == '`') { perr(P, "backticks are not supported"); }
-    else if (c == '/' && !L->prev_term && (L->prev_split || (peekc(L, 1) != '/' && peekc(L, 1) != ' ' && peekc(L, 1) != '='))) {
-        /* m/PATTERN/ literal: only usable as the first argument of split */
-        L->pos++; int blen; t->s = lex_delimited(P, '/', &blen); t->len = blen; t->type = T_STR; t->sigil = 'm';
-        while (isalpha(peekc(L, 0))) L->pos++;   /* flags ignored */
+    else if (c == '/' && !L->prev_term && (L->prev_split || L->prev_op || (peekc(L, 1) != '/' && peekc(L, 1) != ' ' && peekc(L, 1) != '='))) {
+        /* /PATTERN/flags in term position */
+        lex_pattern(P, t, 'm');
         term = 1;
     }
-    else if (c == '=' && peekc(L, 1) == '~') { perr(P, "regular expressions (=~) are not supported"); }
     else if (c == '$') {
         int c1 = peekc(L, 1);
         if (c1 == '#') {
@@ -411,6 +460,8 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     L->prev_term = term;
     L->prev_brace = t->type == T_OP && t->op[0] == '}' && t->op[1] == 0;
     L->prev_split = tok_is_ident_raw(t, "split") || (L->prev_split && t->type == T_OP && t->op[0] == '(' && t->op[1] == 0);
+    L->prev_arrow = t->type == T_OP && t->op[0] == '-' && t->op[1] == '>';
+    L->prev_op = t->type == T_OP && !term;
 }
 
 /* ------------------------------------------------------------------ */
@@ -517,6 +568,7 @@ static void tok_desc(pp_tok *t, char *buf, int cap) {
     case T_EOF: snprintf(buf, cap, "end of file"); break;
     case T_NUM: snprintf(buf, cap, "number"); break;
     case T_STR: case T_ISTR: case T_QW: snprintf(buf, cap, "string"); break;
+    case T_PAT: snprintf(buf, cap, "pattern"); break;
     case T_IDENT: snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
     case T_VAR: snprintf(buf, cap, "'%c%.*s'", t->sigil == '#' ? '$' : t->sigil, t->len, t->s); break;
     default: snprintf(buf, cap, "'%s'", t->op); break;
@@ -827,6 +879,179 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
     return adopt(P, r);
 }
 
+/* ---- regular expression literals ---- */
+
+/* extent of an interpolated variable in a pattern starting at s[i] ('$' or '@'); 0 if none.
+   Like interp_extent, but a trailing {n,m} is a quantifier and [..] is only a subscript when
+   it holds a plain index. */
+static int re_interp_extent(const char *s, int len, int i) {
+    int j = i + 1;
+    if (j >= len) return 0;
+    int nx = (unsigned char)s[j];
+    if (s[i] == '$' && nx == '$') { if (j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) return re_interp_extent(s, len, j); return 0; }
+    if (nx == '{') { int e = match_bracket(s, len, j); if (e < 0) return 0; j = e; }
+    else if (is_ident_start(nx)) {
+        while (j < len && (is_ident_char((unsigned char)s[j]) || (s[j] == ':' && j + 2 < len && s[j+1] == ':' && is_ident_start((unsigned char)s[j+2])))) j += (s[j] == ':') ? 2 : 1;
+    }
+    else if (s[i] == '$' && isdigit(nx)) { while (j < len && isdigit((unsigned char)s[j])) j++; return j; }
+    else if (s[i] == '$' && nx == '&') return j + 1;
+    else return 0;
+    for (;;) {
+        int arrow = (j + 2 < len && s[j] == '-' && s[j+1] == '>' && (s[j+2] == '[' || s[j+2] == '{')) ? 2 : 0;
+        int k = j + arrow;
+        if (k < len && s[k] == '[') {
+            int e = match_bracket(s, len, k);
+            if (e < 0) break;
+            int a = k + 1, b = e - 1;      /* content s[a..b) */
+            int ok = 0;
+            if (a < b && (s[a] == '-' || isdigit((unsigned char)s[a]))) { ok = 1; for (int q = a + (s[a] == '-'); q < b; q++) if (!isdigit((unsigned char)s[q])) ok = 0; }
+            else if (a < b && s[a] == '$') { ok = 1; for (int q = a + 1; q < b; q++) if (!is_ident_char((unsigned char)s[q])) ok = 0; }
+            if (!ok) break;
+            j = e;
+        }
+        else if (k < len && s[k] == '{') {
+            int e = match_bracket(s, len, k);
+            if (e < 0) break;
+            if (!arrow) {           /* {2} / {2,} / {2,5} is a quantifier */
+                int q = k + 1, digits = 0;
+                while (q < e - 1 && isdigit((unsigned char)s[q])) { q++; digits++; }
+                if (q < e - 1 && s[q] == ',') { q++; while (q < e - 1 && isdigit((unsigned char)s[q])) q++; }
+                if (digits && q == e - 1) break;
+            }
+            j = e;
+        }
+        else break;
+    }
+    return j;
+}
+
+static pp_node *builtin_call1(pp_parser *P, const char *name, pp_node *arg) {
+    pp_node *b = node(P, N_BUILTIN);
+    b->op = (uint8_t)pp_builtin_id(name, (int)strlen(name), NULL);
+    node_add(b, arg);
+    return b;
+}
+
+/* pattern body -> N_CONST holding a compiled regex (constant pattern) or an N_INTERP whose
+   parts are joined and compiled at run time. Backslashes are kept for the regex parser;
+   $var / @var interpolate as in strings; \Q...\E quote what they enclose. */
+static pp_node *pattern_node(pp_parser *P, const char *s, int len, int delim, int cflags) {
+    pp_node *r = node_tmp(P, N_INTERP);
+    char *buf = NULL; int n = 0, cap = 0;
+    int quoting = 0, dyn = 0;
+    int line = P->cur.line;
+    for (int i = 0; i < len; ) {
+        int c = (unsigned char)s[i];
+        if (c == '\\' && i + 1 < len) {
+            int d = (unsigned char)s[i+1];
+            if (delim != '\'' && d == 'Q') { quoting = 1; i += 2; continue; }
+            if (delim != '\'' && d == 'E') { quoting = 0; i += 2; continue; }
+            if (quoting) { append_char(&buf, &n, &cap, '\\'); append_char(&buf, &n, &cap, '\\'); if (!isalnum(d) && d != '_') append_char(&buf, &n, &cap, '\\'); append_char(&buf, &n, &cap, d); }
+            else if (d == delim && !isalnum(delim)) append_char(&buf, &n, &cap, d);   /* \/ in m/.../ is just / */
+            else { append_char(&buf, &n, &cap, c); append_char(&buf, &n, &cap, d); }
+            i += 2; continue;
+        }
+        if (delim != '\'' && (c == '$' || c == '@')) {
+            int e = re_interp_extent(s, len, i);
+            if (e > i + 1) {
+                if (n) { node_add(r, const_str(P, buf, n)); n = 0; }
+                pp_node *ex = parse_interp_expr(P, s + i, e - i, line);
+                if (c == '@') { pp_node *j = node(P, N_BUILTIN); j->op = (uint8_t)pp_builtin_id("join", 4, NULL); node_add(j, const_str(P, " ", 1)); node_add(j, ex); ex = j; }
+                if (quoting) ex = builtin_call1(P, "quotemeta", ex);
+                node_add(r, ex);
+                dyn = 1; i = e; continue;
+            }
+        }
+        if (c == '\n') line++;
+        if (quoting && !isalnum(c) && c != '_') append_char(&buf, &n, &cap, '\\');
+        append_char(&buf, &n, &cap, c);
+        i++;
+    }
+    if (!dyn) {
+        char err[96];
+        pp_regex *re = pp_re_compile(buf ? buf : "", n, cflags, err, sizeof err);
+        if (!re) { char pat[64]; snprintf(pat, sizeof pat, "%.*s", n > 60 ? 60 : n, buf ? buf : ""); free(buf); drop_shell(r); perr(P, "%s in m/%s/", err, pat); }
+        free(buf);
+        drop_shell(r);
+        pp_obj *o = pp_obj_new(PP_OREGEX);
+        o->u.re = re;
+        pp_node *k = node(P, N_CONST);
+        k->val = pp_ref(o);
+        pp_obj_decref(o);
+        return k;
+    }
+    if (n) node_add(r, const_str(P, buf, n));
+    free(buf);
+    return adopt(P, r);
+}
+
+/* tr/// list: expand escapes and a-z ranges into out (up to 256 bytes) */
+static int tr_expand(const char *s, int len, unsigned char *out) {
+    int n = 0;
+    for (int i = 0; i < len && n < 256; ) {
+        int c = (unsigned char)s[i++];
+        if (c == '\\' && i < len) { int d = s[i++]; c = d == 'n' ? '\n' : d == 't' ? '\t' : d == 'r' ? '\r' : d == 'f' ? '\f' : d == 'e' ? 27 : d; }
+        if (i + 1 < len && s[i] == '-') {
+            int hi = (unsigned char)s[i+1]; i += 2;
+            if (hi == '\\' && i < len) { int d = s[i++]; hi = d == 'n' ? '\n' : d == 't' ? '\t' : d; }
+            for (int k = c; k <= hi && n < 256; k++) out[n++] = (unsigned char)k;
+        } else out[n++] = (unsigned char)c;
+    }
+    return n;
+}
+
+static pp_node *parse_pattern_term(pp_parser *P) {
+    pp_tok t = P->cur;
+    int line = t.line;
+    advance(P);
+    int cflags = 0, op = 0, trop = 0;
+    for (const char *f = t.flags; *f; f++) {
+        switch (*f) {
+        case 'i': cflags |= PP_RE_I; break;
+        case 'm': cflags |= PP_RE_M; break;
+        case 'x': cflags |= PP_RE_X; break;
+        case 'o': break;
+        case 's': if (t.kind == 't') trop |= PP_TR_S; else cflags |= PP_RE_S; break;
+        case 'g': op |= PP_M_G; break;
+        case 'e': op |= PP_M_E; break;
+        case 'r': op |= PP_M_R; trop |= PP_TR_R; break;
+        case 'c': trop |= PP_TR_C; break;
+        case 'd': trop |= PP_TR_D; break;
+        default: perr(P, "Unknown regexp modifier \"/%c\"", *f);
+        }
+    }
+    if (t.kind == 't') {
+        unsigned char a[256], b[256];
+        int na = tr_expand(t.s, t.len, a), nb = tr_expand(t.s2, t.len2, b);
+        pp_node *n = node(P, N_TRANS); n->line = (uint16_t)line;
+        n->op = (uint8_t)trop;
+        n->b = const_str(P, (const char *)a, na);
+        n->c = const_str(P, (const char *)b, nb);
+        return n;
+    }
+    pp_node *pat = pattern_node(P, t.s, t.len, t.delim, cflags);
+    if (t.kind == 'q') {
+        if (pat->type == N_CONST) return pat;
+        pp_node *n = node(P, N_MATCH); n->line = (uint16_t)line; n->b = pat; n->op = PP_M_QR; n->aux = (uint8_t)cflags;
+        return n;
+    }
+    if (t.kind == 'm') {
+        pp_node *n = node(P, N_MATCH); n->line = (uint16_t)line; n->b = pat; n->op = (uint8_t)op; n->aux = (uint8_t)cflags;
+        return n;
+    }
+    /* s/// */
+    pp_node *n = node(P, N_SUBST); n->line = (uint16_t)line; n->b = pat; n->op = (uint8_t)op; n->aux = (uint8_t)cflags;
+    if (op & PP_M_E) {
+        int err = 0;
+        pp_node *code = parse_expr_shared(P, t.s2, t.len2, line, &err);
+        if (err || !code) longjmp(P->jb, 1);
+        n->c = code;
+    }
+    else if (t.delim == '\'') n->c = single_quoted(P, t.s2, t.len2);
+    else n->c = double_quoted(P, t.s2, t.len2);
+    return n;
+}
+
 static pp_node *qw_list(pp_parser *P, const char *s, int len) {
     pp_node *r = node(P, N_LIST);
     int i = 0;
@@ -842,6 +1067,9 @@ static pp_node *qw_list(pp_parser *P, const char *s, int len) {
 /* ------------------------------------------------------------------ */
 /* Expressions                                                         */
 /* ------------------------------------------------------------------ */
+
+#define OP_MATCH  100
+#define OP_NMATCH 101
 
 static int binop_of(pp_tok *t, int *prec, int *rassoc) {
     *rassoc = 0;
@@ -869,6 +1097,8 @@ static int binop_of(pp_tok *t, int *prec, int *rassoc) {
         if (!strcmp(o, "&&")) { *prec = 5; return OP_LOGAND; }
         if (!strcmp(o, "||")) { *prec = 4; return OP_LOGOR; }
         if (!strcmp(o, "//")) { *prec = 4; return OP_DEFOR; }
+        if (!strcmp(o, "=~")) { *prec = 14; return OP_MATCH; }
+        if (!strcmp(o, "!~")) { *prec = 14; return OP_NMATCH; }
         return 0;
     }
     if (t->type == T_IDENT) {
@@ -897,6 +1127,16 @@ static pp_node *parse_binary(pp_parser *P, int minprec) {
         advance(P);
         pp_node *rhs = parse_binary(P, rassoc ? prec : prec + 1);
         pp_node *n;
+        if (op == OP_MATCH || op == OP_NMATCH) {
+            if ((rhs->type == N_MATCH || rhs->type == N_SUBST || rhs->type == N_TRANS) && !rhs->a && !(rhs->type == N_MATCH && (rhs->op & PP_M_QR))) { rhs->a = lhs; n = rhs; }
+            else { n = node(P, N_MATCH); n->a = lhs; n->b = rhs; }
+            if (op == OP_NMATCH) {
+                if (n->type == N_TRANS || (n->type == N_SUBST && (n->op & PP_M_R))) perr(P, "Using !~ with %s doesn't make sense", n->type == N_TRANS ? "tr///" : "s///r");
+                n->op |= PP_M_NEG;
+            }
+            lhs = n;
+            continue;
+        }
         if (op == OP_LOGAND) n = node(P, N_LOGAND);
         else if (op == OP_LOGOR) n = node(P, N_LOGOR);
         else if (op == OP_DEFOR) n = node(P, N_DEFOR);
@@ -1246,10 +1486,8 @@ static pp_node *parse_term(pp_parser *P) {
     pp_tok *t = &P->cur;
     switch (t->type) {
     case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
-    case T_STR: {
-        if (t->sigil == 'm') { pp_node *n = const_str(P, t->s, t->len); n->flags |= 8; advance(P); return n; }
-        pp_node *n = single_quoted(P, t->s, t->len); advance(P); return n;
-    }
+    case T_STR: { pp_node *n = single_quoted(P, t->s, t->len); advance(P); return n; }
+    case T_PAT: return parse_pattern_term(P);
     case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return n; }
     case T_QW: {
         pp_node *n = qw_list(P, t->s, t->len); n->flags |= 1; advance(P);
@@ -1407,7 +1645,7 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
 static int starts_term(pp_parser *P) {
     pp_tok *t = &P->cur;
     switch (t->type) {
-    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: return 1;
+    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: return 1;
     case T_IDENT: return !at_list_end(P);
     case T_OP: return !strcmp(t->op, "(") || !strcmp(t->op, "[") || !strcmp(t->op, "{") || !strcmp(t->op, "\\") || !strcmp(t->op, "!")
         || !strcmp(t->op, "-") || !strcmp(t->op, "+") || !strcmp(t->op, "++") || !strcmp(t->op, "--") || !strcmp(t->op, "~") || !strcmp(t->op, "<");
