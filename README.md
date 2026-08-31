@@ -132,6 +132,31 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 ホスト版の `use`/`require` は スクリプトのディレクトリ、`./lib`、`<script dir>/lib`、
 `<script dir>/../lib`、`$PICOPERL_LIB` を探します。
 
+### ブラウザ (WebAssembly) 版
+
+emscripten (emcc) が PATH にあれば、ブラウザで動くプレイグラウンドをビルドできます
+(`wasm/index.html`):
+
+```sh
+make wasm                          # -> wasm/picoperl.js + wasm/picoperl.wasm (~500 KB)
+make wasm-test                     # テストスイートを wasm 版で実行 (node が必要)
+python3 -m http.server -d wasm     # http://localhost:8000/ を開く
+```
+
+エディタと出力に加えて、スクリプトが使ったデバイスの「ボードパネル」が現れます:
+SSD1306 は canvas に描画 (アニメーションも動く)、WS2812 は色付きの LED、
+PWM/Tone のブザーは Web Audio の矩形波で鳴り、HID はキー名 (`KC_A`) や
+マウスパッドで表示。スクリプトが入力に使った GPIO / エンコーダ / ADC は
+クリックできるボタン・ホイール・スライダーになります (`wasm/shim.c` が
+ホスト版シミュレーションの pp_wasm_* フックとページを橋渡し)。
+
+スクリプトは Web Worker 内で動くのでページは固まらず、暴走したら「停止」で
+worker ごと打ち切ります。js/wasm の取得とコンパイルは初回の 1 回だけで、以後は
+実行のたびにコンパイル済みモジュールから新しいインスタンスを作ります (実行時の
+ネットワークアクセスなし)。`lib/` のモジュールは wasm に埋め込まれ、ファイル I/O は
+メモリ上 (MEMFS)、`sleep` は ASYNCIFY でイベントループに返ります。`<STDIN>` は常に
+EOF です。
+
 ## ボード API (モジュール)
 
 ボードの機能は Perl モジュールとして提供され、`use` したものだけが見えます

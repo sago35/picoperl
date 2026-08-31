@@ -24,6 +24,23 @@ clean:
 
 .PHONY: all test sim clean
 
+# Browser (WebAssembly) build. Needs emscripten (emcc) in PATH.
+#   make wasm                          # -> wasm/picoperl.js + wasm/picoperl.wasm
+#   python3 -m http.server -d wasm     # then open http://localhost:8000/
+wasm:
+	emcc -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter $(SRC) host/main.c wasm/shim.c -o wasm/picoperl.js \
+	  -sMODULARIZE=1 -sEXPORT_NAME=createPicoperl -sENVIRONMENT=worker,node \
+	  -sASYNCIFY -sEXIT_RUNTIME=1 -sALLOW_MEMORY_GROWTH=1 -sINVOKE_RUN=0 \
+	  -sEXPORTED_RUNTIME_METHODS=callMain,FS,ENV \
+	  --embed-file lib@/lib
+	@ls -la wasm/picoperl.js wasm/picoperl.wasm
+
+# run the normal test suite against the wasm build (needs node)
+wasm-test:
+	PICOPERL="node wasm/test-runner.mjs" perl test/run.pl
+
+.PHONY: wasm wasm-test
+
 # Build a firmware image for the zero-kb02 that recreates the drive from SCRIPT on every boot.
 #   make uf2 SCRIPT=workshop/01_blinky1/main.pl NAME=01_blinky1
 # Needs PICO_SDK_PATH and the ARM toolchain in PATH (see README).

@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>picoperl playground</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cg fill='%238a94a6'%3E%3Crect x='14' y='2' width='6' height='9'/%3E%3Crect x='29' y='2' width='6' height='9'/%3E%3Crect x='44' y='2' width='6' height='9'/%3E%3Crect x='14' y='53' width='6' height='9'/%3E%3Crect x='29' y='53' width='6' height='9'/%3E%3Crect x='44' y='53' width='6' height='9'/%3E%3C/g%3E%3Crect x='6' y='9' width='52' height='46' rx='8' fill='%23335c85'/%3E%3Ctext x='32' y='41' font-family='monospace' font-size='26' font-weight='bold' text-anchor='middle' fill='%23ffffff'%3Epl%3C/text%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 64rem; padding: 1rem; font-family: system-ui, sans-serif;
+         display: flex; flex-direction: column; gap: .6rem; min-height: 100vh; }
+  h1 { font-size: 1.1rem; margin: 0; }
+  h1 small { font-weight: normal; opacity: .7; }
+  .bar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  button, select { font: inherit; padding: .3rem .9rem; }
+  #run { font-weight: bold; }
+  textarea, #out { font-family: ui-monospace, Consolas, monospace; font-size: .85rem;
+                   width: 100%; border: 1px solid #8888; border-radius: 4px; padding: .5rem; }
+  textarea { min-height: 14rem; height: 18rem; resize: vertical; white-space: pre; }
+  #out { min-height: 7rem; height: 10rem; resize: vertical; margin: 0; overflow: auto; white-space: pre-wrap; }
+  #out .err { color: #d33; }
+  #status { margin-left: auto; font-size: .85rem; opacity: .8; }
+
+  /* board panel: panes appear when the script uses the corresponding device */
+  #board { display: flex; gap: .8rem; flex-wrap: wrap; align-items: stretch; }
+  #board:not(:has(.pane:not([hidden]))) { display: none; }
+  .pane { border: 1px solid #8886; border-radius: 8px; padding: .45rem .7rem .55rem; font-size: .8rem; }
+  .pane h2 { font-size: .68rem; margin: 0 0 .35rem; opacity: .55; font-weight: normal; letter-spacing: .05em; }
+  #oled { image-rendering: pixelated; background: #000; border-radius: 3px; display: block; }
+  #leds { display: flex; gap: 7px; padding: .3rem 0; }
+  #leds span { width: 18px; height: 18px; border-radius: 50%; background: #1a1a1a; border: 1px solid #0006; }
+  #buzz-rows { font-family: ui-monospace, monospace; }
+  #hidpane div { margin: .15rem 0; }
+  #hidpane b { font-family: ui-monospace, monospace; font-weight: 600; }
+  #mousepad { background: #8882; border-radius: 4px; vertical-align: middle; margin-right: .5rem; }
+  #inputs { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+  #inputs .w { display: flex; gap: .3rem; align-items: center; border: 1px dashed #8886; border-radius: 6px; padding: .25rem .5rem; }
+  #inputs button { padding: .2rem .6rem; }
+  #inputs .gpiobtn:active { background: #d33; color: #fff; }
+  #inputs input[type=range] { width: 9rem; }
+  label.small { font-size: .75rem; opacity: .8; }
+</style>
+</head>
+<body>
+<h1>picoperl playground <small>— RP2040 向け Perl サブセットをブラウザで試す (wasm 版)</small></h1>
+<div class="bar">
+  <select id="sample"></select>
+  <button id="run">実行 (Ctrl+Enter)</button>
+  <button id="stop" disabled>停止</button>
+  <button id="clear">出力をクリア</button>
+  <span id="status"></span>
+</div>
+<textarea id="src" spellcheck="false"></textarea>
+
+<div id="board">
+  <div class="pane" id="p-oled" hidden>
+    <h2>OLED (SSD1306)</h2>
+    <canvas id="oled" width="128" height="64"></canvas>
+  </div>
+  <div class="pane" id="p-leds" hidden>
+    <h2>WS2812 LED</h2>
+    <div id="leds"></div>
+  </div>
+  <div class="pane" id="p-buzzer" hidden>
+    <h2>ブザー (PWM)</h2>
+    <div id="buzz-rows">-</div>
+    <label class="small"><input type="checkbox" id="mute"> ミュート</label>
+  </div>
+  <div class="pane" id="p-hid" hidden>
+    <h2>USB HID</h2>
+    <div id="hidpane">
+      <div>キーボード: <b id="hid-kbd">-</b></div>
+      <div>メディア: <b id="hid-consumer">-</b></div>
+      <div><canvas id="mousepad" width="90" height="90"></canvas>マウス <b id="hid-mouse">-</b></div>
+    </div>
+  </div>
+  <div class="pane" id="p-inputs" hidden>
+    <h2>入力 (クリックで操作)</h2>
+    <div id="inputs"></div>
+  </div>
+</div>
+
+<pre id="out"></pre>
+
+<script type="text/x-perl" id="sample-基本">use strict;
+use warnings;
+
+my @langs = ('perl', 'ruby', 'python');
+my %year  = (perl => 1987, ruby => 1995);
+
+for my $l (sort @langs) {
+    printf("%-6s %s\n", $l, $year{$l} // '?');
+}
+
+sub fib { my $n = shift; $n < 2 ? $n : fib($n - 1) + fib($n - 2) }
+print "fib(20) = ", fib(20), "\n";
+</script>
+
+<script type="text/x-perl" id="sample-正規表現">use strict;
+use warnings;
+
+my $log = "2026-08-31 13:45:02 ERROR disk full";
+if ($log =~ /^(\d{4})-(\d\d)-(\d\d) \S+ (\w+) (.*)$/) {
+    print "date=$1/$2/$3 level=$4 msg=$5\n";
+}
+
+my $s = "hello, world";
+(my $t = $s) =~ s/(\w+)/ucfirst($1)/ge;
+print "$t\n";
+
+my @csv = split /\s*,\s*/, "a, b ,c,, d";
+print scalar(@csv), " fields: @csv\n";
+
+(my $rot = "abc-XYZ") =~ tr/a-zA-Z/n-za-mN-ZA-M/;
+print "rot13: $rot\n";
+</script>
+
+<script type="text/x-perl" id="sample-ファイル IO">use strict;
+use warnings;
+
+open(my $w, '>', 'note.txt') or die "open: $!";
+print $w "line $_\n" for 1 .. 3;
+close $w;
+
+open(my $r, '<', 'note.txt') or die "open: $!";
+while (<$r>) {
+    chomp;
+    print "read: [$_]\n";
+}
+close $r;
+</script>
+
+<script type="text/x-perl" id="sample-FizzBuzz">use strict;
+for my $n (1 .. 20) {
+    print $n % 15 == 0 ? 'FizzBuzz'
+        : $n % 3  == 0 ? 'Fizz'
+        : $n % 5  == 0 ? 'Buzz'
+        : $n, "\n";
+}
+</script>
+
+<script type="text/x-perl" id="sample-OLED (静止画)">use strict;
+use Ssd1306;
+use Tinyfont;
+
+my $d = Ssd1306->new(width => 128, height => 64);
+$d->rectangle(0, 0, 128, 64, 1);
+$d->filled_circle(100, 40, 14, 1);
+Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, 8, 24, "picoperl", 1);
+Tinyfont::WriteLine($d, Tinyfont::CLASSIC, 8, 44, "on wasm", 1);
+$d->display;
+</script>
+
+<script type="text/x-perl" id="sample-OLED アニメーション">use strict;
+use Ssd1306;
+use Tinyfont;
+use Time::HiRes qw(usleep);
+
+my $d = Ssd1306->new;
+my ($x, $y, $dx, $dy) = (20, 30, 3, 2);
+while (1) {
+    $d->clear_buffer;
+    $d->rectangle(0, 0, 128, 64, 1);
+    Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, 24, 38, "picoperl", 1);
+    $d->filled_circle($x, $y, 5, 1);
+    $x += $dx; $y += $dy;
+    $dx = -$dx if $x < 7 || $x > 120;
+    $dy = -$dy if $y < 7 || $y > 56;
+    $d->display;
+    usleep(40_000);
+}
+</script>
+
+<script type="text/x-perl" id="sample-LED レインボー" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
+use Ws2812;
+use Time::HiRes qw(usleep);
+
+my $leds = 12;                # LED の数 (自由に変更可、write_raw は 64 個まで)
+my $ws = Ws2812->new(1);      # zero-kb02 のキー LED (GPIO1)
+my $t = 0;
+while (1) {
+    $ws->write_raw(map { hue($t + 360 * $_ / $leds) } 0 .. $leds - 1);
+    $t = ($t + 10) % 360;
+    usleep(60_000);
+}
+
+# 色相 (0..359) -> 0xGGRRBBxx。明るさ控えめの r -> g -> b -> r の色相環
+sub hue {
+    my $h = int(shift) % 360;
+    my $up = int(44 * ($h % 120) / 120);
+    my ($r, $g, $b) = $h < 120 ? (44 - $up, $up, 0)
+                    : $h < 240 ? (0, 44 - $up, $up)
+                    :            ($up, 0, 44 - $up);
+    return Ws2812::rgb($r, $g, $b);
+}
+</script>
+
+<script type="text/x-perl" id="sample-ブザー (ドレミ)">use strict;
+use Tone;
+use Time::HiRes qw(usleep);
+
+my $sp = Tone->new(14);       # zero-kb02 の EX01 = GPIO14
+for my $n (qw(C5 D5 E5 F5 G5 A5 B5 C6)) {
+    print "$n\n";
+    $sp->set_note(Tone::note($n));
+    usleep(300_000);
+}
+$sp->stop;
+</script>
+
+<script type="text/x-perl" id="sample-入力ウィジェット">use strict;
+use Gpio;
+use Encoder;
+use Adc;
+use Time::HiRes qw(usleep);
+
+# 下の「入力」パネルのボタン・ホイール・スライダーで操作できます
+my $btn = Gpio->new(2, 'input_pullup');
+my $enc = Encoder->new(3, 4);
+my $adc = Adc->new(29);
+my ($last, $pos, $ad) = (1, 0, -1000);
+while (1) {
+    my $v = $btn->read;
+    print $v ? "button released\n" : "button pressed\n" if $v != $last;
+    $last = $v;
+    if (my $c = $enc->read) { $pos += $c; print "encoder: $pos\n"; }
+    my $a = $adc->read_raw;
+    if (abs($a - $ad) > 64) { $ad = $a; printf("adc: %d (%.2f V)\n", $a, 3.3 * $a / 4095); }
+    usleep(50_000);
+}
+</script>
+
+<script type="text/x-perl" id="sample-HID (キーボード/マウス)" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
+use Gpio;
+use Encoder;
+use Hid;
+use Mouse;
+use Time::HiRes qw(usleep);
+use PicoPerl::Keycodes;
+
+# ボタン (GPIO2) を押している間 'a' をタイプ、エンコーダはマウスホイール、
+# マウスカーソルは円を描き続けます
+my $btn = Gpio->new(2, 'input_pullup');
+my $enc = Encoder->new(3, 4);
+my $m   = Mouse->new;
+my ($was, $t) = (1, 0);
+while (1) {
+    my $v = $btn->read;
+    Hid::keyboard_report(0, KC_A) if !$v && $was;
+    Hid::keyboard_report(0)       if $v && !$was;
+    $was = $v;
+    if (my $c = $enc->read) { $m->wheel($c) }
+    $m->move(int(6 * cos($t)), int(6 * sin($t)));
+    $t += 0.25;
+    usleep(80_000);
+}
+</script>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const samples = [...document.querySelectorAll('script[type="text/x-perl"]')];
+for (const s of samples) $('sample').add(new Option(s.id.replace(/^sample-/, ''), s.id));
+const loadSample = () => { $('src').value = document.getElementById($('sample').value).textContent.replace(/^\n/, ''); };
+$('sample').onchange = loadSample;
+loadSample();
+
+/* picoperl.js + worker.js + picoperl.wasm are fetched and compiled once;
+   each run then spawns a Worker from a Blob URL and hands it the compiled
+   WebAssembly.Module, so running makes no network requests. */
+let toolchain = null;
+async function loadToolchain() {
+  if (toolchain) return toolchain;
+  const text = (url) => fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+    return r.text();
+  });
+  const [js, workerJs, wasmBytes] = await Promise.all([
+    text('picoperl.js'),
+    text('worker.js'),
+    fetch('picoperl.wasm').then((r) => {
+      if (!r.ok) throw new Error(`picoperl.wasm: HTTP ${r.status}`);
+      return r.arrayBuffer();
+    }),
+  ]);
+  toolchain = {
+    blobUrl: URL.createObjectURL(new Blob([js, '\n', workerJs], { type: 'text/javascript' })),
+    wasmModule: await WebAssembly.compile(wasmBytes),
+  };
+  return toolchain;
+}
+loadToolchain().catch(() => {});   // warm up; errors surface on the first run
+
+let worker = null, t0 = 0;
+
+function append(text, cls) {
+  const out = $('out');
+  const atEnd = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text + '\n';
+  out.appendChild(span);
+  while (out.childNodes.length > 600) out.removeChild(out.firstChild);   // cap animation spam
+  if (atEnd) out.scrollTop = out.scrollHeight;
+}
+
+/* the run button stays enabled while running: pressing it (or Ctrl+Enter)
+   stops the current worker and starts over with the editor's current code */
+function setRunning(on) {
+  $('run').textContent = on ? '再実行 (Ctrl+Enter)' : '実行 (Ctrl+Enter)';
+  $('stop').disabled = !on;
+}
+
+function finish(msg) {
+  if (worker) { worker.terminate(); worker = null; }
+  audioSilence();
+  setRunning(false);
+  $('status').textContent = msg;
+}
+
+/* ---- board panel ------------------------------------------------------- */
+
+const board = {};   // per-run state
+
+function boardReset() {
+  for (const id of ['p-oled', 'p-leds', 'p-buzzer', 'p-hid', 'p-inputs']) $(id).hidden = true;
+  $('inputs').textContent = '';
+  $('leds').textContent = '';
+  $('buzz-rows').textContent = '-';
+  $('hid-kbd').textContent = '-';
+  $('hid-consumer').textContent = '-';
+  $('hid-mouse').textContent = '-';
+  board.gpio = {};        // pin -> { el, pull, dir }
+  board.encoders = {};    // "a/b" -> true
+  board.adcs = {};        // pin -> true
+  board.pwm = {};         // pin -> { freq, duty }
+  board.mouse = { x: 45, y: 45, wheel: 0 };
+  board.oledImg = null;
+  drawMousePad(0);
+  audioSilence();
+}
+
+function drawOled(m) {
+  $('p-oled').hidden = false;
+  const cv = $('oled'), ctx = cv.getContext('2d');
+  if (cv.width !== m.w || cv.height !== m.h) { cv.width = m.w; cv.height = m.h; board.oledImg = null; }
+  cv.style.width = (m.w * 2) + 'px';
+  if (!board.oledImg) board.oledImg = ctx.createImageData(m.w, m.h);
+  const px = board.oledImg.data, d = m.data;
+  for (let y = 0; y < m.h; y++) {
+    for (let x = 0; x < m.w; x++) {
+      const on = (d[(y >> 3) * m.w + x] >> (y & 7)) & 1;
+      const i = (y * m.w + x) * 4;
+      px[i] = on ? 175 : 8; px[i + 1] = on ? 225 : 12; px[i + 2] = on ? 255 : 18; px[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(board.oledImg, 0, 0);
+}
+
+function drawLeds(m) {
+  $('p-leds').hidden = false;
+  const box = $('leds');
+  const n = m.data.length / 3;
+  while (box.children.length < n) box.appendChild(document.createElement('span'));
+  while (box.children.length > n) box.removeChild(box.lastChild);
+  const boost = (v) => Math.round(255 * Math.pow(v / 255, 0.45));
+  for (let i = 0; i < n; i++) {
+    const r = m.data[i * 3], g = m.data[i * 3 + 1], b = m.data[i * 3 + 2];
+    const el = box.children[i];
+    el.style.background = `rgb(${boost(r)},${boost(g)},${boost(b)})`;
+    el.style.boxShadow = (r || g || b) ? `0 0 8px rgba(${boost(r)},${boost(g)},${boost(b)},.8)` : 'none';
+    el.title = `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  }
+}
+
+const MODS = [[1, 'LCtrl'], [2, 'LShift'], [4, 'LAlt'], [8, 'LGui'], [16, 'RCtrl'], [32, 'RShift'], [64, 'RAlt'], [128, 'RGui']];
+const CONSUMER = { 0xE2: 'Mute', 0xE9: 'Vol+', 0xEA: 'Vol-', 0xCD: 'Play/Pause', 0xB5: 'Next', 0xB6: 'Prev' };
+
+function drawMousePad(buttons) {
+  const ctx = $('mousepad').getContext('2d');
+  ctx.clearRect(0, 0, 90, 90);
+  ctx.fillStyle = buttons ? '#d33' : '#57a';
+  ctx.beginPath();
+  ctx.arc(board.mouse ? board.mouse.x : 45, board.mouse ? board.mouse.y : 45, 4, 0, 7);
+  ctx.fill();
+}
+
+function inputWidget(html) {
+  $('p-inputs').hidden = false;
+  const w = document.createElement('div');
+  w.className = 'w';
+  w.innerHTML = html;
+  $('inputs').appendChild(w);
+  return w;
+}
+
+function sendInput(msg) { if (worker) worker.postMessage({ type: 'input', ...msg }); }
+
+function gpioButton(pin) {
+  const g = board.gpio[pin];
+  const w = inputWidget(`GPIO${pin} <button class="gpiobtn">押す</button>`);
+  const btn = w.querySelector('button');
+  const press = (e) => { e.preventDefault(); sendInput({ kind: 'gpio', pin, level: (g.pull ?? 1) < 0 ? 1 : 0 }); };
+  const release = () => sendInput({ kind: 'gpio', pin, level: -1 });
+  btn.addEventListener('pointerdown', press);
+  btn.addEventListener('pointerup', release);
+  btn.addEventListener('pointerleave', release);
+  btn.addEventListener('pointercancel', release);
+  g.el = w;
+}
+
+function boardEvent(m) {
+  switch (m.what) {
+  case 'oled': drawOled(m); break;
+  case 'ws2812': drawLeds(m); break;
+  case 'hid_keys': {
+    $('p-hid').hidden = false;
+    const mods = MODS.filter(([bit]) => m.mod & bit).map(([, n]) => n);
+    const t = [...mods, ...(m.names ? m.names.split(' ') : [])].join(' + ');
+    $('hid-kbd').textContent = t || '-';
+    break;
+  }
+  case 'hid_consumer':
+    $('p-hid').hidden = false;
+    $('hid-consumer').textContent = m.a ? (CONSUMER[m.a] || '0x' + m.a.toString(16)) : '-';
+    break;
+  case 'hid_mouse': {
+    $('p-hid').hidden = false;
+    const mo = board.mouse;
+    mo.x = Math.min(86, Math.max(4, mo.x + m.b / 2));
+    mo.y = Math.min(86, Math.max(4, mo.y + m.c / 2));
+    mo.wheel += m.d;
+    drawMousePad(m.a);
+    const btns = [m.a & 1 ? 'L' : '', m.a & 4 ? 'M' : '', m.a & 2 ? 'R' : ''].join('');
+    $('hid-mouse').textContent = `${btns || '-'}  wheel ${mo.wheel}`;
+    break;
+  }
+  case 'gpio_dir': {
+    const pin = m.a, g = (board.gpio[pin] ??= {});
+    g.dir = m.b;
+    if (m.b === 0 && !g.el && !board.adcs[pin]) gpioButton(pin);
+    if (m.b === 1 && g.el) { g.el.remove(); g.el = null; }
+    break;
+  }
+  case 'gpio_pull': (board.gpio[m.a] ??= {}).pull = m.b; break;
+  case 'encoder': {
+    const key = `${m.a}/${m.b}`;
+    if (board.encoders[key]) break;
+    board.encoders[key] = true;
+    const w = inputWidget(`エンコーダ GPIO${m.a}/${m.b} <button>◀</button><button>▶</button>`);
+    const [l, r] = w.querySelectorAll('button');
+    l.onclick = () => sendInput({ kind: 'encoder', steps: -4 });
+    r.onclick = () => sendInput({ kind: 'encoder', steps: 4 });
+    break;
+  }
+  case 'adc': {
+    const pin = m.a;
+    if (board.adcs[pin]) break;
+    board.adcs[pin] = true;
+    const g = board.gpio[pin];
+    if (g && g.el) { g.el.remove(); g.el = null; }   // ADC pin, not a button
+    const w = inputWidget(`ADC GPIO${pin} <input type="range" min="0" max="65535" step="256" value="32768">`);
+    w.querySelector('input').oninput = (e) => sendInput({ kind: 'adc', pin, value: +e.target.value });
+    break;
+  }
+  case 'pwm_freq': pwmEvent(m.a, { freq: m.b / 1000 }); break;
+  case 'pwm_duty': pwmEvent(m.a, { duty: m.b / 1000 }); break;
+  case 'pwm_stop': pwmEvent(m.a, { duty: 0 }); break;
+  case 'pwm_en':   if (!m.b) pwmEvent(m.a, { duty: 0 }); break;
+  }
+}
+
+/* ---- buzzer: PWM -> WebAudio square wave -------------------------------- */
+
+let audioCtx = null, audioVoices = {};   // pin -> { osc, gain }
+
+function audioUnlock() {   // called from the Run click (user gesture)
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch { /* no audio: the panel still shows the frequency */ }
+}
+
+function audioSilence() {
+  for (const v of Object.values(audioVoices)) { try { v.gain.gain.value = 0; } catch {} }
+}
+
+function pwmEvent(pin, upd) {
+  $('p-buzzer').hidden = false;
+  const st = (board.pwm[pin] ??= { freq: 0, duty: 0 });
+  Object.assign(st, upd);
+  $('buzz-rows').textContent = Object.entries(board.pwm)
+    .map(([p, s]) => `GPIO${p}: ${s.duty > 0 && s.freq ? s.freq.toFixed(1) + ' Hz' : 'off'}`)
+    .join('\n');
+  if (!audioCtx) return;
+  let v = audioVoices[pin];
+  if (!v) {
+    const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+    osc.type = 'square';
+    gain.gain.value = 0;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    v = audioVoices[pin] = { osc, gain };
+  }
+  if (st.freq >= 20 && st.freq <= 12000) v.osc.frequency.setValueAtTime(st.freq, audioCtx.currentTime);
+  const audible = st.duty > 0 && st.freq >= 20 && st.freq <= 12000 && !$('mute').checked;
+  v.gain.gain.setValueAtTime(audible ? 0.08 : 0, audioCtx.currentTime);
+}
+
+$('mute').onchange = () => {
+  if ($('mute').checked) audioSilence();
+  else for (const [pin, s] of Object.entries(board.pwm)) pwmEvent(+pin, {});
+};
+
+/* ---- run / stop --------------------------------------------------------- */
+
+let runSeq = 0;
+$('run').onclick = async () => {
+  const seq = ++runSeq;
+  if (worker) { worker.terminate(); worker = null; }
+  audioUnlock();
+  setRunning(true);
+  $('status').textContent = '読み込み中…';
+  let tc;
+  try {
+    tc = await loadToolchain();
+  } catch (err) {
+    append(String(err), 'err');
+    finish('読み込みエラー');
+    return;
+  }
+  if (seq !== runSeq) return;   // superseded while waiting for the toolchain
+  boardReset();
+  $('status').textContent = '実行中…';
+  t0 = performance.now();
+  worker = new Worker(tc.blobUrl);
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'out') append(m.text);
+    else if (m.type === 'err') append(m.text, 'err');
+    else if (m.type === 'board') boardEvent(m);
+    else if (m.type === 'exit') finish(`終了 (rc=${m.code}, ${((performance.now() - t0) / 1000).toFixed(2)}s)`);
+    else if (m.type === 'error') { append(m.text, 'err'); finish('エラー'); }
+  };
+  worker.onerror = (e) => { append(String(e.message || e), 'err'); finish('エラー'); };
+  let env = {};
+  try { env = JSON.parse(document.getElementById($('sample').value).dataset.env || '{}'); } catch {}
+  worker.postMessage({ type: 'run', src: $('src').value, env, wasmModule: tc.wasmModule });
+};
+
+$('stop').onclick = () => finish('停止しました');
+$('clear').onclick = () => { $('out').textContent = ''; };
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); $('run').click(); }
+});
+boardReset();
+</script>
+</body>
+</html>

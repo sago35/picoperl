@@ -73,7 +73,32 @@ uint32_t pp_host_millis(void) {
 int64_t pp_host_time(void) { return (int64_t)time(NULL); }
 static long sim_cycles;
 static pp_interp *I_for_stats;
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* emscripten's libc has no mallinfo2: report zero heap use (only affects the [mem] stats line) */
+struct mallinfo2 { size_t uordblks; };
+static struct mallinfo2 mallinfo2(void) { struct mallinfo2 mi = {0}; return mi; }
+/* usleep busy-waits in wasm; yield to the browser event loop instead (needs -sASYNCIFY) */
+static void host_wait_us(uint64_t us) { emscripten_sleep((unsigned)(us / 1000)); }
+/* board events for the playground page and input overrides from its widgets (wasm/shim.c) */
+void pp_wasm_note(const char *what, int a, int b, int c, int d, int e);
+void pp_wasm_note_frame(int w, int h, const uint8_t *buf, int len);
+void pp_wasm_note_leds(int pin, const uint8_t *rgb, int n);
+void pp_wasm_note_keys(int mod, const uint8_t *keys, int n);
+int  pp_wasm_gpio_override(int pin);   /* input level forced from the page; -1 = none */
+int  pp_wasm_encoder_take(void);       /* pending encoder steps clicked on the page */
+int  pp_wasm_adc_override(int pin);    /* 16-bit ADC value forced from the page; -1 = none */
+#else
 #include <malloc.h>
+static void host_wait_us(uint64_t us) { usleep(us); }
+static void pp_wasm_note(const char *what, int a, int b, int c, int d, int e) { (void)what; (void)a; (void)b; (void)c; (void)d; (void)e; }
+static void pp_wasm_note_frame(int w, int h, const uint8_t *buf, int len) { (void)w; (void)h; (void)buf; (void)len; }
+static void pp_wasm_note_leds(int pin, const uint8_t *rgb, int n) { (void)pin; (void)rgb; (void)n; }
+static void pp_wasm_note_keys(int mod, const uint8_t *keys, int n) { (void)mod; (void)keys; (void)n; }
+static int  pp_wasm_gpio_override(int pin) { (void)pin; return -1; }
+static int  pp_wasm_encoder_take(void) { return 0; }
+static int  pp_wasm_adc_override(int pin) { (void)pin; return -1; }
+#endif
 void pp_host_sleep_ms(uint32_t ms) {
     pp_interp *I = I_for_stats;
     /* PICOPERL_SIM_CYCLES=N stops the (otherwise endless) loop after N sleeps; PICOPERL_SIM_FAST skips the wait */
@@ -87,7 +112,7 @@ void pp_host_sleep_ms(uint32_t ms) {
     const char *lim = getenv("PICOPERL_SIM_CYCLES");
     if (lim && ++sim_cycles >= atol(lim)) { printf("[sim] %ld cycles done\n", sim_cycles); fflush(stdout); exit(0); }
     if (getenv("PICOPERL_SIM_FAST")) return;
-    usleep(ms * 1000);
+    host_wait_us((uint64_t)ms * 1000);
 }
 char *pp_host_read_line(void) {
     char buf[4096];
@@ -100,10 +125,10 @@ static int sim_gpio[64];
 static int sim_dir[64];
 static int sim_pull[64];
 
-static pp_val n_gpio_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, 0) & 63; sim_dir[p] = 0; return pp_undef(); }
-static pp_val n_gpio_set_dir(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; sim_dir[pp_list_arg_int(a, 0, 0) & 63] = pp_list_arg_int(a, 1, 0); return pp_undef(); }
-static pp_val n_gpio_pull_up(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; sim_pull[pp_list_arg_int(a, 0, 0) & 63] = 1; return pp_undef(); }
-static pp_val n_gpio_pull_down(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; sim_pull[pp_list_arg_int(a, 0, 0) & 63] = -1; return pp_undef(); }
+static pp_val n_gpio_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, 0) & 63; sim_dir[p] = 0; pp_wasm_note("gpio_dir", p, 0, 0, 0, 0); return pp_undef(); }
+static pp_val n_gpio_set_dir(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, 0) & 63; sim_dir[p] = pp_list_arg_int(a, 1, 0); pp_wasm_note("gpio_dir", p, sim_dir[p], 0, 0, 0); return pp_undef(); }
+static pp_val n_gpio_pull_up(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, 0) & 63; sim_pull[p] = 1; pp_wasm_note("gpio_pull", p, 1, 0, 0, 0); return pp_undef(); }
+static pp_val n_gpio_pull_down(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, 0) & 63; sim_pull[p] = -1; pp_wasm_note("gpio_pull", p, -1, 0, 0, 0); return pp_undef(); }
 static pp_val n_gpio_put(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; sim_gpio[pp_list_arg_int(a, 0, 0) & 63] = pp_list_arg_int(a, 1, 0) ? 1 : 0; return pp_undef(); }
 static int sim_get(int p);
 static pp_val n_gpio_get(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
@@ -112,6 +137,8 @@ static pp_val n_gpio_get(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static int sim_get(int p) {
     if (sim_dir[p]) return sim_gpio[p];
+    int ov = pp_wasm_gpio_override(p);
+    if (ov >= 0) return ov;
     /* PICOPERL_SIM_PRESSED="2:4,3:5" = switches between output pin 2 and input pin 4, 3 and 5.
        A pressed switch makes the input read the level of the output pin it is wired to
        (works for active-low/pull-up and active-high/pull-down matrices); an output at its
@@ -148,15 +175,23 @@ static pp_val n_matrix_scan(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_val r = pp_ref(res); pp_obj_decref(res);
     return r;
 }
-static pp_val n_encoder_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_encoder_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; pp_wasm_note("encoder", (int)pp_list_arg_int(a, 0, -1), (int)pp_list_arg_int(a, 1, -1), 0, 0, 0); return pp_int(1); }
 /* ADC simulation: PICOPERL_SIM_ADC="29:0x7440,28:0x8000" gives 16-bit values per pin (default mid scale) */
-static pp_val n_adc_configure(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int p = pp_list_arg_int(a, 0, -1); return (p >= 26 && p <= 29) || p == 4 ? pp_int(1) : pp_undef(); }
+static pp_val n_adc_configure(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    int p = pp_list_arg_int(a, 0, -1);
+    if (!((p >= 26 && p <= 29) || p == 4)) return pp_undef();
+    pp_wasm_note("adc", p, 0, 0, 0, 0);
+    return pp_int(1);
+}
 static pp_val n_adc_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
     int pin = pp_list_arg_int(a, 0, -1);
     long v16 = 0x8000;
     const char *env = getenv("PICOPERL_SIM_ADC");
     if (env) { const char *q = env; while (*q) { int p; long v; if (sscanf(q, "%d:%li", &p, &v) == 2 && p == pin) v16 = v; while (*q && *q != ',') q++; if (*q == ',') q++; } }
+    int ov = pp_wasm_adc_override(pin);
+    if (ov >= 0) v16 = ov;
     return pp_int((v16 >> 4) & 0xFFF);   /* natives return the raw 12-bit sample */
 }
 /* SSD1306 simulation: the display handle is the Gfx handle; PICOPERL_SIM_OLED=1 prints the frame as ASCII
@@ -168,6 +203,7 @@ static pp_val n_ssd_display(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_gfx *g = pp_gfx_handle(pp_list_arg_int(a, 0, 0));
     if (!g) return pp_int(0);
     oled_refreshes++;
+    pp_wasm_note_frame(g->w, g->h, g->buf, g->w * g->pages);
     const char *mode = getenv("PICOPERL_SIM_OLED");
     if (!mode) return pp_int(1);
     if (strcmp(mode, "count") == 0) { printf("[oled] refresh #%ld\n", oled_refreshes); fflush(stdout); return pp_int(1); }
@@ -196,6 +232,13 @@ static pp_val n_ws2812_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static pp_val n_ws2812_write_raw(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
+    uint8_t rgb[64 * 3]; int nn = a->n - 1;
+    if (nn > 64) nn = 64;
+    for (int i = 0; i < nn; i++) {   /* 0xGGRRBBxx per LED */
+        unsigned v = (unsigned)pp_to_int(a->v[i + 1]);
+        rgb[i * 3] = (v >> 16) & 255; rgb[i * 3 + 1] = (v >> 24) & 255; rgb[i * 3 + 2] = (v >> 8) & 255;
+    }
+    pp_wasm_note_leds(ws_pins[pp_list_arg_int(a, 0, 0) & 3], rgb, nn);
     if (getenv("PICOPERL_SIM_QUIET")) return pp_int(a->n - 1);
     printf("[ws2812 pin %d]", ws_pins[pp_list_arg_int(a, 0, 0) & 3]);
     for (int i = 1; i < a->n; i++) printf(" %08x", (unsigned)pp_to_int(a->v[i]));
@@ -209,12 +252,16 @@ static pp_val n_ws2812_put_color(pp_interp *I, pp_list *a, int ctx, pp_list *out
         pp_obj *h = a->v[1].u.o;
         r = (int)pp_to_int(pp_hash_get(h, "R", 1)); g = (int)pp_to_int(pp_hash_get(h, "G", 1)); b = (int)pp_to_int(pp_hash_get(h, "B", 1));
     } else { r = pp_list_arg_int(a, 1, 0); g = pp_list_arg_int(a, 2, 0); b = pp_list_arg_int(a, 3, 0); }
+    uint8_t rgb[3] = { (uint8_t)r, (uint8_t)g, (uint8_t)b };
+    pp_wasm_note_leds(ws_pins[pp_list_arg_int(a, 0, 0) & 3], rgb, 1);
     if (!getenv("PICOPERL_SIM_QUIET")) { printf("[ws2812 pin %d] R=%02x G=%02x B=%02x\n", ws_pins[pp_list_arg_int(a, 0, 0) & 3], r, g, b); fflush(stdout); }
     return pp_int(1);
 }
 static pp_val n_encoder_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     /* PICOPERL_SIM_ENCODER=N: report N steps once */
     (void)I; (void)a; (void)ctx; (void)out;
+    int pend = pp_wasm_encoder_take();
+    if (pend) return pp_int(pend);
     static int done;
     const char *e = getenv("PICOPERL_SIM_ENCODER");
     if (e && !done) { done = 1; return pp_int(atoi(e)); }
@@ -225,20 +272,27 @@ static pp_val n_sleep_ms(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_host_sleep_ms((uint32_t)pp_list_arg_int(a, 0, 0));
     return pp_undef();
 }
-static pp_val n_sleep_us(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; if (getenv("PICOPERL_SIM_FAST")) return pp_undef(); usleep(pp_list_arg_int(a, 0, 0)); return pp_undef(); }
+static pp_val n_sleep_us(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; if (getenv("PICOPERL_SIM_FAST")) return pp_undef(); host_wait_us((uint64_t)pp_list_arg_int(a, 0, 0)); return pp_undef(); }
 static pp_val n_time_ms(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(pp_host_millis()); }
 static pp_val n_usb_mounted(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_keyboard_report(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
+    uint8_t keys[6]; int nk = 0;
+    for (int i = 1; i < a->n && i <= 6; i++) keys[nk++] = (uint8_t)pp_to_int(a->v[i]);
+    pp_wasm_note_keys((int)pp_list_arg_int(a, 0, 0), keys, nk);
+    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(1);
     printf("[hid] mod=0x%02x keys=", (unsigned)pp_list_arg_int(a, 0, 0));
-    for (int i = 1; i < a->n && i <= 6; i++) printf("%s0x%02x", i > 1 ? "," : "", (unsigned)pp_to_int(a->v[i]));
+    for (int i = 0; i < nk; i++) printf("%s0x%02x", i > 0 ? "," : "", keys[i]);
     printf("\n");
     return pp_int(1);
 }
 static pp_val n_hid_mouse_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_mouse_report(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
+    pp_wasm_note("hid_mouse", (int)pp_list_arg_int(a, 0, 0), (int)pp_list_arg_int(a, 1, 0), (int)pp_list_arg_int(a, 2, 0),
+                 (int)pp_list_arg_int(a, 3, 0), (int)pp_list_arg_int(a, 4, 0));
+    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(1);
     printf("[mouse] buttons=0x%02x dx=%d dy=%d wheel=%d pan=%d\n", (unsigned)pp_list_arg_int(a, 0, 0), (int)pp_list_arg_int(a, 1, 0),
            (int)pp_list_arg_int(a, 2, 0), (int)pp_list_arg_int(a, 3, 0), (int)pp_list_arg_int(a, 4, 0));
     return pp_int(1);
@@ -250,7 +304,7 @@ static pp_val n_pwm_set_freq(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
     int pin = (int)pp_list_arg_int(a, 0, 0) & 31;
     double hz = a->n > 1 ? pp_to_num(a->v[1]) : 0;
-    if (!(hz > 0)) { if (!getenv("PICOPERL_SIM_QUIET")) printf("[pwm pin %d] off\n", pin); return pp_int(0); }
+    if (!(hz > 0)) { pp_wasm_note("pwm_stop", pin, 0, 0, 0, 0); if (!getenv("PICOPERL_SIM_QUIET")) printf("[pwm pin %d] off\n", pin); return pp_int(0); }
     double div = 125e6 / (hz * 65536.0);
     int div16 = (int)(div * 16.0); if ((double)div16 < div * 16.0) div16++;
     if (div16 < 16) div16 = 16;
@@ -258,17 +312,22 @@ static pp_val n_pwm_set_freq(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (wrap > 0xFFFF) wrap = 0xFFFF;
     pwm_top_of[(pin >> 1) & 7] = (int)wrap;
     double real = 125e6 / (div16 / 16.0) / (double)(wrap + 1);
+    pp_wasm_note("pwm_freq", pin, (int)(real * 1000 + 0.5), 0, 0, 0);   /* mHz */
     if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] %.2f Hz (div %.4f, wrap %ld)\n", pin, real, div16 / 16.0, wrap); fflush(stdout); }
     return pp_num(real);
 }
 static pp_val n_pwm_set_duty(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
-    if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] duty %.3f\n", (int)pp_list_arg_int(a, 0, 0), a->n > 1 ? pp_to_num(a->v[1]) : 0.0); fflush(stdout); }
+    int pin = (int)pp_list_arg_int(a, 0, 0);
+    double d = a->n > 1 ? pp_to_num(a->v[1]) : 0.0;
+    pp_wasm_note("pwm_duty", pin, (int)(d * 1000 + 0.5), 0, 0, 0);
+    if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] duty %.3f\n", pin, d); fflush(stdout); }
     return pp_undef();
 }
-static pp_val n_pwm_enable(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
+static pp_val n_pwm_enable(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; pp_wasm_note("pwm_en", (int)pp_list_arg_int(a, 0, 0), (int)pp_list_arg_int(a, 1, 1), 0, 0, 0); return pp_undef(); }
 static pp_val n_pwm_stop(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
+    pp_wasm_note("pwm_stop", (int)pp_list_arg_int(a, 0, 0), 0, 0, 0, 0);
     if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] stop\n", (int)pp_list_arg_int(a, 0, 0)); fflush(stdout); }
     return pp_undef();
 }
@@ -277,6 +336,8 @@ static pp_val n_hid_leds(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (voi
 static pp_val n_hid_consumer_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_consumer_report(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
+    pp_wasm_note("hid_consumer", (int)pp_list_arg_int(a, 0, 0), 0, 0, 0, 0);
+    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(1);
     printf("[consumer] usage=0x%03x\n", (unsigned)pp_list_arg_int(a, 0, 0));
     return pp_int(1);
 }
