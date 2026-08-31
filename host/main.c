@@ -41,7 +41,7 @@ char *pp_host_read_file(const char *name) {
     return NULL;
 }
 
-void pp_host_poll(void) {}
+void pp_host_poll(void);   /* defined below the GPIO simulation */
 void pp_host_fatal(const char *msg) { fputs(msg, stderr); exit(255); }
 int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out) || pp_tone_const(name, out); }
 
@@ -73,6 +73,20 @@ uint32_t pp_host_millis(void) {
 int64_t pp_host_time(void) { return (int64_t)time(NULL); }
 static long sim_cycles;
 static pp_interp *I_for_stats;
+
+/* sleep in short chunks so watched inputs are polled and a due event or
+ * alarm() wakes the script early, like a perl signal would */
+static void host_wait_us(uint64_t us);
+static void host_sleep_us_poll(uint64_t us) {
+    for (;;) {
+        pp_host_poll();
+        if (I_for_stats && pp_events_pending(I_for_stats)) return;
+        if (!us) return;
+        uint64_t chunk = us > 50000 ? 50000 : us;
+        host_wait_us(chunk);
+        us -= chunk;
+    }
+}
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 /* emscripten's libc has no mallinfo2: report zero heap use (only affects the [mem] stats line) */
@@ -112,7 +126,7 @@ void pp_host_sleep_ms(uint32_t ms) {
     const char *lim = getenv("PICOPERL_SIM_CYCLES");
     if (lim && ++sim_cycles >= atol(lim)) { printf("[sim] %ld cycles done\n", sim_cycles); fflush(stdout); exit(0); }
     if (getenv("PICOPERL_SIM_FAST")) return;
-    host_wait_us((uint64_t)ms * 1000);
+    host_sleep_us_poll((uint64_t)ms * 1000);
 }
 char *pp_host_read_line(void) {
     char buf[4096];
@@ -267,12 +281,49 @@ static pp_val n_encoder_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (e && !done) { done = 1; return pp_int(atoi(e)); }
     return pp_int(0);
 }
+
+/* ---- deferred events for Perl callbacks (Gpio->new(on_falling => ...)) ----
+ * The page's widgets (wasm) or the PICOPERL_SIM_* env change simulated inputs;
+ * pp_host_poll turns level changes into events for PicoPerl::Event. */
+static uint8_t watch_mask[64];      /* bit 1: falling, bit 2: rising */
+static uint8_t watch_last[64];
+static int enc_watch_on, enc_env_sent;
+
+static pp_val n_gpio_watch(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    int p = pp_list_arg_int(a, 0, 0) & 63;
+    watch_mask[p] = (uint8_t)pp_list_arg_int(a, 1, 3);
+    watch_last[p] = (uint8_t)sim_get(p);
+    return pp_int(1);
+}
+static pp_val n_encoder_watch(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    enc_watch_on = (int)pp_list_arg_int(a, 0, 1);
+    return pp_int(1);
+}
+
+void pp_host_poll(void) {
+    pp_interp *I = I_for_stats;
+    if (!I) return;
+    for (int p = 0; p < 64; p++) {
+        if (!watch_mask[p]) continue;
+        int v = sim_get(p);
+        if (v == watch_last[p]) continue;
+        watch_last[p] = (uint8_t)v;
+        if (watch_mask[p] & (v ? 2 : 1)) pp_event_push(I, PP_EV_GPIO, p, v);
+    }
+    if (enc_watch_on) {
+        int s = pp_wasm_encoder_take();
+        if (!s && !enc_env_sent && getenv("PICOPERL_SIM_ENCODER")) { s = atoi(getenv("PICOPERL_SIM_ENCODER")); enc_env_sent = 1; }
+        if (s) pp_event_push(I, PP_EV_ENCODER, 0, s);
+    }
+}
 static pp_val n_sleep_ms(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
     pp_host_sleep_ms((uint32_t)pp_list_arg_int(a, 0, 0));
     return pp_undef();
 }
-static pp_val n_sleep_us(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; if (getenv("PICOPERL_SIM_FAST")) return pp_undef(); host_wait_us((uint64_t)pp_list_arg_int(a, 0, 0)); return pp_undef(); }
+static pp_val n_sleep_us(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; if (getenv("PICOPERL_SIM_FAST")) return pp_undef(); host_sleep_us_poll((uint64_t)pp_list_arg_int(a, 0, 0)); return pp_undef(); }
 static pp_val n_time_ms(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(pp_host_millis()); }
 static pp_val n_usb_mounted(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
@@ -359,6 +410,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Gpio::_pull_down", n_gpio_pull_down);
     pp_register(I, "Gpio::_put", n_gpio_put);
     pp_register(I, "Gpio::_get", n_gpio_get);
+    pp_register(I, "Gpio::_watch", n_gpio_watch);
+    pp_register(I, "Encoder::_watch", n_encoder_watch);
     pp_register(I, "Time::HiRes::_sleep_ms", n_sleep_ms);
     pp_register(I, "Time::HiRes::_usleep", n_sleep_us);
     pp_register(I, "Time::HiRes::_time_ms", n_time_ms);

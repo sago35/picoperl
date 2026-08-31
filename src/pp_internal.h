@@ -73,6 +73,7 @@ pp_val  *pp_lvalue(pp_interp *I, pp_node *n);
 pp_val   pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out);
 pp_val   pp_sprintf(pp_interp *I, pp_list *args, int start);
 void     pp_warn_uninit_args(pp_interp *I, pp_node *n, pp_list *args, const char *what);
+void     pp_emit_warning(pp_interp *I, const char *msg, int len);   /* honours $SIG{__WARN__} */
 void     pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code);
 pp_val   pp_die_val(pp_interp *I, pp_val msg);
 int      pp_builtin_id(const char *name, int len, int *kind);

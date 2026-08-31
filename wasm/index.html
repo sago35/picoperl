@@ -231,6 +231,23 @@ while (1) {
 }
 </script>
 
+<script type="text/x-perl" id="sample-割り込みコールバック">use strict;
+use Gpio;
+use Encoder;
+
+# 下の「入力」パネルのボタンとホイールで操作。コールバックは perl のシグナルと
+# 同じく「文の切れ目」で呼ばれます (割り込みコンテキストでは走りません)
+my $count = 0;
+my $btn = Gpio->new(2, 'input_pullup',
+    on_falling => sub { $count++; print "button pressed ($count)\n" },
+    on_rising  => sub { print "  released\n" });
+my $enc = Encoder->new(3, 4, on_turn => sub { print "turn: $_[0]\n" });
+$SIG{ALRM} = sub { print "-- 10s tick (alarm) --\n"; alarm 10 };
+alarm 10;
+print "waiting for events...\n";
+while (1) { sleep 0.05 }
+</script>
+
 <script type="text/x-perl" id="sample-HID (キーボード/マウス)" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
 use Gpio;
 use Encoder;

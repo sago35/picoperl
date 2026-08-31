@@ -266,7 +266,19 @@ struct pp_interp {
     pp_re_ent re_cache[4];       /* compiled dynamic patterns */
     int      re_next;
     unsigned compat_warn;        /* once-only "picoperl behaves differently here" notes (bit 1 utf8, 2 map/grep, 4 foreach) */
+    /* deferred events (perl "safe signals" style): the host pushes from its poll
+     * (never from an ISR), handlers run between statements */
+    struct { uint8_t kind; int16_t a; int32_t b; } evq[16];
+    int      ev_head, ev_tail;   /* ring buffer; empty when equal */
+    uint32_t alarm_at;           /* alarm() deadline in pp_host_millis() time; 0 = none */
+    uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
+    uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
+    pp_sym  *sym_dispatch;       /* &PicoPerl::Event::_dispatch (interned on first event) */
+    pp_sym  *sym_sig;            /* %SIG (interned on first use) */
 };
+
+/* event kinds for pp_event_push */
+enum { PP_EV_GPIO = 1, PP_EV_ENCODER };
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */
@@ -278,6 +290,14 @@ void       pp_free(pp_interp *I);
 /* Parse & run source. Returns 0 on success, non-zero on error
  * (parse error, uncaught die, or exit with non-zero code). */
 int        pp_run(pp_interp *I, const char *filename, const char *src);
+
+/* Deferred callbacks: the host queues events (from pp_host_poll or natives, not
+ * from ISRs) and the interpreter runs the handlers registered in Perl
+ * (lib/PicoPerl/Event.pm) between statements. a/b are event-specific
+ * (gpio: pin/level, encoder: index/steps). */
+void       pp_event_push(pp_interp *I, int kind, int a, int b);
+int        pp_events_pending(pp_interp *I);   /* also true when an alarm() is due */
+void       pp_events_poll(pp_interp *I);      /* run pending handlers + a due alarm */
 
 /* Register a native function callable from Perl as name(...) */
 void       pp_register(pp_interp *I, const char *name, pp_native fn);

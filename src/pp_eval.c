@@ -9,24 +9,37 @@
 /* errors                                                              */
 /* ------------------------------------------------------------------ */
 
+static pp_obj *sig_handler(pp_interp *I, const char *name);
+
 pp_val pp_die_val(pp_interp *I, pp_val msg) {
     /* takes ownership of msg */
-    if (msg.t == PP_REF) {   /* die with an object */
-        pp_release(I->err);
-        I->err = msg;
-        I->ctl = CTL_DIE;
-        return pp_undef();
+    pp_val v;
+    if (msg.t == PP_REF) v = msg;   /* die with an object */
+    else {
+        pp_str *s = pp_to_str(msg);
+        pp_release(msg);
+        if (s->len == 0 || s->d[s->len - 1] != '\n') {
+            char tail[160];
+            int n = snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line);
+            s = pp_str_reserve(s, n);
+            memcpy(s->d + s->len, tail, n); s->len += n; s->d[s->len] = 0;
+        }
+        v = pp_str_val(s);
     }
-    pp_str *s = pp_to_str(msg);
-    pp_release(msg);
-    if (s->len == 0 || s->d[s->len - 1] != '\n') {
-        char tail[160];
-        int n = snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line);
-        s = pp_str_reserve(s, n);
-        memcpy(s->d + s->len, tail, n); s->len += n; s->d[s->len] = 0;
+    if (!(I->hook_busy & 2)) {
+        pp_obj *h = sig_handler(I, "__DIE__");
+        if (h) {   /* like perl: the hook sees the final message; if it dies itself, its error wins */
+            I->hook_busy |= 2;
+            pp_list args = {0};
+            pp_list_push(&args, pp_copy(v));
+            pp_val r = pp_call(I, h, &args, CTX_VOID, NULL);
+            pp_release(r); pp_list_free(&args);
+            I->hook_busy &= (uint8_t)~2;
+            if (I->ctl == CTL_DIE) { pp_release(v); return pp_undef(); }
+        }
     }
     pp_release(I->err);
-    I->err = pp_str_val(s);
+    I->err = v;
     I->ctl = CTL_DIE;
     return pp_undef();
 }
@@ -70,6 +83,33 @@ void pp_warn_uninit_args(pp_interp *I, pp_node *n, pp_list *args, const char *wh
     }
 }
 
+/* the %SIG{name} handler coderef, or NULL */
+static pp_obj *sig_handler(pp_interp *I, const char *name) {
+    if (!I->sym_sig) I->sym_sig = pp_intern(I, "%SIG", 4);
+    pp_obj *h = I->sym_sig->gcell;
+    if (!h || h->kind != PP_OHASH) return NULL;
+    pp_val *v = pp_hash_find(h, name, (int)strlen(name));
+    if (!v || v->t != PP_REF || v->u.o->kind != PP_OCODE) return NULL;
+    return v->u.o;
+}
+
+/* final warning text: goes to $SIG{__WARN__} when set (not recursively), else stderr */
+void pp_emit_warning(pp_interp *I, const char *msg, int len) {
+    if (!(I->hook_busy & 1)) {
+        pp_obj *h = sig_handler(I, "__WARN__");
+        if (h) {
+            I->hook_busy |= 1;
+            pp_list args = {0};
+            pp_list_push(&args, pp_strn(msg, len));
+            pp_val r = pp_call(I, h, &args, CTX_VOID, NULL);
+            pp_release(r); pp_list_free(&args);
+            I->hook_busy &= (uint8_t)~1;
+            return;
+        }
+    }
+    pp_host_write(2, msg, len);
+}
+
 void pp_warn(pp_interp *I, const char *fmt, ...) {
     char buf[300];
     va_list ap; va_start(ap, fmt);
@@ -77,7 +117,7 @@ void pp_warn(pp_interp *I, const char *fmt, ...) {
     va_end(ap);
     if (n < 0) return;
     n += snprintf(buf + n, sizeof buf - n, " at %s line %d.\n", I->file ? I->file : "-", I->line);
-    pp_host_write(2, buf, n);
+    pp_emit_warning(I, buf, n);
 }
 
 /* Resolve "&Pkg::name" (or "&name" in main). Perl rules: only the package's own subs
@@ -763,6 +803,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         if (s->line) I->line = s->line;   /* line 0: signature check, keep the caller's line */
         I->warn_on = (s->flags & PP_STMT_WARN) != 0;
         if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+        if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
         int is_last = i == blk->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
@@ -824,11 +865,13 @@ static NOINLINE pp_val eval_while(pp_interp *I, pp_node *n) {
     if (n->flags & 8) {    /* do {} while */
         do {
             if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+            if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
             if (loop_body(I, n->b, n->sym)) break;
         } while (cond_true(I, n->a) != until && !I->ctl);
     } else {
         for (;;) {
             if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+            if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
             /* `while (my $x = ...)`: a fresh scope per iteration, so closures capture their own $x */
             pp_env *it = NULL;
             if (n->flags & 4) { it = pp_env_new(saved, n->aux); I->env = it; }
@@ -851,6 +894,7 @@ static NOINLINE pp_val eval_for(pp_interp *I, pp_node *n) {
     if (n->a) { pp_val v = pp_eval(I, n->a, CTX_VOID, NULL); pp_release(v); }
     while (!I->ctl) {
         if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+        if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
         if (!cond_true(I, n->b)) break;
         if (loop_body(I, n->d, n->sym)) break;
         if (n->c) { pp_val v = pp_eval(I, n->c, CTX_VOID, NULL); pp_release(v); }
@@ -888,6 +932,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
     if (!I->ctl) {
         for (int i = 0; i < items.n; i++) {
             if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+            if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
             pp_release(cell->u.scalar);
             cell->u.scalar = pp_copy(items.v[i]);
             int brk;
@@ -1769,6 +1814,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         I->line = s->line;
         I->warn_on = (s->flags & PP_STMT_WARN) != 0;
         if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
+        if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
         int is_last = i == unit->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
@@ -1845,6 +1891,60 @@ void pp_define_const(pp_interp *I, const char *name, pp_val v) {
     code->u.code.constval = v;
     code->u.code.name = name;
     define_const_sym(I, name, code);
+}
+
+/* ------------------------------------------------------------------ */
+/* deferred events (perl "safe signals" style): the host queues them,  */
+/* handlers run between statements                                     */
+/* ------------------------------------------------------------------ */
+
+void pp_event_push(pp_interp *I, int kind, int a, int b) {
+    int next = (I->ev_head + 1) & 15;
+    if (next == I->ev_tail) return;              /* queue full: drop the event */
+    I->evq[I->ev_head].kind = (uint8_t)kind;
+    I->evq[I->ev_head].a = (int16_t)a;
+    I->evq[I->ev_head].b = b;
+    I->ev_head = next;
+}
+
+int pp_events_pending(pp_interp *I) {
+    if (I->in_dispatch) return 0;
+    if (I->ev_head != I->ev_tail) return 1;
+    return I->alarm_at && (int32_t)(pp_host_millis() - I->alarm_at) >= 0;
+}
+
+static void call_handler(pp_interp *I, pp_obj *code, pp_list *args) {
+    pp_val r = pp_call(I, code, args, CTX_VOID, NULL);
+    pp_release(r);
+    pp_list_free(args);
+}
+
+void pp_events_poll(pp_interp *I) {
+    if (I->in_dispatch || I->ctl) return;
+    I->in_dispatch = 1;
+    while (I->ev_tail != I->ev_head && !I->ctl) {
+        int kind = I->evq[I->ev_tail].kind, a = I->evq[I->ev_tail].a, b = I->evq[I->ev_tail].b;
+        I->ev_tail = (I->ev_tail + 1) & 15;
+        if (!I->sym_dispatch) I->sym_dispatch = pp_intern(I, "&PicoPerl::Event::_dispatch", 27);
+        pp_obj *code = pp_lookup_sub(I, I->sym_dispatch);
+        if (!code) continue;                     /* PicoPerl::Event not loaded: drop */
+        pp_list args = {0};
+        pp_list_push(&args, pp_cstr(kind == PP_EV_ENCODER ? "encoder" : "gpio"));
+        pp_list_push(&args, pp_int(a));
+        pp_list_push(&args, pp_int(b));
+        call_handler(I, code, &args);
+    }
+    if (!I->ctl && I->alarm_at && (int32_t)(pp_host_millis() - I->alarm_at) >= 0) {
+        I->alarm_at = 0;
+        pp_obj *h = sig_handler(I, "ALRM");
+        if (h) {
+            pp_list args = {0};
+            pp_list_push(&args, pp_cstr("ALRM"));
+            call_handler(I, h, &args);
+        }
+        else pp_die(I, "Alarm clock");           /* perl is killed by SIGALRM; picoperl dies */
+    }
+    I->in_dispatch = 0;
 }
 
 int pp_run(pp_interp *I, const char *filename, const char *src) {

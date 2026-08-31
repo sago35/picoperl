@@ -11,7 +11,7 @@ enum {
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
     B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS,
-    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ABS_END
+    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ABS_END
 };
 
 static const struct { const char *name; int id; int kind; } builtins[] = {
@@ -31,7 +31,8 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "time", B_TIME, BK_NOARG }, { "sleep", B_SLEEP, BK_UNARY }, { "readline", B_READLINE, BK_NOARG }, { "binmode", B_BINMODE, BK_LIST },
     { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "pos", B_POS, BK_UNARY },
     { "open", B_OPEN, BK_LIST }, { "close", B_CLOSE, BK_UNARY }, { "eof", B_EOF, BK_UNARY },
-    { "seek", B_SEEK, BK_LIST }, { "tell", B_TELL, BK_UNARY }, { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
+    { "seek", B_SEEK, BK_LIST }, { "tell", B_TELL, BK_UNARY }, { "alarm", B_ALARM, BK_UNARY },
+    { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
     { NULL, 0, 0 }
 };
 
@@ -612,7 +613,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         msg = pp_str_val(r);
         if (n->op == B_DIE) return pp_die_val(I, msg);
         if (r->d[r->len - 1] != '\n') { char tail[160]; int tn = snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line); str_append(&r, tail, tn); }
-        pp_host_write(2, r->d, r->len);
+        pp_emit_warning(I, r->d, r->len);
         pp_release(msg);
         return ret(ctx, out, pp_int(1));
     }
@@ -956,6 +957,22 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         double s = pp_to_num(v); pp_release(v);
         pp_host_sleep_ms((uint32_t)(s * 1000));
         return ret(ctx, out, pp_int((int64_t)s));
+    }
+    case B_ALARM: {
+        pp_val v = unary_arg(I, n);
+        if (I->ctl) { pp_release(v); return pp_undef(); }
+        int64_t secs = pp_to_int(v); pp_release(v);
+        uint32_t now = pp_host_millis();
+        int64_t prev = 0;
+        if (I->alarm_at) {
+            int32_t d = (int32_t)(I->alarm_at - now);
+            prev = d > 0 ? (d + 999) / 1000 : 0;   /* remaining, rounded up like perl */
+        }
+        if (secs > 0) {
+            I->alarm_at = now + (uint32_t)secs * 1000u;
+            if (!I->alarm_at) I->alarm_at = 1;     /* 0 means "no alarm armed" */
+        } else I->alarm_at = 0;
+        return ret(ctx, out, pp_int(prev));
     }
     case B_READLINE: {
         check_irs(I);

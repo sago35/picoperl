@@ -53,10 +53,13 @@ static bool fs_ok;
 /* host hooks required by the interpreter                              */
 /* ------------------------------------------------------------------ */
 
+static void drain_board_events(void);   /* GPIO/encoder edges recorded by the IRQ handler */
+
 void pp_host_poll(void) {
     tud_task();
     tud_cdc_write_flush();
     flashfs_poll();
+    drain_board_events();
     if (current && flashfs_reload_pending()) pp_request_exit(current, PP_EXIT_RELOAD);
 }
 
@@ -130,6 +133,7 @@ void pp_host_sleep_ms(uint32_t ms) {
         pp_host_poll();
         if (time_reached(deadline)) break;
         if (current && current->ctl) break;     /* exit/reload requested: return to the interpreter */
+        if (current && pp_events_pending(current)) break;   /* wake early, like a perl signal */
         sleep_us(200);
     } while (1);
 }
@@ -538,20 +542,58 @@ static uint enc_pin_a = 0xFF, enc_pin_b = 0xFF;
 static uint8_t enc_prev_state;
 static const int8_t enc_table[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
 
-static void enc_irq(uint gpio, uint32_t events) {
-    (void)gpio; (void)events;
-    if (enc_pin_a == 0xFF) return;
-    uint8_t cur = (uint8_t)((gpio_get(enc_pin_a) << 1) | gpio_get(enc_pin_b));
-    enc_position += enc_table[(enc_prev_state << 2) | cur];
-    enc_prev_state = cur;
+/* GPIO edge events for Perl callbacks (Gpio->new(2, 'input_pullup', on_falling => ...)):
+ * the shared IRQ handler records edges in a small ring; drain_board_events() (called
+ * from pp_host_poll, i.e. in the main loop, never in the ISR) turns them into
+ * deferred events that PicoPerl::Event dispatches between statements. */
+static volatile struct { uint8_t pin; uint8_t level; } gpio_ev[32];
+static volatile uint8_t gpio_ev_h, gpio_ev_t;
+static int enc_watch_on;
+
+static void gpio_irq(uint gpio, uint32_t events) {
+    if (enc_pin_a != 0xFF && (gpio == enc_pin_a || gpio == enc_pin_b)) {
+        uint8_t cur = (uint8_t)((gpio_get(enc_pin_a) << 1) | gpio_get(enc_pin_b));
+        enc_position += enc_table[(enc_prev_state << 2) | cur];
+        enc_prev_state = cur;
+        return;
+    }
+    uint8_t next = (uint8_t)((gpio_ev_h + 1) & 31);
+    if (next == gpio_ev_t) return;               /* ring full: drop the edge */
+    gpio_ev[gpio_ev_h].pin = (uint8_t)gpio;
+    gpio_ev[gpio_ev_h].level = (events & GPIO_IRQ_EDGE_RISE) ? 1 : 0;
+    gpio_ev_h = next;
 }
+
+static void drain_board_events(void) {
+    if (!current) { gpio_ev_t = gpio_ev_h; return; }
+    while (gpio_ev_t != gpio_ev_h) {
+        uint8_t t = gpio_ev_t;
+        pp_event_push(current, PP_EV_GPIO, gpio_ev[t].pin, gpio_ev[t].level);
+        gpio_ev_t = (uint8_t)((t + 1) & 31);
+    }
+    if (enc_watch_on) {
+        int32_t pos = enc_position;
+        int32_t d = pos - enc_last_read;
+        if (d) { enc_last_read = pos; pp_event_push(current, PP_EV_ENCODER, 0, d); }
+    }
+}
+
+/* Gpio::_watch($pin, $mask): mask bit 1 = falling, bit 2 = rising */
+NATIVE(n_gpio_watch) {
+    UNUSED;
+    uint pin = (uint)ARG_INT(0, 0) & 31;
+    int mask = ARG_INT(1, 3);
+    gpio_set_irq_enabled_with_callback(pin, (mask & 1 ? GPIO_IRQ_EDGE_FALL : 0u) | (mask & 2 ? GPIO_IRQ_EDGE_RISE : 0u), true, gpio_irq);
+    return pp_int(1);
+}
+NATIVE(n_encoder_watch) { UNUSED; enc_watch_on = ARG_INT(0, 1); return pp_int(1); }
 NATIVE(n_encoder_init) {
     UNUSED;
     enc_pin_a = (uint)ARG_INT(0, 0); enc_pin_b = (uint)ARG_INT(1, 0);
     for (int i = 0; i < 2; i++) { uint p = i ? enc_pin_b : enc_pin_a; gpio_init(p); gpio_set_dir(p, GPIO_IN); gpio_pull_up(p); }
     enc_prev_state = (uint8_t)((gpio_get(enc_pin_a) << 1) | gpio_get(enc_pin_b));
     enc_position = 0; enc_last_read = 0;
-    gpio_set_irq_enabled_with_callback(enc_pin_a, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, enc_irq);
+    gpio_set_irq_enabled_with_callback(enc_pin_a, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, gpio_irq);
     gpio_set_irq_enabled(enc_pin_b, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
     return pp_int(1);
 }
@@ -571,6 +613,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Gpio::_disable_pulls", n_gpio_disable_pulls);
     pp_register(I, "Gpio::_put", n_gpio_put);
     pp_register(I, "Gpio::_get", n_gpio_get);
+    pp_register(I, "Gpio::_watch", n_gpio_watch);
+    pp_register(I, "Encoder::_watch", n_encoder_watch);
     pp_register(I, "Time::HiRes::_sleep_ms", n_sleep_ms);
     pp_register(I, "Time::HiRes::_usleep", n_sleep_us);
     pp_register(I, "Time::HiRes::_time_ms", n_time_ms);

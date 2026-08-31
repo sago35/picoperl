@@ -164,9 +164,9 @@ EOF です。
 
 | モジュール | 使い方 |
 |---|---|
-| `Gpio` | `my $p = Gpio->new(2, 'input_pullup')` (`'input'`, `'input_pulldown'`, `'output'`); `$p->read`, `$p->write($v)`, `$p->high`, `$p->low`, `$p->toggle`。関数形式 `Gpio::configure($pin, $mode)`, `Gpio::get($pin)`, `Gpio::put($pin, $v)` |
+| `Gpio` | `my $p = Gpio->new(2, 'input_pullup')` (`'input'`, `'input_pulldown'`, `'output'`); `$p->read`, `$p->write($v)`, `$p->high`, `$p->low`, `$p->toggle`。関数形式 `Gpio::configure($pin, $mode)`, `Gpio::get($pin)`, `Gpio::put($pin, $v)`。エッジコールバック: `Gpio->new(2, 'input_pullup', on_falling => sub { ... })` / `$p->watch(rising => sub { ... })` (falling / rising / change) |
 | `Ws2812` | `my $ws = Ws2812->new($pin)`; `$ws->put_color({ R => .., G => .., B => .. })`; `$ws->write_raw(@grb)` (LED ごとに `0xGGRRBBxx`); `$ws->write([r,g,b], ...)`; `Ws2812::rgb($r,$g,$b)` |
-| `Encoder` | `my $e = Encoder->new($a, $b, precision => 4)`; `$e->read` (前回からのクリック数), `$e->position`, `$e->read_raw` (割り込みデコード) |
+| `Encoder` | `my $e = Encoder->new($a, $b, precision => 4)`; `$e->read` (前回からのクリック数), `$e->position`, `$e->read_raw` (割り込みデコード)。コールバック: `Encoder->new(3, 4, on_turn => sub { my ($clicks) = @_; ... })` |
 | `Ssd1306` | `my $d = Ssd1306->new(sda => 12, scl => 13, address => 0x3C, width => 128, height => 64, rotation => 180)`; `$d->clear_display`, `$d->set_pixel($x,$y,$c)`, `$d->display`, `$d->size`, `$d->set_rotation`, `$d->invert`, `$d->contrast` + `Gfx` の描画メソッド |
 | `Gfx` | フレームバッファ (C 実装): `line`, `rectangle`, `filled_rectangle`, `circle`, `filled_circle`, `triangle`, `filled_triangle`, `write_line($font, $x, $y, $text, $c, $scale)` (x,y はベースライン)、`Gfx::fonts()` |
 | `Tinydraw` / `Tinyfont` | tinygo 風の関数形式: `Tinydraw::Rectangle($d, ...)`, `Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, $x, $y, "hello", $c)`。内蔵フォント: `classic` (5x7), `freemono_bold_9pt`, `gophers_32pt`, `gophers_58pt` |
@@ -187,6 +187,26 @@ EOF です。
 `print`, `printf`, `warn`, `die` の出力先は USB CDC シリアルと UART0 (GP0/GP1)、`<STDIN>` は CDC から 1 行読みます。
 USB の処理 (`tud_task`) はインタプリタが `sleep` の中や一定ステートメントごとに自動で呼ぶので、
 スクリプト側で意識する必要はありません。
+
+### 割り込みコールバック
+
+GPIO とエンコーダには perl の "safe signals" と同じ遅延ディスパッチのコールバックを
+登録できます: 割り込みハンドラ (C) はイベントを積むだけで、コールバックは**文の切れ目**に
+通常の Perl コードとして呼ばれます (割り込みコンテキストでは走らず、ハンドラ内の `die` も
+普通に伝播します)。タイマは perl 標準の `alarm` + `$SIG{ALRM}` です:
+
+```perl
+my $btn = Gpio->new(2, 'input_pullup', on_falling => sub { print "pressed\n" });
+my $enc = Encoder->new(3, 4, on_turn => sub { my ($clicks) = @_; ... });
+$SIG{ALRM} = sub { ... };  alarm 5;
+while (1) { sleep 0.1 }        # イベントが来ると sleep は早く戻る (perl のシグナルと同じ)
+```
+
+エッジはノイズも拾うため、「エッジで起こしてレベルで確定」を既定にしています:
+ディスパッチ時 (エッジの数 ms 後) にピンを読み直し、エッジ方向と一致しないイベント
+(エンコーダ操作のクロストークなど µs 級のグリッチ) は捨てます。それでも機械式
+スイッチの押下自体はチャタリングするので、連打検出が要る場面ではハンドラ側の
+時間デバウンスも併用してください (`scripts/irq_demo.pl` に例があります)。
 
 ## 対応している Perl の範囲
 
@@ -249,6 +269,9 @@ lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイル
 新しめの構文 (後置デリファレンス `$r->@*`、`isa` 演算子、`try/catch`、`for my ($k, $v)`、
 `builtin::`、`class`)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
+**`%SIG`** は `__WARN__` / `__DIE__` フックと `alarm` + `$SIG{ALRM}` に対応しています
+(perl の safe signals と同じく文の切れ目で配送。未捕捉の ALRM は `Alarm clock` で die)。
+他のシグナル名は受け付けて無視します。
 
 **XS には対応していません** (DynaLoader も perl の C API もありません)。`JSON::XS` や
 `Digest::SHA` のように XS を使う CPAN モジュール (依存に含む場合も) は動きません。

@@ -7,8 +7,14 @@ package Gpio;
 #   my $btn = Gpio->new(2, 'input_pullup');
 #   if (!$btn->get) { ... }                      # pressed (active low)
 #
+# Edge callbacks (dispatched between statements, never in interrupt context):
+#   my $btn = Gpio->new(2, 'input_pullup', on_falling => sub { ... });
+#   $btn->watch(rising => sub { ... });          # falling / rising / change (gets the level)
+# A mechanical switch bounces: debounce in the handler if it matters.
+#
 # Class functions work on bare pin numbers: Gpio::configure(2, 'input_pullup'); Gpio::get(2);
 use strict;
+use PicoPerl::Event;
 
 sub configure {
     my ($pin, $mode) = @_;
@@ -25,10 +31,21 @@ sub get { return Gpio::_get($_[0]) }
 sub put { return Gpio::_put($_[0], $_[1] ? 1 : 0) }
 
 sub new {
-    my ($class, $pin, $mode) = @_;
+    my ($class, $pin, $mode, %opt) = @_;
     die "Gpio->new(pin, mode): pin is required\n" unless defined $pin;
     configure($pin, $mode);
-    my $self = bless { pin => $pin, mode => $mode // 'input', state => 0 }, $class;
+    my $self = bless { pin => $pin, mode => $mode // 'input', state => 0, watch_mask => 0 }, $class;
+    for my $edge (qw(falling rising change)) {
+        $self->watch($edge, $opt{"on_$edge"}) if $opt{"on_$edge"};
+    }
+    return $self;
+}
+
+sub watch {
+    my ($self, $edge, $cb) = @_;
+    PicoPerl::Event::on_gpio($self->{pin}, $edge, $cb);
+    $self->{watch_mask} |= $edge eq 'falling' ? 1 : $edge eq 'rising' ? 2 : 3;
+    Gpio::_watch($self->{pin}, $self->{watch_mask}) if defined &Gpio::_watch;
     return $self;
 }
 sub pin       { $_[0]->{pin} }
