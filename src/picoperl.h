@@ -322,6 +322,8 @@ int         pp_host_const(const char *name, pp_val *out);
 /* keycode table (src/pp_keycodes.c) */
 void        pp_keycodes_register(pp_interp *I);
 int         pp_keycodes_const(const char *name, pp_val *out);
+/* note constants (src/pp_tone.c): "Tone::C5" -> MIDI note number */
+int         pp_tone_const(const char *name, pp_val *out);
 int         pp_keycode_value(const char *name);
 const char *pp_keycode_name(int code);
 

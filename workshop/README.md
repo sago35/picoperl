@@ -21,5 +21,10 @@ make uf2 SCRIPT=workshop/01_blinky1/main.pl NAME=01_blinky1   # -> dist/picoperl
 | `09_oled_tinyfont` | FreeMono Bold 9pt と gophers 32pt で文字を描く | `Tinyfont::WriteLine` |
 | `10_oled_rotated` | 縦向き (64x128) に回転して描く | `set_rotation(270)`, `size` |
 | `11_oled_animation` | 文字列を回転させるアニメーション (180 度回転) | `rotation => 180`, `clear_buffer` |
+| `12_matrix_basic` | 4x3 マトリクスを手動でスキャンして swN pressed を表示 | `Gpio->new`, `high` / `low` / `read` |
+| `13_rotary_button` | エンコーダのボタン (GPIO2) の pressed / released を表示 | `Gpio->new(2, 'input_pullup')` |
+| `14_hid_keyboard` | ボタンを押している間 `a` を送る | `Hid::keyboard_report`, `KC_A` |
+| `15_hid_mouse` | ボタンを押している間マウスの左ボタンを押す | `Mouse->new`, `press(Mouse::LEFT)`, `release` |
 | `16_oled_inverted_hw` | 09 を 180 度回転して表示 | `set_rotation(180)` |
 | `20_rotary_gopher` | エンコーダで gophers フォントのアルファベットをスクロール | `Encoder`, `Tinyfont::LineWidth`, `clear_buffer` |
+| `22_buzzer` | 圧電ブザー (EX01 = GPIO14) でドレミファソラシド | `Tone->new(14)`, `set_note(Tone::C5)` |

@@ -42,7 +42,7 @@ char *pp_host_read_file(const char *name) {
 
 void pp_host_poll(void) {}
 void pp_host_fatal(const char *msg) { fputs(msg, stderr); exit(255); }
-int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out); }
+int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out) || pp_tone_const(name, out); }
 
 uint32_t pp_host_millis(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -214,6 +214,43 @@ static pp_val n_hid_keyboard_report(pp_interp *I, pp_list *a, int ctx, pp_list *
     printf("\n");
     return pp_int(1);
 }
+static pp_val n_hid_mouse_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_hid_mouse_report(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    printf("[mouse] buttons=0x%02x dx=%d dy=%d wheel=%d pan=%d\n", (unsigned)pp_list_arg_int(a, 0, 0), (int)pp_list_arg_int(a, 1, 0),
+           (int)pp_list_arg_int(a, 2, 0), (int)pp_list_arg_int(a, 3, 0), (int)pp_list_arg_int(a, 4, 0));
+    return pp_int(1);
+}
+/* PWM: prints what the firmware would program; the period is modelled with a 16-bit counter at 125 MHz */
+static int pwm_top_of[8] = { 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535 };
+static pp_val n_pwm_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int((pp_list_arg_int(a, 0, 0) >> 1) & 7); }
+static pp_val n_pwm_set_freq(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    int pin = (int)pp_list_arg_int(a, 0, 0) & 31;
+    double hz = a->n > 1 ? pp_to_num(a->v[1]) : 0;
+    if (!(hz > 0)) { if (!getenv("PICOPERL_SIM_QUIET")) printf("[pwm pin %d] off\n", pin); return pp_int(0); }
+    double div = 125e6 / (hz * 65536.0);
+    int div16 = (int)(div * 16.0); if ((double)div16 < div * 16.0) div16++;
+    if (div16 < 16) div16 = 16;
+    long wrap = (long)(125e6 / (div16 / 16.0) / hz + 0.5) - 1;
+    if (wrap > 0xFFFF) wrap = 0xFFFF;
+    pwm_top_of[(pin >> 1) & 7] = (int)wrap;
+    double real = 125e6 / (div16 / 16.0) / (double)(wrap + 1);
+    if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] %.2f Hz (div %.4f, wrap %ld)\n", pin, real, div16 / 16.0, wrap); fflush(stdout); }
+    return pp_num(real);
+}
+static pp_val n_pwm_set_duty(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] duty %.3f\n", (int)pp_list_arg_int(a, 0, 0), a->n > 1 ? pp_to_num(a->v[1]) : 0.0); fflush(stdout); }
+    return pp_undef();
+}
+static pp_val n_pwm_enable(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
+static pp_val n_pwm_stop(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (!getenv("PICOPERL_SIM_QUIET")) { printf("[pwm pin %d] stop\n", (int)pp_list_arg_int(a, 0, 0)); fflush(stdout); }
+    return pp_undef();
+}
+static pp_val n_pwm_top(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(pwm_top_of[(pp_list_arg_int(a, 0, 0) >> 1) & 7]); }
 static pp_val n_hid_leds(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(0); }
 static pp_val n_hid_consumer_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
 static pp_val n_hid_consumer_report(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
@@ -248,6 +285,14 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Hid::_leds", n_hid_leds);
     pp_register(I, "Hid::_consumer_ready", n_hid_consumer_ready);
     pp_register(I, "Hid::_consumer_report", n_hid_consumer_report);
+    pp_register(I, "Hid::_mouse_ready", n_hid_mouse_ready);
+    pp_register(I, "Hid::_mouse_report", n_hid_mouse_report);
+    pp_register(I, "Pwm::_init", n_pwm_init);
+    pp_register(I, "Pwm::_set_freq", n_pwm_set_freq);
+    pp_register(I, "Pwm::_set_duty", n_pwm_set_duty);
+    pp_register(I, "Pwm::_enable", n_pwm_enable);
+    pp_register(I, "Pwm::_stop", n_pwm_stop);
+    pp_register(I, "Pwm::_top", n_pwm_top);
     pp_register(I, "Board::_led", n_board_led);
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);

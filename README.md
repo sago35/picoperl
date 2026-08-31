@@ -19,8 +19,8 @@ PICOPERL/
 
 ## できること
 
-- USB HID キーボード (boot protocol、6KRO) + USB CDC シリアルコンソール + USB マスストレージ
-- GPIO の入出力、ADC、I2C (SSD1306 OLED)、WS2812 LED、ロータリーエンコーダ、フラッシュ上の FAT ファイルシステム (1 MiB、`Fs::read`/`Fs::write` からも使える)
+- USB HID キーボード (boot protocol、6KRO) + メディアキー (consumer control) + マウス + USB CDC シリアルコンソール + USB マスストレージ
+- GPIO の入出力、PWM (ブザー)、ADC、I2C (SSD1306 OLED)、WS2812 LED、ロータリーエンコーダ、フラッシュ上の FAT ファイルシステム (1 MiB、`Fs::read`/`Fs::write` からも使える)
 - Perl のモジュール機構: `package`、`use Module qw(...)`、`require`、`@EXPORT`/`@EXPORT_OK`
   (Exporter 相当を内蔵)、`use constant`、`__PACKAGE__`
 - `KC_A` などのキーコード定数 (QMK 準拠、202 個) は `src/pp_keycodes.c` の C の表から
@@ -147,7 +147,10 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 | `Tinydraw` / `Tinyfont` | tinygo 風の関数形式: `Tinydraw::Rectangle($d, ...)`, `Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, $x, $y, "hello", $c)`。内蔵フォント: `classic` (5x7), `freemono_bold_9pt`, `gophers_32pt`, `gophers_58pt` |
 | `I2c` (低レベル) | `I2c::_init($bus, $sda, $scl, $hz)`, `I2c::_write($bus, $addr, $bytes)`, `I2c::_read($bus, $addr, $n)` |
 | `Adc` | `my $a = Adc->new(29)` (GPIO26-29); `$a->get` (0..0xFFFF、TinyGo 互換), `$a->read_raw` (0..4095), `$a->voltage`; `Adc->new(Adc::TEMPERATURE)->temperature` |
-| `Hid` | `Hid::keyboard_report($mod, @keys)`, `Hid::ready()`, `Hid::leds()`, `Hid::consumer_report($usage)` (0xE2 ミュート, 0xE9/0xEA 音量, 0 で離す), `Hid::consumer_ready()`。`use Hid qw(keyboard_report)` で import 可 |
+| `Hid` | `Hid::keyboard_report($mod, @keys)`, `Hid::ready()`, `Hid::leds()`, `Hid::consumer_report($usage)` (0xE2 ミュート, 0xE9/0xEA 音量, 0 で離す), `Hid::consumer_ready()`, `Hid::mouse_report($buttons, $dx, $dy, $wheel, $pan)`, `Hid::mouse_ready()`。`use Hid qw(keyboard_report)` で import 可 |
+| `Mouse` | `my $m = Mouse->new`; `$m->press(Mouse::LEFT)`, `$m->release(...)`, `$m->click(Mouse::RIGHT)`, `$m->move($dx, $dy)`, `$m->wheel($n)`, `$m->wheel_up` / `wheel_down` (`LEFT`, `RIGHT`, `MIDDLE`, `BACK`, `FORWARD`) |
+| `Pwm` | `my $p = Pwm->new($pin, frequency => 1000, duty => 0.5)`; `$p->frequency($hz)` (実際の周波数を返す), `$p->duty(0..1)`, `$p->stop`, `$p->top`。GPIO n と n+16 は同じスライス、隣り合う 2 ピンは周期を共有 |
+| `Tone` | `my $s = Tone->new($pin)`; `$s->set_note(Tone::C5)` (MIDI ノート番号、`Tone::A0`〜`Tone::G9`、`Tone::CS4` = C#4), `$s->set_frequency($hz)`, `$s->set_period($ns)`, `$s->stop`; `Tone::frequency($note)`, `Tone::note("CS4")` |
 | `Matrix` | `Matrix::scan(\@drive, \@read, $active_high, $settle_us)` → 0/1 の配列リファレンス (C 実装、`PicoPerl::Keyboard` が使用) |
 | `Time::HiRes` | `use Time::HiRes qw(usleep sleep time)`: `usleep($us)`, `sleep(0.5)`, `time()` (起動からの秒、小数)。組み込みの `sleep` も小数秒を受け付ける |
 | `Usb` | `Usb::mounted()`, `Usb::suspended()`, `Usb::remote_wakeup()`, `Usb::cdc_connected()` |

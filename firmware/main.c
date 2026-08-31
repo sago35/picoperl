@@ -25,6 +25,7 @@
 #include "hardware/clocks.h"
 #include "hardware/adc.h"
 #include "hardware/i2c.h"
+#include "hardware/pwm.h"
 #include "pp_gfx.h"
 #include "tusb.h"
 #include "picoperl.h"
@@ -77,7 +78,7 @@ void pp_host_write(int fd, const char *buf, int len) {
     }
 }
 
-int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out); }
+int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out) || pp_tone_const(name, out); }
 
 void pp_host_fatal(const char *msg) {
     pp_host_write(2, msg, (int)strlen(msg));
@@ -393,6 +394,66 @@ NATIVE(n_hid_consumer_report) {
     if (!tud_hid_n_ready(1)) return pp_int(0);
     return pp_int(tud_hid_n_report(1, 0, &usage, sizeof usage) ? 1 : 0);
 }
+/* mouse: hid_mouse_report(buttons, dx, dy, wheel, pan); buttons bit0 left, bit1 right, bit2 middle */
+NATIVE(n_hid_mouse_ready)  { UNUSED; return pp_int(tud_hid_n_ready(2) ? 1 : 0); }
+NATIVE(n_hid_mouse_report) {
+    UNUSED;
+    if (!tud_hid_n_ready(2)) return pp_int(0);
+    return pp_int(tud_hid_n_mouse_report(2, 0, (uint8_t)ARG_INT(0, 0), (int8_t)ARG_INT(1, 0), (int8_t)ARG_INT(2, 0),
+                                         (int8_t)ARG_INT(3, 0), (int8_t)ARG_INT(4, 0)) ? 1 : 0);
+}
+
+/* ---- PWM (hardware_pwm): one slice per pin pair, 16-bit counter ----
+ * Pwm::_init(pin)            connect the pin to its PWM slice (output low)
+ * Pwm::_set_freq(pin, hz)    program clkdiv + wrap for hz and start the slice; returns the real frequency
+ * Pwm::_set_duty(pin, d)     duty 0..1 of the current period (1 = always high)
+ * Pwm::_enable(pin, on)      start/stop the slice (both pins of the pair)
+ * Pwm::_stop(pin)            output low (level 0), slice keeps running
+ * Pwm::_top(pin)             wrap value of the current period */
+static uint16_t pwm_wrap_of[8] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+NATIVE(n_pwm_init) {
+    UNUSED;
+    uint pin = (uint)ARG_INT(0, 0) & 31, slice = pwm_gpio_to_slice_num(pin);
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    pwm_set_gpio_level(pin, 0);
+    pwm_set_wrap(slice, pwm_wrap_of[slice]);
+    return pp_int((int64_t)slice);
+}
+NATIVE(n_pwm_set_freq) {
+    UNUSED;
+    uint pin = (uint)ARG_INT(0, 0) & 31, slice = pwm_gpio_to_slice_num(pin);
+    double hz = a->n > 1 ? pp_to_num(a->v[1]) : 0;
+    if (!(hz > 0)) { pwm_set_gpio_level(pin, 0); return pp_int(0); }
+    double sys = (double)clock_get_hz(clk_sys);
+    /* 8.4 fixed-point divider: the smallest one that lets one period fit in the 16-bit counter */
+    double div = sys / (hz * 65536.0);
+    int div16 = (int)(div * 16.0);
+    if ((double)div16 < div * 16.0) div16++;
+    if (div16 < 16) div16 = 16;                   /* divider 1.0 */
+    if (div16 > 255 * 16 + 15) div16 = 255 * 16 + 15;
+    double period = sys / ((double)div16 / 16.0) / hz;
+    long wrap = (long)(period + 0.5) - 1;
+    if (wrap < 1) wrap = 1;
+    if (wrap > 0xFFFF) wrap = 0xFFFF;
+    pwm_wrap_of[slice] = (uint16_t)wrap;
+    pwm_set_clkdiv_int_frac(slice, (uint8_t)(div16 >> 4), (uint8_t)(div16 & 15));
+    pwm_set_wrap(slice, (uint16_t)wrap);
+    pwm_set_enabled(slice, true);
+    return pp_num(sys / ((double)div16 / 16.0) / (double)(wrap + 1));
+}
+NATIVE(n_pwm_set_duty) {
+    UNUSED;
+    uint pin = (uint)ARG_INT(0, 0) & 31, slice = pwm_gpio_to_slice_num(pin);
+    double d = a->n > 1 ? pp_to_num(a->v[1]) : 0;
+    if (d < 0) d = 0;
+    if (d > 1) d = 1;
+    pwm_set_gpio_level(pin, (uint16_t)(d * (pwm_wrap_of[slice] + 1) + 0.5));
+    return pp_undef();
+}
+NATIVE(n_pwm_enable) { UNUSED; pwm_set_enabled(pwm_gpio_to_slice_num((uint)ARG_INT(0, 0) & 31), ARG_INT(1, 1) != 0); return pp_undef(); }
+NATIVE(n_pwm_stop)   { UNUSED; pwm_set_gpio_level((uint)ARG_INT(0, 0) & 31, 0); return pp_undef(); }
+NATIVE(n_pwm_top)    { UNUSED; return pp_int(pwm_wrap_of[pwm_gpio_to_slice_num((uint)ARG_INT(0, 0) & 31)]); }
+
 NATIVE(n_board_led) {
     UNUSED;
 #ifdef PICO_DEFAULT_LED_PIN
@@ -513,6 +574,14 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Hid::_keyboard_report", n_hid_keyboard_report);
     pp_register(I, "Hid::_consumer_ready", n_hid_consumer_ready);
     pp_register(I, "Hid::_consumer_report", n_hid_consumer_report);
+    pp_register(I, "Hid::_mouse_ready", n_hid_mouse_ready);
+    pp_register(I, "Hid::_mouse_report", n_hid_mouse_report);
+    pp_register(I, "Pwm::_init", n_pwm_init);
+    pp_register(I, "Pwm::_set_freq", n_pwm_set_freq);
+    pp_register(I, "Pwm::_set_duty", n_pwm_set_duty);
+    pp_register(I, "Pwm::_enable", n_pwm_enable);
+    pp_register(I, "Pwm::_stop", n_pwm_stop);
+    pp_register(I, "Pwm::_top", n_pwm_top);
     pp_register(I, "Board::_led", n_board_led);
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
