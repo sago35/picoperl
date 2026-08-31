@@ -31,6 +31,7 @@ wasm:
 	emcc -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter $(SRC) host/main.c wasm/shim.c -o wasm/picoperl.js \
 	  -sMODULARIZE=1 -sEXPORT_NAME=createPicoperl -sENVIRONMENT=worker,node \
 	  -sASYNCIFY -sEXIT_RUNTIME=1 -sALLOW_MEMORY_GROWTH=1 -sINVOKE_RUN=0 \
+	  -sSTACK_SIZE=2097152 \
 	  -sEXPORTED_RUNTIME_METHODS=callMain,FS,ENV \
 	  --embed-file lib@/lib
 	@ls -la wasm/picoperl.js wasm/picoperl.wasm

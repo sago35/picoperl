@@ -1657,11 +1657,13 @@ static NOINLINE pp_val stack_overflow(pp_interp *I) {
 
 pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     if (I->ctl) return pp_undef();
+#ifndef __SANITIZE_ADDRESS__    /* ASan's fake stack breaks the address arithmetic; ASan detects overflows itself */
     if (I->stack_base) {
         char here;
         size_t used = (size_t)(I->stack_base > &here ? I->stack_base - &here : &here - I->stack_base);
         if (used > I->stack_limit) return stack_overflow(I);
     }
+#endif
     switch (n->type) {
     case N_CONST: return scalar_or_push(ctx, out, pp_copy(n->val));
     case N_INTERP: return eval_interp(I, n, ctx, out);
@@ -1848,14 +1850,14 @@ void pp_define_const(pp_interp *I, const char *name, pp_val v) {
 int pp_run(pp_interp *I, const char *filename, const char *src) {
     int err = 0;
     I->file = filename;
+    char base;
+    I->stack_base = &base;                /* the parser checks the watermark too (deep nesting) */
+    if (!I->stack_limit) I->stack_limit = PP_DEFAULT_STACK_LIMIT;
     pp_node *unit = pp_parse(I, filename, src, &err);
-    if (err) return 255;
+    if (err) { I->stack_base = NULL; return 255; }
     char *fname = pp_xmalloc(strlen(filename) + 1); strcpy(fname, filename);
     track_unit(I, unit, fname);
     I->ctl = CTL_NONE;
-    char base;
-    I->stack_base = &base;
-    if (!I->stack_limit) I->stack_limit = PP_DEFAULT_STACK_LIMIT;
     pp_val r = pp_exec_unit(I, unit, CTX_VOID, NULL);
     I->stack_base = NULL;
     pp_release(r);

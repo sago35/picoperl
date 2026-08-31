@@ -298,8 +298,7 @@ pp_obj *pp_obj_new(int kind) {
     return o;
 }
 void pp_obj_incref(pp_obj *o) { o->refcnt++; }
-void pp_obj_decref(pp_obj *o) {
-    if (!o || --o->refcnt > 0) return;
+static void obj_free(pp_obj *o) {
     switch (o->kind) {
     case PP_OSCALAR: pp_release(o->u.scalar); break;
     case PP_OARRAY:
@@ -323,6 +322,28 @@ void pp_obj_decref(pp_obj *o) {
     }
     free(o);
     pp_stat_objs--;
+}
+
+/* Freeing an object releases its children, which can free more objects: for a
+ * deeply nested structure ($r = [$r] x 100000) the naive recursion overflows
+ * the C stack. The outermost call drains nested frees from a worklist instead,
+ * so destruction runs at a fixed stack depth. */
+static pp_obj **free_work; static int free_nwork, free_capwork, free_active;
+
+void pp_obj_decref(pp_obj *o) {
+    if (!o || --o->refcnt > 0) return;
+    if (free_active) {
+        if (free_nwork == free_capwork) {
+            free_capwork = free_capwork ? free_capwork * 2 : 32;
+            free_work = pp_xrealloc(free_work, free_capwork * sizeof *free_work);
+        }
+        free_work[free_nwork++] = o;
+        return;
+    }
+    free_active = 1;
+    obj_free(o);
+    while (free_nwork) obj_free(free_work[--free_nwork]);
+    free_active = 0;
 }
 
 pp_obj *pp_new_array(void) { return pp_obj_new(PP_OARRAY); }

@@ -1622,7 +1622,22 @@ static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *
     return nstmt;
 }
 
+/* deeply nested source (parens, brackets, blocks) recurses in the parser;
+   check the C stack watermark like pp_eval does and fail with a message
+   instead of overflowing (on the board that would trample the heap) */
+static void check_parse_stack(pp_parser *P) {
+#ifdef __SANITIZE_ADDRESS__
+    (void)P;      /* ASan's fake stack breaks the address arithmetic; ASan detects overflows itself */
+#else
+    if (!P->I->stack_base) return;
+    char here;
+    size_t used = (size_t)(P->I->stack_base > &here ? P->I->stack_base - &here : &here - P->I->stack_base);
+    if (used > P->I->stack_limit) perr(P, "Out of stack space (source nesting too deep)");
+#endif
+}
+
 static pp_node *parse_term(pp_parser *P) {
+    check_parse_stack(P);
     pp_tok *t = &P->cur;
     switch (t->type) {
     case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
@@ -2243,6 +2258,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
     return e;
 }
 static pp_node *parse_statement(pp_parser *P) {
+    check_parse_stack(P);       /* nested blocks recurse without going through parse_term */
     pp_node *st = parse_statement_inner(P);
     if (st && scope_top(P)->warnings) st->flags |= PP_STMT_WARN;
     return st;
