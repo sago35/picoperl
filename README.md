@@ -234,9 +234,13 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 未対応: 2 引数 `open`・バレワードハンドル (`open FH, ...`)・IO レイヤー (`:utf8` など)・`$/` の変更・
 `$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
 
-非対応 (今のところ): `sprintf("%v")`、
-`DESTROY`、`AUTOLOAD`、`local` の配列/ハッシュ、`eval STRING`、`each`、ヒアドキュメント、
-`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
+非対応 (今のところ): サブルーチンシグネチャ (`sub f($x, $y)` — `use strict` ならコンパイル
+エラー、無いと引数が undef のまま黙って動くので注意)、`sprintf` の `%vd` と位置指定 (`%2$s`)、
+`DESTROY`、`AUTOLOAD`、`eval STRING`、`each`、ヒアドキュメント、`redo`、`goto`、
+lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイルテスト (`-e`)、
+`system`/バッククォート、`tie`、`format`、`state`、
+新しめの構文 (後置デリファレンス `$r->@*`、`isa` 演算子、`try/catch`、`for my ($k, $v)`、
+`builtin::`、`class`)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 
 ## メモリと安全装置
