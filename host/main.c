@@ -232,18 +232,18 @@ static pp_val n_ws2812_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static pp_val n_ws2812_write_raw(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
-    uint8_t rgb[64 * 3]; int nn = a->n - 1;
-    if (nn > 64) nn = 64;
+    uint8_t rgb[128 * 3]; int nn = a->n - 1;
+    if (nn > 128) nn = 128;
     for (int i = 0; i < nn; i++) {   /* 0xGGRRBBxx per LED */
         unsigned v = (unsigned)pp_to_int(a->v[i + 1]);
         rgb[i * 3] = (v >> 16) & 255; rgb[i * 3 + 1] = (v >> 24) & 255; rgb[i * 3 + 2] = (v >> 8) & 255;
     }
     pp_wasm_note_leds(ws_pins[pp_list_arg_int(a, 0, 0) & 3], rgb, nn);
-    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(a->n - 1);
+    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(nn);   /* like the firmware: at most 128 sent */
     printf("[ws2812 pin %d]", ws_pins[pp_list_arg_int(a, 0, 0) & 3]);
     for (int i = 1; i < a->n; i++) printf(" %08x", (unsigned)pp_to_int(a->v[i]));
     printf("\n"); fflush(stdout);
-    return pp_int(a->n - 1);
+    return pp_int(nn);   /* like the firmware: at most 128 sent */
 }
 static pp_val n_ws2812_put_color(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;

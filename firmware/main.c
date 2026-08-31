@@ -249,8 +249,8 @@ NATIVE(n_ws2812_write_raw) {
     UNUSED;
     ws_strip *s = strip_arg(I, a); if (!s) return pp_undef();
     int n = a->n - 1;
-    uint32_t words[64];
-    if (n > 64) n = 64;
+    uint32_t words[128];
+    if (n > 128) n = 128;
     for (int i = 0; i < n; i++) words[i] = (uint32_t)pp_to_int(a->v[1 + i]);
     ws2812_send(s, words, n);
     return pp_int(n);
