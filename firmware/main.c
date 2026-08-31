@@ -80,6 +80,16 @@ void pp_host_write(int fd, const char *buf, int len) {
 
 int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out) || pp_tone_const(name, out); }
 
+/* file I/O maps onto the script drive (FatFs in flash) */
+void *pp_host_fopen(const char *path, const char *mode) { return fs_ok ? flashfs_fopen(path, mode) : NULL; }
+int   pp_host_fclose(void *f) { return flashfs_fclose(f); }
+int   pp_host_fread(void *f, void *buf, int n) { return flashfs_fread(f, buf, n); }
+int   pp_host_fwrite(void *f, const void *buf, int n) { return flashfs_fwrite(f, buf, n); }
+long  pp_host_fseek(void *f, long off, int whence) { return flashfs_fseek(f, off, whence); }
+long  pp_host_ftell(void *f) { return flashfs_ftell(f); }
+int   pp_host_feof(void *f) { return flashfs_feof(f); }
+const char *pp_host_io_error(void) { return flashfs_io_error(); }
+
 void pp_host_fatal(const char *msg) {
     pp_host_write(2, msg, (int)strlen(msg));
     pp_host_write(2, "picoperl: rebooting\n", 20);

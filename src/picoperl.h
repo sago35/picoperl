@@ -52,7 +52,7 @@ struct pp_list {
     int n, cap;
 };
 
-enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE, PP_OREGEX };
+enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE, PP_OREGEX, PP_OFILE };
 
 typedef struct pp_hent {
     char    *key;
@@ -81,6 +81,7 @@ struct pp_obj {
             int        is_const;
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
+        struct { void *fp; uint8_t writable; } file;   /* PP_OFILE (open my $fh, ...) */
     } u;
 };
 
@@ -331,6 +332,16 @@ int64_t     pp_host_time(void);
 void        pp_host_sleep_ms(uint32_t ms);
 /* read one line from stdin (<STDIN>); malloc'd, includes newline; NULL at EOF */
 char       *pp_host_read_line(void);
+/* file I/O for open/close/<$fh>; the firmware maps paths onto the script drive.
+ * mode is "r", "w", "a", "r+" or "w+"; fseek whence is 0/1/2 (SET/CUR/END). */
+void       *pp_host_fopen(const char *path, const char *mode);
+int         pp_host_fclose(void *f);
+int         pp_host_fread(void *f, void *buf, int n);       /* bytes read; 0 at EOF */
+int         pp_host_fwrite(void *f, const void *buf, int n);
+long        pp_host_fseek(void *f, long off, int whence);   /* new position, or -1 */
+long        pp_host_ftell(void *f);
+int         pp_host_feof(void *f);                          /* 1 when the next read would hit EOF */
+const char *pp_host_io_error(void);                         /* message for $! after a failed call */
 /* register host-specific natives (gpio_*, hid_*, ...) */
 void        pp_host_register(pp_interp *I);
 /* unrecoverable error (out of memory): must not return */

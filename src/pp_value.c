@@ -112,6 +112,7 @@ static const char *ref_name(pp_obj *o) {
     case PP_OHASH:  return "HASH";
     case PP_OCODE:  return "CODE";
     case PP_OREGEX: return "Regexp";
+    case PP_OFILE:  return "GLOB";
     default:
         if (o->u.scalar.t == PP_REF) return "REF";
         return "SCALAR";
@@ -315,6 +316,9 @@ void pp_obj_decref(pp_obj *o) {
         break;
     case PP_OREGEX:
         pp_re_free(o->u.re);
+        break;
+    case PP_OFILE:
+        if (o->u.file.fp) pp_host_fclose(o->u.file.fp);
         break;
     }
     free(o);

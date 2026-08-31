@@ -10,7 +10,8 @@ enum {
     B_ATAN2, B_LENGTH, B_LC, B_UC, B_LCFIRST, B_UCFIRST, B_CHR, B_ORD, B_INT, B_ABS, B_SQRT,
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
-    B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS, B_ABS_END
+    B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS,
+    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ABS_END
 };
 
 static const struct { const char *name; int id; int kind; } builtins[] = {
@@ -28,7 +29,9 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "values", B_VALUES, BK_UNARY }, { "each", B_EACH, BK_UNARY }, { "exit", B_EXIT, BK_UNARY }, { "undef", B_UNDEF, BK_UNARY },
     { "chomp", B_CHOMP, BK_UNARY }, { "chop", B_CHOP, BK_UNARY }, { "rand", B_RAND, BK_UNARY }, { "srand", B_SRAND, BK_UNARY },
     { "time", B_TIME, BK_NOARG }, { "sleep", B_SLEEP, BK_UNARY }, { "readline", B_READLINE, BK_NOARG }, { "binmode", B_BINMODE, BK_LIST },
-    { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "pos", B_POS, BK_UNARY }, { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
+    { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "pos", B_POS, BK_UNARY },
+    { "open", B_OPEN, BK_LIST }, { "close", B_CLOSE, BK_UNARY }, { "eof", B_EOF, BK_UNARY },
+    { "seek", B_SEEK, BK_LIST }, { "tell", B_TELL, BK_UNARY }, { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
     { NULL, 0, 0 }
 };
 
@@ -361,22 +364,119 @@ static pp_val do_split(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
 /* print                                                               */
 /* ------------------------------------------------------------------ */
 
+/* ---- file handles (open my $fh, '<', $path) ---- */
+
+static void set_errno_var(pp_interp *I, const char *msg) {
+    pp_obj *c = pp_global(I, pp_intern(I, "$!", 2));
+    pp_release(c->u.scalar);
+    c->u.scalar = pp_cstr(msg);
+}
+
+/* evaluated argument -> the PP_OFILE object (borrowed) or NULL + die */
+static pp_obj *file_of(pp_interp *I, pp_val v, const char *what) {
+    if (v.t == PP_REF && v.u.o->kind == PP_OFILE) return v.u.o;
+    pp_die(I, "%s: not a filehandle (expected a handle from open)", what);
+    return NULL;
+}
+
+static pp_val read_fline(pp_obj *f) {
+    if (!f->u.file.fp) return pp_undef();
+    pp_str *s = pp_str_new(NULL, 0);
+    char c;
+    while (pp_host_fread(f->u.file.fp, &c, 1) == 1) {
+        s = pp_str_reserve(s, 1);
+        s->d[s->len++] = c;
+        if (c == '\n') break;
+    }
+    if (s->len == 0) { pp_str_decref(s); return pp_undef(); }
+    s->d[s->len] = 0;
+    return pp_str_val(s);
+}
+
+/* $/ is not supported: readline always ends lines at \n; say so once */
+static void check_irs(pp_interp *I) {
+    if (I->compat_warn & 32) return;
+    pp_sym *sym = pp_intern(I, "$/", 2);
+    if (!sym->gcell) return;
+    pp_val v = sym->gcell->u.scalar;
+    if (v.t == PP_UNDEF || (v.t == PP_STR && v.u.s->len == 1 && v.u.s->d[0] == '\n')) return;
+    I->compat_warn |= 32;
+    pp_warn(I, "picoperl: $/ is ignored, readline always splits on \"\\n\"");
+}
+
+static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    if (n->n < 2) return pp_die(I, "Not enough arguments for open");
+    pp_val *slot = pp_lvalue(I, n->list[0]);
+    if (!slot) return pp_undef();
+    pp_list args = {0};
+    if (!eval_args(I, n, 1, &args)) { pp_list_free(&args); return pp_undef(); }
+    if (args.n < 2) {
+        if (!(I->compat_warn & 8)) { I->compat_warn |= 8; pp_warn(I, "picoperl: 2-argument open is not supported, use open(my $fh, '<', $path)"); }
+        set_errno_var(I, "2-argument open is not supported");
+        pp_list_free(&args);
+        return ret(ctx, out, pp_undef());
+    }
+    pp_str *ms = pp_to_str(args.v[0]);
+    const char *m = ms->d;
+    char base[4] = "";
+    const char *layer = strchr(m, ':');
+    int mn = layer ? (int)(layer - m) : ms->len;
+    while (mn > 0 && m[mn - 1] == ' ') mn--;
+    if (mn == 1 && m[0] == '<') strcpy(base, "r");
+    else if (mn == 1 && m[0] == '>') strcpy(base, "w");
+    else if (mn == 2 && m[0] == '>' && m[1] == '>') strcpy(base, "a");
+    else if (mn == 2 && m[0] == '+' && m[1] == '<') strcpy(base, "r+");
+    else if (mn == 2 && m[0] == '+' && m[1] == '>') strcpy(base, "w+");
+    else {
+        pp_die(I, "Unknown open() mode '%s'", m);
+        pp_str_decref(ms); pp_list_free(&args);
+        return pp_undef();
+    }
+    if (layer && !(I->compat_warn & 16)) { I->compat_warn |= 16; pp_warn(I, "picoperl: IO layers ('%s') are ignored, files are bytes", layer); }
+    pp_str *path = pp_to_str(args.v[1]);
+    void *fp = pp_host_fopen(path->d, base);
+    pp_str_decref(ms); pp_str_decref(path); pp_list_free(&args);
+    if (!fp) set_errno_var(I, pp_host_io_error());
+    /* like perl, the handle variable holds a (possibly closed) handle even on failure */
+    pp_obj *o = pp_obj_new(PP_OFILE);
+    o->u.file.fp = fp;
+    o->u.file.writable = (uint8_t)(base[0] != 'r' || base[1] == '+');
+    slot = pp_lvalue(I, n->list[0]);
+    if (!slot) { pp_obj_decref(o); return pp_undef(); }
+    pp_release(*slot);
+    *slot = pp_ref(o);
+    pp_obj_decref(o);
+    return ret(ctx, out, fp ? pp_int(1) : pp_undef());
+}
+
 static pp_val do_print(pp_interp *I, pp_node *n, int id) {
     int fd = 1;
+    pp_obj *fh = NULL;
     if (n->a) {
         pp_val f = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) return pp_undef();
-        fd = (int)pp_to_int(f); pp_release(f);
-        if (fd != 1 && fd != 2) fd = 1;
+        if (f.t == PP_REF && f.u.o->kind == PP_OFILE) {
+            fh = f.u.o; pp_obj_incref(fh); pp_release(f);
+            if (!fh->u.file.fp) {
+                if (I->warn_on) pp_warn(I, "%s() on closed filehandle", id == B_SAY ? "say" : id == B_PRINTF ? "printf" : "print");
+                pp_obj_decref(fh);
+                return pp_strn("", 0);
+            }
+        } else {
+            fd = (int)pp_to_int(f); pp_release(f);
+            if (fd != 1 && fd != 2) fd = 1;
+        }
     }
     pp_list args = {0};
     if (n->n == 0 && id != B_PRINTF) pp_list_push(&args, pp_copy(I->g_underscore->u.scalar));
     else if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
     if (I->warn_on) pp_warn_uninit_args(I, n, &args, id == B_SAY ? "say" : id == B_PRINTF ? "printf" : "print");
+    int wr_ok = 1;
     if (id == B_PRINTF) {
         pp_val s = pp_sprintf(I, &args, 0);
         pp_str *t = pp_to_str(s);
-        pp_host_write(fd, t->d, t->len);
+        if (fh) wr_ok = pp_host_fwrite(fh->u.file.fp, t->d, t->len) == t->len;
+        else pp_host_write(fd, t->d, t->len);
         pp_str_decref(t); pp_release(s);
     } else {
         pp_str *buf = pp_str_new(NULL, 0);
@@ -386,10 +486,13 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
             if (t) pp_str_decref(t);
         }
         if (id == B_SAY) str_append(&buf, "\n", 1);
-        pp_host_write(fd, buf->d, buf->len);
+        if (fh) wr_ok = pp_host_fwrite(fh->u.file.fp, buf->d, buf->len) == buf->len;
+        else pp_host_write(fd, buf->d, buf->len);
         pp_str_decref(buf);
     }
+    if (fh) pp_obj_decref(fh);
     pp_list_free(&args);
+    if (!wr_ok) { set_errno_var(I, pp_host_io_error()); return pp_strn("", 0); }
     return pp_int(1);
 }
 
@@ -689,6 +792,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             case PP_OHASH: r = "HASH"; break;
             case PP_OCODE: r = "CODE"; break;
             case PP_OREGEX: r = "Regexp"; break;
+            case PP_OFILE: r = "GLOB"; break;
             default: r = v.u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR"; break;
             }
         }
@@ -854,12 +958,68 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return ret(ctx, out, pp_int((int64_t)s));
     }
     case B_READLINE: {
-        char *line = pp_host_read_line();
-        if (!line) return ret(ctx, out, pp_undef());
-        pp_val r = pp_cstr(line);
-        free(line);
+        check_irs(I);
+        if (n->n == 0) {   /* <STDIN> */
+            char *line = pp_host_read_line();
+            if (!line) return ret(ctx, out, pp_undef());
+            pp_val r = pp_cstr(line);
+            free(line);
+            return ret(ctx, out, r);
+        }
+        pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(hv); return pp_undef(); }
+        pp_obj *f = file_of(I, hv, "readline");
+        if (!f) { pp_release(hv); return pp_undef(); }
+        if (ctx == CTX_LIST && out) {
+            for (;;) { pp_val l = read_fline(f); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
+            pp_release(hv);
+            return pp_undef();
+        }
+        pp_val r = read_fline(f);
+        pp_release(hv);
         return ret(ctx, out, r);
     }
+    case B_CLOSE: {
+        pp_val hv = unary_arg(I, n);
+        if (I->ctl) { pp_release(hv); return pp_undef(); }
+        pp_obj *f = file_of(I, hv, "close");
+        if (!f) { pp_release(hv); return pp_undef(); }
+        int r = f->u.file.fp ? pp_host_fclose(f->u.file.fp) == 0 : 0;
+        f->u.file.fp = NULL;
+        pp_release(hv);
+        return ret(ctx, out, r ? pp_int(1) : pp_strn("", 0));
+    }
+    case B_EOF: {
+        pp_val hv = unary_arg(I, n);
+        if (I->ctl) { pp_release(hv); return pp_undef(); }
+        pp_obj *f = file_of(I, hv, "eof");
+        if (!f) { pp_release(hv); return pp_undef(); }
+        int e = f->u.file.fp ? pp_host_feof(f->u.file.fp) : 1;
+        pp_release(hv);
+        return ret(ctx, out, e ? pp_int(1) : pp_strn("", 0));
+    }
+    case B_TELL: {
+        pp_val hv = unary_arg(I, n);
+        if (I->ctl) { pp_release(hv); return pp_undef(); }
+        pp_obj *f = file_of(I, hv, "tell");
+        if (!f) { pp_release(hv); return pp_undef(); }
+        long pos = f->u.file.fp ? pp_host_ftell(f->u.file.fp) : -1;
+        pp_release(hv);
+        return ret(ctx, out, pp_int(pos));
+    }
+    case B_SEEK: {
+        pp_list args = {0};
+        if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
+        if (args.n < 3) { pp_list_free(&args); return pp_die(I, "Not enough arguments for seek"); }
+        pp_obj *f = file_of(I, args.v[0], "seek");
+        if (!f) { pp_list_free(&args); return pp_undef(); }
+        long off = (long)pp_to_int(args.v[1]);
+        int whence = (int)pp_to_int(args.v[2]);
+        long r = f->u.file.fp ? pp_host_fseek(f->u.file.fp, off, whence) : -1;
+        pp_list_free(&args);
+        return ret(ctx, out, r >= 0 ? pp_int(1) : pp_strn("", 0));
+    }
+    case B_OPEN: return do_open(I, n, ctx, out);
     case B_BLESS: {
         pp_list args = {0};
         if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
@@ -874,6 +1034,10 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_BINMODE: case B_SELECT: {
         pp_list args = {0};
         eval_args(I, n, 0, &args);
+        if (n->op == B_BINMODE && args.n > 1 && !(I->compat_warn & 16)) {
+            I->compat_warn |= 16;
+            pp_warn(I, "picoperl: IO layers are ignored, files are bytes");
+        }
         pp_list_free(&args);
         return ret(ctx, out, pp_int(1));
     }

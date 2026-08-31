@@ -18,6 +18,15 @@ void  flashfs_poll(void);
 bool  flashfs_reload_pending(void);
 bool  flashfs_take_reload_request(void);   /* returns and clears the request */
 const char *flashfs_change_info(void);     /* what the last detected change was (for the log) */
+/* stdio-like handles for the interpreter's open/close/<$fh> */
+void *flashfs_fopen(const char *path, const char *mode);   /* mode: r w a r+ w+ */
+int   flashfs_fclose(void *f);
+int   flashfs_fread(void *f, void *buf, int n);
+int   flashfs_fwrite(void *f, const void *buf, int n);
+long  flashfs_fseek(void *f, long off, int whence);
+long  flashfs_ftell(void *f);
+int   flashfs_feof(void *f);
+const char *flashfs_io_error(void);
 /* write a file (used to populate defaults) */
 bool  flashfs_write_file(const char *path, const char *data, unsigned len);
 

@@ -175,6 +175,65 @@ bool flashfs_write_file(const char *path, const char *data, unsigned len) {
     return r == FR_OK && bw == len;
 }
 
+/* ---- stdio-like handles for the interpreter ------------------------------- */
+
+static char io_errmsg[40] = "";
+
+static const char *fr_str(FRESULT r) {
+    switch (r) {
+    case FR_NO_FILE: case FR_NO_PATH: return "No such file or directory";
+    case FR_DENIED: case FR_WRITE_PROTECTED: return "Permission denied";
+    case FR_EXIST: return "File exists";
+    case FR_INVALID_NAME: return "Invalid argument";
+    case FR_NOT_ENOUGH_CORE: return "Out of memory";
+    default: snprintf(io_errmsg, sizeof io_errmsg, "I/O error (FatFs %d)", (int)r); return io_errmsg;
+    }
+}
+static const char *io_err = "";
+const char *flashfs_io_error(void) { return io_err; }
+
+void *flashfs_fopen(const char *path, const char *mode) {
+    remount_if_stale();
+    if (!mounted) { io_err = "filesystem not mounted"; return NULL; }
+    BYTE fl;
+    if (mode[0] == 'r') fl = FA_READ | (mode[1] == '+' ? FA_WRITE : 0);
+    else if (mode[0] == 'w') fl = FA_WRITE | FA_CREATE_ALWAYS | (mode[1] == '+' ? FA_READ : 0);
+    else fl = FA_WRITE | FA_OPEN_APPEND;
+    FIL *f = malloc(sizeof *f);
+    if (!f) { io_err = "Out of memory"; return NULL; }
+    FRESULT r = f_open(f, path, fl);
+    if (r != FR_OK) { free(f); io_err = fr_str(r); return NULL; }
+    return f;
+}
+int flashfs_fclose(void *f) {
+    FRESULT r = f_close((FIL *)f);
+    free(f);
+    if (r != FR_OK) { io_err = fr_str(r); return -1; }
+    return 0;
+}
+int flashfs_fread(void *f, void *buf, int n) {
+    UINT br = 0;
+    if (f_read((FIL *)f, buf, (UINT)n, &br) != FR_OK) return 0;
+    return (int)br;
+}
+int flashfs_fwrite(void *f, const void *buf, int n) {
+    UINT bw = 0;
+    FRESULT r = f_write((FIL *)f, buf, (UINT)n, &bw);
+    if (r != FR_OK) { io_err = fr_str(r); return (int)bw; }
+    return (int)bw;
+}
+long flashfs_fseek(void *f, long off, int whence) {
+    FIL *fp = f;
+    FSIZE_t base = whence == 1 ? f_tell(fp) : whence == 2 ? f_size(fp) : 0;
+    long target = (long)base + off;
+    if (target < 0) { io_err = "Invalid argument"; return -1; }
+    FRESULT r = f_lseek(fp, (FSIZE_t)target);
+    if (r != FR_OK) { io_err = fr_str(r); return -1; }
+    return (long)f_tell(fp);
+}
+long flashfs_ftell(void *f) { return (long)f_tell((FIL *)f); }
+int  flashfs_feof(void *f) { return f_eof((FIL *)f) ? 1 : 0; }
+
 static const char readme_txt[] =
     "picoperl\r\n"
     "========\r\n"

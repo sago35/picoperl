@@ -155,7 +155,7 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 | `Time::HiRes` | `use Time::HiRes qw(usleep sleep time)`: `usleep($us)`, `sleep(0.5)`, `time()` (起動からの秒、小数)。組み込みの `sleep` も小数秒を受け付ける |
 | `Usb` | `Usb::mounted()`, `Usb::suspended()`, `Usb::remote_wakeup()`, `Usb::cdc_connected()` |
 | `Board` | `Board::led($on)` (LED の無いボードでは何もしない), `Board::reboot_bootsel()`, `Board::reboot()`, `Board::heap_free()`, 定数 `Board::NAME`, `Board::LED_PIN` |
-| `Fs` | `Fs::read($path)`, `Fs::write($path, $data)`, `Fs::mounted()` |
+| `Fs` | `Fs::read($path)`, `Fs::write($path, $data)`, `Fs::mounted()`。行単位なら組み込みの `open` が使える (下記) |
 | `PicoPerl::Keycodes` | `KC_*` (QMK 名、`KC_MUTE`/`KC_VOLU` などのメディアキー含む), `MO(n)`, `TG(n)`, `KC_BOOTSEL`, `is_modifier`, `is_consumer`, `keycode_value("KC_A")`, `keycode_name(4)`。定数はファームウェア内蔵の表から使ったものだけ生成 |
 | `PicoPerl::Keyboard` | `keyboard_run(%opts)` / `keyboard_init`, `keyboard_step`, `keyboard_tap`, `keyboard_layer` |
 
@@ -201,7 +201,15 @@ perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `p
 `$1` などは perl のようにスコープごとに復元されずグローバル、`pos($x) = n` の代入と `@-`/`@+` は未対応、
 極端なバックトラック (`(a+)+b` のような) は途中で `Regexp backtracking limit exceeded` で die します。
 
-非対応 (今のところ): ファイルハンドル I/O (`open` など。ドライブは `Fs::read`/`Fs::write` で)、`sprintf("%v")`、
+**ファイル I/O**: 3 引数 `open` + レキシカルハンドルの最小セットに対応しています:
+`open(my $fh, '<', $path)` (`> >> +< +>`)、`<$fh>` (スカラーで 1 行、リストで全行、`while (<$fh>)` は
+perl と同じく `$_` に読み込む)、`print/printf/say $fh ...` と `print {$fh} ...`、`close`、`eof`、
+`seek($fh, $off, 0/1/2)`、`tell`。失敗時は `$!` にメッセージが入ります。ボードではパスは
+PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシュ消去を伴うので低頻度の用途向きです。
+未対応: 2 引数 `open`・バレワードハンドル (`open FH, ...`)・IO レイヤー (`:utf8` など)・`$/` の変更・
+`$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
+
+非対応 (今のところ): `sprintf("%v")`、
 `DESTROY`、`AUTOLOAD`、`local` の配列/ハッシュ、`eval STRING`、`each`、ヒアドキュメント、
 `foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。

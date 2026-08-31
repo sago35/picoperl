@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
 static char *script_dir;
 
@@ -44,6 +45,27 @@ void pp_host_poll(void) {}
 void pp_host_fatal(const char *msg) { fputs(msg, stderr); exit(255); }
 int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name, out) || pp_tone_const(name, out); }
 
+/* ---- file I/O: plain stdio ---- */
+void *pp_host_fopen(const char *path, const char *mode) {
+    char m[4];
+    snprintf(m, sizeof m, "%sb", mode);   /* binary, like the board */
+    return fopen(path, m);
+}
+int  pp_host_fclose(void *f) { return fclose((FILE *)f); }
+int  pp_host_fread(void *f, void *buf, int n) { return (int)fread(buf, 1, (size_t)n, (FILE *)f); }
+int  pp_host_fwrite(void *f, const void *buf, int n) { return (int)fwrite(buf, 1, (size_t)n, (FILE *)f); }
+long pp_host_fseek(void *f, long off, int whence) {
+    if (fseek((FILE *)f, off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET) != 0) return -1;
+    return ftell((FILE *)f);
+}
+long pp_host_ftell(void *f) { return ftell((FILE *)f); }
+int  pp_host_feof(void *f) {
+    int c = fgetc((FILE *)f);
+    if (c == EOF) return 1;
+    ungetc(c, (FILE *)f);
+    return 0;
+}
+const char *pp_host_io_error(void) { return strerror(errno); }
 uint32_t pp_host_millis(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);

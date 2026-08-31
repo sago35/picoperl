@@ -8,7 +8,7 @@
 /* Lexer                                                               */
 /* ------------------------------------------------------------------ */
 
-enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW, T_PAT };
+enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW, T_PAT, T_READLINE };
 
 typedef struct {
     int    type;
@@ -328,6 +328,21 @@ static int lex_name(pp_lex *L) {
     return L->pos - start;
 }
 
+/* <$fh> in term position: one token (t->s/len = the variable name) */
+static int lex_try_readline(pp_lex *L, pp_tok *t) {
+    int save = L->pos;
+    L->pos += 2;
+    int start = L->pos;
+    int len = lex_name(L);
+    if (len > 0 && peekc(L, 0) == '>') {
+        L->pos++;
+        t->type = T_READLINE; t->s = L->src + start; t->len = len;
+        return 1;
+    }
+    L->pos = save;
+    return 0;
+}
+
 static void lex_next(pp_parser *P, pp_tok *t) {
     pp_lex *L = &P->L;
     int before = L->pos;
@@ -394,6 +409,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         lex_pattern(P, t, 'm');
         term = 1;
     }
+    else if (c == '<' && !L->prev_term && peekc(L, 1) == '$' && is_ident_start(peekc(L, 2)) && lex_try_readline(L, t)) { term = 1; }
     else if (c == '$') {
         int c1 = peekc(L, 1);
         if (c1 == '#') {
@@ -569,6 +585,7 @@ static void tok_desc(pp_tok *t, char *buf, int cap) {
     case T_NUM: snprintf(buf, cap, "number"); break;
     case T_STR: case T_ISTR: case T_QW: snprintf(buf, cap, "string"); break;
     case T_PAT: snprintf(buf, cap, "pattern"); break;
+    case T_READLINE: snprintf(buf, cap, "<$fh>"); break;
     case T_IDENT: snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
     case T_VAR: snprintf(buf, cap, "'%c%.*s'", t->sigil == '#' ? '$' : t->sigil, t->len, t->s); break;
     default: snprintf(buf, cap, "'%s'", t->op); break;
@@ -1068,6 +1085,26 @@ static pp_node *qw_list(pp_parser *P, const char *s, int len) {
 /* Expressions                                                         */
 /* ------------------------------------------------------------------ */
 
+/* perl's while-condition magic: `while (<$fh>)` reads into $_ and tests defined;
+   an assignment from readline also gets the implicit defined(). */
+static pp_node *while_cond_magic(pp_parser *P, pp_node *c) {
+    int rl = pp_builtin_id("readline", 8, NULL);
+    pp_node *inner = c;
+    if (inner->type == N_LIST && inner->n == 1) inner = inner->list[0];
+    if (inner->type == N_BUILTIN && inner->op == rl) {
+        pp_node *a = node(P, N_ASSIGN);
+        a->a = mkvar(P, '$', "_", 1);
+        a->b = inner;
+        inner = a;
+    }
+    else if (!(inner->type == N_ASSIGN && inner->op == OP_NONE && inner->b && inner->b->type == N_BUILTIN && inner->b->op == rl))
+        return c;
+    pp_node *d = node(P, N_BUILTIN);
+    d->op = (uint8_t)pp_builtin_id("defined", 7, NULL);
+    node_add(d, inner);
+    return d;
+}
+
 #define OP_MATCH  100
 #define OP_NMATCH 101
 
@@ -1503,6 +1540,12 @@ static pp_node *parse_term(pp_parser *P) {
     case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
     case T_STR: { pp_node *n = single_quoted(P, t->s, t->len); advance(P); return n; }
     case T_PAT: return parse_pattern_term(P);
+    case T_READLINE: {
+        pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL);
+        node_add(n, mkvar(P, '$', t->s, t->len));
+        advance(P);
+        return n;
+    }
     case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return n; }
     case T_QW: {
         pp_node *n = qw_list(P, t->s, t->len); n->flags |= 1; advance(P);
@@ -1660,7 +1703,7 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
 static int starts_term(pp_parser *P) {
     pp_tok *t = &P->cur;
     switch (t->type) {
-    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: return 1;
+    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: case T_READLINE: return 1;
     case T_IDENT: return !at_list_end(P);
     case T_OP: return !strcmp(t->op, "(") || !strcmp(t->op, "[") || !strcmp(t->op, "{") || !strcmp(t->op, "\\") || !strcmp(t->op, "!")
         || !strcmp(t->op, "-") || !strcmp(t->op, "+") || !strcmp(t->op, "++") || !strcmp(t->op, "--") || !strcmp(t->op, "~") || !strcmp(t->op, "<");
@@ -1776,6 +1819,15 @@ static pp_node *parse_ident_term(pp_parser *P) {
                 }
             }
             else if (cur_is_op(P, "{")) { advance(P); n->a = parse_expr(P); expect_op(P, "}"); }
+            else if (P->cur.type == T_VAR && P->cur.sigil == '$') {
+                /* `print $fh LIST` (no comma): the handle is a plain scalar followed by a value */
+                pp_tok *nx2 = peek(P);
+                if (nx2->type == T_STR || nx2->type == T_ISTR || nx2->type == T_NUM || nx2->type == T_QW ||
+                    nx2->type == T_VAR || nx2->type == T_READLINE) {
+                    n->a = mkvar(P, '$', P->cur.s, P->cur.len);
+                    advance(P);
+                }
+            }
             take_children(n, parse_comma_list(P));
             if (parens) expect_op(P, ")");
             return n;
@@ -1967,7 +2019,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *n = node(P, N_WHILE); n->op = (uint8_t)until; n->sym = label;
             scope_push(P, SCOPE_BLOCK);
             expect_op(P, "(");
-            n->a = cur_is_op(P, ")") ? const_int(P, 1) : parse_expr(P);
+            n->a = cur_is_op(P, ")") ? const_int(P, 1) : while_cond_magic(P, parse_expr(P));
             expect_op(P, ")");
             n->b = parse_block(P);
             if (cur_is_ident(P, "continue")) { advance(P); n->c = parse_block(P); }
@@ -2067,7 +2119,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
         }
         if (cur_is_ident(P, "while") || cur_is_ident(P, "until")) {
             int un = P->cur.s[0] == 'u'; advance(P);
-            pp_node *n = node(P, N_WHILE); n->op = (uint8_t)un; n->a = parse_expr(P); n->b = e; n->flags |= 2;
+            pp_node *n = node(P, N_WHILE); n->op = (uint8_t)un; n->a = while_cond_magic(P, parse_expr(P)); n->b = e; n->flags |= 2;
             if (e->type == N_DOBLOCK) { n->flags |= 8; n->b = e->a; }
             e = n; continue;
         }
