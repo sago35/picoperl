@@ -250,6 +250,12 @@ lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイル
 `builtin::`、`class`)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 
+**XS には対応していません** (DynaLoader も perl の C API もありません)。`JSON::XS` や
+`Digest::SHA` のように XS を使う CPAN モジュール (依存に含む場合も) は動きません。
+C で機能を足したい場合は、ボード API と同じ方式 — C 関数を `pp_register()` で
+`Pkg::_name` として登録し、`lib/` の Perl モジュールで包む — になります
+(ファームウェアの再ビルドが必要です)。
+
 ## メモリと安全装置
 
 - RP2040 では 64 KiB のスタックを確保し、インタプリタが C スタックの使用量を監視して
