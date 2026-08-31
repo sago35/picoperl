@@ -168,6 +168,8 @@ enum {
     N_MATCH,        /* a: target (NULL = $_), b: pattern (N_CONST regex ref, or expr), op: PP_M_* flags, aux: compile flags */
     N_SUBST,        /* a: target, b: pattern, c: replacement expr, op: PP_M_* flags, aux: compile flags */
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
+    N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
+                       op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
 };
 /* N_MATCH / N_SUBST op bits */
 enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16 };

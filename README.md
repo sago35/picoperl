@@ -212,6 +212,14 @@ USB の処理 (`tud_task`) はインタプリタが `sleep` の中や一定ス�
 `Argument "abc" isn't numeric in ...`、`Odd number of elements in hash assignment` / `anonymous hash`
 (`no warnings` はブロック単位で有効)。コンパイル時警告 (`Useless use of ...` など) はありません。
 
+**サブルーチンシグネチャ** (`sub f($x, $y = 10, @rest) { ... }`) に対応しています:
+必須パラメータ、デフォルト付き (`=` / `//=` / `||=`、デフォルト式は先行パラメータを参照可)、
+末尾の `@array` / `%hash` (奇数個なら perl と同じく die)。引数の数が合わないと perl と
+同じメッセージで die します (`Too few arguments for subroutine 'main::f' (got 1; expected 2)`)。
+`sub f($$)` のような識別子を含まない括弧は従来どおりプロトタイプとして無視されます。
+未対応: 無名パラメータ (`sub f($x, $)` はコンパイルエラー)。`sub f() {}` の空括弧は
+引数チェックをしません (perl のシグネチャは 0 個を強制する点が違います)。
+
 perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `picoperl:` で始まる注意を stderr に出します:
 `use utf8` (無視される、文字列はバイト列)、`map`/`grep` 内での `$_` の変更 (元のリストに反映されない)、
 `foreach` 変数の書き戻し (単一配列を回すときだけ反映)。比較演算子は perl と同じく非結合で、
@@ -234,8 +242,7 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 未対応: 2 引数 `open`・バレワードハンドル (`open FH, ...`)・IO レイヤー (`:utf8` など)・`$/` の変更・
 `$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
 
-非対応 (今のところ): サブルーチンシグネチャ (`sub f($x, $y)` — `use strict` ならコンパイル
-エラー、無いと引数が undef のまま黙って動くので注意)、`sprintf` の `%vd` と位置指定 (`%2$s`)、
+非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
 `DESTROY`、`AUTOLOAD`、`eval STRING`、`each`、ヒアドキュメント、`redo`、`goto`、
 lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイルテスト (`-e`)、
 `system`/バッククォート、`tie`、`format`、`state`、

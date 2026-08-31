@@ -760,7 +760,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
     pp_val last = pp_undef();
     for (int i = 0; i < blk->n; i++) {
         pp_node *s = blk->list[i];
-        I->line = s->line;
+        if (s->line) I->line = s->line;   /* line 0: signature check, keep the caller's line */
         I->warn_on = (s->flags & PP_STMT_WARN) != 0;
         if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
         int is_last = i == blk->n - 1;
@@ -1715,6 +1715,22 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_WANTARRAY:
         return scalar_or_push(ctx, out, I->call_ctx == CTX_LIST ? pp_int(1) : I->call_ctx == CTX_SCALAR ? pp_int(0) : pp_undef());
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
+    case N_SIGCHECK: {
+        pp_obj *args = current_args(I);
+        int got = args ? args->u.arr.n : 0;
+        const char *nm = n->a->val.u.s->d;
+        int min = n->op, max = n->aux;      /* max 255 = slurpy, no upper limit */
+        if (got < min)
+            return pp_die(I, "Too few arguments for subroutine '%s' (got %d; expected %s%d)", nm, got, max != min ? "at least " : "", min);
+        if (max != 255 && got > max)
+            return pp_die(I, "Too many arguments for subroutine '%s' (got %d; expected %s%d)", nm, got, max != min ? "at most " : "", max);
+        if (n->flags & 1) {
+            int ns = (int)n->b->val.u.i;
+            if (got > ns && ((got - ns) & 1))
+                return pp_die(I, "Odd name/value argument for subroutine '%s'", nm);
+        }
+        return pp_undef();
+    }
     case N_MATCH: I->line = n->line; return pp_eval_match(I, n, ctx, out);
     case N_SUBST: I->line = n->line; return pp_eval_subst(I, n, ctx, out);
     case N_TRANS: I->line = n->line; return pp_eval_trans(I, n, ctx, out);

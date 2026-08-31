@@ -691,6 +691,8 @@ static int is_declared(pp_parser *P, pp_sym *s) {
 }
 
 static pp_node *parse_block(pp_parser *P);
+static void parse_block_stmts(pp_parser *P, pp_node *b);
+static int  parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs);
 static pp_node *parse_expr(pp_parser *P);
 static pp_node *parse_assign(pp_parser *P);
 static pp_node *parse_comma_list(pp_parser *P);
@@ -1534,6 +1536,92 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
     return m;
 }
 
+/* The (...) after `sub`, with the parser at the first token past '('.
+   Named parameters make it a perl signature: `($x, $y = default, @rest)` becomes
+   an arity check plus `my` bindings from @_, prepended to the body block b
+   (whose scope must already be open). Anything else is a prototype and is
+   ignored, as before. Returns the number of statements added to b. */
+static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs) {
+    if (noargs) *noargs = cur_is_op(P, ")");
+    if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0]))) {
+        while (!cur_is_op(P, ")") && P->cur.type != T_EOF) {   /* prototype: ignored */
+            if (P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0]))
+                perr(P, "unsupported subroutine signature (anonymous '$' parameters are not supported)");
+            advance(P);
+        }
+        expect_op(P, ")");
+        return 0;
+    }
+    /* arity check runs first; line 0 keeps the caller's line in messages, like perl */
+    pp_node *chk = node(P, N_SIGCHECK);
+    chk->line = 0;
+    char full[160];
+    if (strstr(subname, "::")) snprintf(full, sizeof full, "%s", subname);
+    else snprintf(full, sizeof full, "%s::%s", P->pkg[0] ? P->pkg : "main", subname);
+    chk->a = const_str(P, full, (int)strlen(full));
+    node_add(b, chk);
+    int idx = 0, min = -1, slurpy = 0, nstmt = 1;
+    while (!cur_is_op(P, ")")) {
+        if (P->cur.type != T_VAR || P->cur.len == 0 || !is_ident_start((unsigned char)P->cur.s[0]))
+            perr(P, "syntax error in subroutine signature");
+        if (slurpy) perr(P, "Slurpy parameter not last");
+        char sigil = P->cur.sigil;
+        const char *name = P->cur.s; int len = P->cur.len;
+        advance(P);
+        pp_node *m = node(P, N_MY); m->op = 'm';
+        node_add(m, decl_var(P, 'm', sigil, name, len));
+        pp_node *as = node(P, N_ASSIGN); as->a = m;
+        if (sigil == '@' || sigil == '%') {
+            slurpy = 1;                                       /* my @rest = @_[idx .. $#_] */
+            pp_node *sl = node(P, N_ASLICE);
+            sl->a = mkvar(P, '@', "_", 1);
+            pp_node *r = node(P, N_RANGE);
+            r->a = const_int(P, idx);
+            pp_node *li = node(P, N_LASTIDX); li->a = mkvar(P, '@', "_", 1);
+            r->b = li;
+            sl->b = r;
+            as->b = sl;
+            if (sigil == '%') chk->flags |= 1;                /* odd name/value check */
+        } else if (sigil != '$') {
+            perr(P, "syntax error in subroutine signature");
+        } else {
+            pp_node *ae = node(P, N_AELEM);                   /* $_[idx] */
+            ae->a = mkvar(P, '@', "_", 1);
+            ae->b = const_int(P, idx);
+            int k = cur_is_op(P, "=") ? '=' : cur_is_op(P, "//=") ? '/' : cur_is_op(P, "||=") ? '|' : 0;
+            if (k) {
+                advance(P);
+                if (min < 0) min = idx;
+                pp_node *def = parse_assign(P);               /* may use earlier parameters */
+                if (k == '=') {                               /* $#_ >= idx ? $_[idx] : default */
+                    pp_node *tn = node(P, N_TERNARY);
+                    pp_node *ge = node(P, N_BINOP); ge->op = OP_NUM_GE;
+                    pp_node *li = node(P, N_LASTIDX); li->a = mkvar(P, '@', "_", 1);
+                    ge->a = li; ge->b = const_int(P, idx);
+                    tn->a = ge; tn->b = ae; tn->c = def;
+                    as->b = tn;
+                } else {                                      /* $_[idx] // default, $_[idx] || default */
+                    pp_node *d = node(P, k == '/' ? N_DEFOR : N_LOGOR);
+                    d->a = ae; d->b = def;
+                    as->b = d;
+                }
+            } else {
+                if (min >= 0) perr(P, "Mandatory parameter follows optional parameter");
+                as->b = ae;
+            }
+            idx++;
+        }
+        if (scope_top(P)->warnings) as->flags |= PP_STMT_WARN;
+        node_add(b, as); nstmt++;
+        if (!accept_op(P, ",")) break;
+    }
+    expect_op(P, ")");
+    chk->op = (uint8_t)(min >= 0 ? min : idx);
+    chk->aux = (uint8_t)(slurpy ? 255 : idx);
+    chk->b = const_int(P, idx);
+    return nstmt;
+}
+
 static pp_node *parse_term(pp_parser *P) {
     pp_tok *t = &P->cur;
     switch (t->type) {
@@ -1728,10 +1816,17 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 3 && !memcmp(id, "sub", 3)) {
         advance(P);
         pp_node *n = node(P, N_ANONSUB);
-        if (cur_is_op(P, "(")) { advance(P); while (!cur_is_op(P, ")") && P->cur.type != T_EOF) advance(P); expect_op(P, ")"); }
         int save = P->in_sub; P->in_sub = 1;
         scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
-        n->a = parse_block(P);
+        pp_node *b = node(P, N_BLOCK);
+        scope_push(P, SCOPE_BLOCK);
+        int nsig = 0;
+        if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        parse_block_stmts(P, b);
+        if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
+        int nv = scope_pop(P);
+        if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
+        n->a = b;
         scope_pop(P);
         P->in_sub = save;
         return parse_postfix(P, n);
@@ -1864,16 +1959,19 @@ static pp_node *parse_ident_term(pp_parser *P) {
 /* Statements                                                          */
 /* ------------------------------------------------------------------ */
 
-static pp_node *parse_block(pp_parser *P) {
+static void parse_block_stmts(pp_parser *P, pp_node *b) {
     expect_op(P, "{");
-    pp_node *b = node(P, N_BLOCK);
-    scope_push(P, SCOPE_BLOCK);
     while (!cur_is_op(P, "}")) {
         if (P->cur.type == T_EOF) perr(P, "Missing right curly bracket");
         pp_node *s = parse_statement(P);
         if (s) node_add(b, s);
     }
     expect_op(P, "}");
+}
+static pp_node *parse_block(pp_parser *P) {
+    pp_node *b = node(P, N_BLOCK);
+    scope_push(P, SCOPE_BLOCK);
+    parse_block_stmts(P, b);
     int nv = scope_pop(P);
     if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
     return b;
@@ -1995,13 +2093,24 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *n = node(P, N_SUBDEF);
             n->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
             advance(P);
-            int noargs = 0;
-            if (cur_is_op(P, "(")) { advance(P); noargs = cur_is_op(P, ")"); while (!cur_is_op(P, ")") && P->cur.type != T_EOF) advance(P); expect_op(P, ")"); }
-            declare_sub(P, n->sym, noargs);
-            if (cur_is_op(P, ";")) { advance(P); return NULL; }
             int save = P->in_sub; P->in_sub = 1;
             scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
-            n->a = parse_block(P);
+            pp_node *b = node(P, N_BLOCK);
+            scope_push(P, SCOPE_BLOCK);
+            int noargs = 0, nsig = 0;
+            if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs); }
+            declare_sub(P, n->sym, noargs);
+            if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
+                advance(P);
+                scope_pop(P); scope_pop(P);
+                P->in_sub = save;
+                return NULL;
+            }
+            parse_block_stmts(P, b);
+            if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
+            int nv = scope_pop(P);
+            if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
+            n->a = b;
             scope_pop(P);
             P->in_sub = save;
             pp_interp *I = P->I;
