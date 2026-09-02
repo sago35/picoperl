@@ -5,12 +5,13 @@ use strict;
 use warnings;
 
 my $bin = $ENV{PICOPERL} || 'build/picoperl';
+my $perl = $ENV{PICOPERL_TEST_PERL} || 'perl';   # e.g. /root/.cache/perl-5.44/bin/perl
 my $pat = shift;
 my @tests = sort glob('test/t_*.pl');
 @tests = grep { /$pat/ } @tests if defined $pat;
 my ($pass, $fail) = (0, 0);
 for my $t (@tests) {
-    my $exp = `perl $t 2>&1`; my $exp_rc = $? >> 8;
+    my $exp = `$perl $t 2>&1`; my $exp_rc = $? >> 8;
     my $got = `$bin $t 2>&1`; my $got_rc = $? >> 8;
     if ($exp eq $got && $exp_rc == $got_rc) { $pass++; print "ok   $t\n"; next; }
     $fail++;
@@ -25,7 +26,7 @@ for my $t (@tests) {
 }
 # compile-error tests: both interpreters must fail, and the first line of the message must match
 for my $t (sort glob('test/e_*.pl')) {
-    my $exp = `perl $t 2>&1`; my $exp_rc = $? >> 8;
+    my $exp = `$perl $t 2>&1`; my $exp_rc = $? >> 8;
     my $got = `$bin $t 2>&1`; my $got_rc = $? >> 8;
     my ($e1) = split /\n/, $exp; my ($g1) = split /\n/, $got;
     if ($exp_rc && $got_rc && $e1 eq $g1) { $pass++; print "ok   $t\n"; next; }
