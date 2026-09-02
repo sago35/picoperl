@@ -126,6 +126,7 @@ make -j
 ```sh
 make            # build/picoperl
 make test       # test/t_*.pl を perl と picoperl の両方で実行して出力を比較 (test/e_*.pl はエラーメッセージを比較)
+PICOPERL_TEST_PERL=/path/to/perl make test   # 別バージョンの perl と比較 (5.44.0 で全テスト一致を確認済み)
 make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーションで実行 (駆動ピン:読み取りピン、単独ピンは "2")
 ```
 
@@ -219,7 +220,14 @@ while (1) { sleep 0.1 }        # イベントが来ると sleep は早く戻る 
 `sub`、`return`、`wantarray`、`@_`、`shift`、文字列補間 (`"$x $a[0] $h{k} $r->{k}[1] @a @{[ expr ]}"`)、
 `sort`/`map`/`grep`、`split`/`join`/`sprintf`/`substr`/`index` などの組み込み関数、
 `eval {}`/`die`/`$@`、`package`/`use`/`require`/`@EXPORT`、`use constant` (`\%hash` 形式も)、
-`qw()`、`x` 演算子、範囲 `..`、文字列のマジックインクリメント、`__LINE__`/`__FILE__`/`__PACKAGE__`、POD。
+`qw()`、`x` 演算子、範囲 `..`、ヒアドキュメント (`<<EOF` `<<"..."` `<<'...'` `<<~EOF`)、
+`each` (イテレータは `keys` でリセット)、`state` (クロージャごとに独立)、
+`for my ($k, $v) (%hash)` の複数変数 foreach、論理 XOR `^^` / `^^=`、
+文字列のマジックインクリメント、`__LINE__`/`__FILE__`/`__PACKAGE__`、POD。
+
+**`use v5.36;` のようなバージョン宣言**も受理します: picoperl の機能は常時すべて
+有効で、perl と同じく v5.12 以上の宣言で `strict`、v5.36 以上で `warnings` が
+そのスコープに有効になります。
 
 名前解決は Perl と同じで、修飾なしで呼べるのは自パッケージのサブと `use` で import したものだけです。
 `use` / `use constant` / `BEGIN` はパース時に実行されるので、import したサブは組み込み関数を
@@ -263,11 +271,12 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 `$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
 
 非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
-`DESTROY`、`AUTOLOAD`、`eval STRING`、`each`、ヒアドキュメント、`redo`、`goto`、
+`DESTROY`、`AUTOLOAD`、`eval STRING`、`redo`、`goto`、
 lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイルテスト (`-e`)、
-`system`/バッククォート、`tie`、`format`、`state`、
-新しめの構文 (後置デリファレンス `$r->@*`、`isa` 演算子、`try/catch`、`for my ($k, $v)`、
-`builtin::`、`class`)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
+`system`/バッククォート、`tie`、`format`、
+新しめの構文 (後置デリファレンス `$r->@*`、`isa` 演算子、`try/catch`、`any`/`all`、
+`builtin::`、`class`、5.44 のシグネチャ名前付きパラメータ)、
+`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 **`%SIG`** は `__WARN__` / `__DIE__` フックと `alarm` + `$SIG{ALRM}` に対応しています
 (perl の safe signals と同じく文の切れ目で配送。未捕捉の ALRM は `Alarm clock` で die)。

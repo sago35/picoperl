@@ -71,7 +71,7 @@ struct pp_obj {
     union {
         pp_val scalar;
         struct { pp_val *v; int n, cap; } arr;
-        struct { pp_hent *e; int n, cap, live; int *bk; int nb; } hash;
+        struct { pp_hent *e; int n, cap, live; int *bk; int nb; int it; } hash;   /* it: each() iterator */
         struct {
             pp_node   *body;
             pp_env    *env;
@@ -183,7 +183,7 @@ enum {
     OP_SHL, OP_SHR, OP_BAND, OP_BOR, OP_BXOR,
     OP_NUM_EQ, OP_NUM_NE, OP_NUM_LT, OP_NUM_GT, OP_NUM_LE, OP_NUM_GE, OP_NUM_CMP,
     OP_STR_EQ, OP_STR_NE, OP_STR_LT, OP_STR_GT, OP_STR_LE, OP_STR_GE, OP_STR_CMP,
-    OP_LOGAND, OP_LOGOR, OP_DEFOR, OP_REPEAT,
+    OP_LOGAND, OP_LOGOR, OP_DEFOR, OP_REPEAT, OP_LOGXOR,
 };
 
 /* 32 bytes on 32-bit targets. N_CONST uses `val`; every other node type may use
@@ -273,6 +273,7 @@ struct pp_interp {
     uint32_t alarm_at;           /* alarm() deadline in pp_host_millis() time; 0 = none */
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
+    pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
     pp_sym  *sym_dispatch;       /* &PicoPerl::Event::_dispatch (interned on first event) */
     pp_sym  *sym_sig;            /* %SIG (interned on first use) */
 };

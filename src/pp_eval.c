@@ -259,6 +259,7 @@ static const char *binop_name(int op) {
     case OP_NUM_CMP: return "numeric comparison (<=>)"; case OP_STR_EQ: return "string eq"; case OP_STR_NE: return "string ne";
     case OP_STR_LT: return "string lt"; case OP_STR_GT: return "string gt"; case OP_STR_LE: return "string le"; case OP_STR_GE: return "string ge";
     case OP_STR_CMP: return "string comparison (cmp)"; case OP_REPEAT: return "repeat (x)";
+    case OP_LOGXOR: return "logical xor (^^)";
     default: return "operation";
     }
 }
@@ -274,6 +275,7 @@ static void warn_uninit(pp_interp *I, const char *what, const char *var) {
 void pp_warn_uninit(pp_interp *I, const char *what, const char *var) { warn_uninit(I, what, var); }
 const char *pp_var_name_of(pp_node *n) { return var_name_of(n); }
 static void warn_operand(pp_interp *I, int op, pp_val v, const char *var) {
+    if (op == OP_LOGXOR) return;   /* like &&/||, no uninitialized warning */
     if (v.t == PP_UNDEF) { warn_uninit(I, binop_name(op), var); return; }
     int numeric = op != OP_CONCAT && op != OP_REPEAT && !(op >= OP_STR_EQ && op <= OP_STR_CMP);
     if (numeric && v.t == PP_STR && !pp_looks_like_number(v.u.s->d, v.u.s->len) && strcmp(v.u.s->d, "0 but true") != 0)
@@ -291,6 +293,7 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
         if (tb) pp_str_decref(tb);
         return pp_str_val(sa);
     }
+    case OP_LOGXOR: return truth_val(pp_truth(a) != pp_truth(b));
     case OP_STR_EQ: return truth_val(pp_str_cmp(a, b) == 0);
     case OP_STR_NE: return truth_val(pp_str_cmp(a, b) != 0);
     case OP_STR_LT: return truth_val(pp_str_cmp(a, b) < 0);
@@ -357,7 +360,7 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
 /* containers                                                          */
 /* ------------------------------------------------------------------ */
 
-static void declare_my(pp_interp *I, pp_node *m);
+static int  declare_my(pp_interp *I, pp_node *m);
 
 /* Returns an owned reference to the array designated by node n. */
 pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
@@ -540,19 +543,52 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
     return NULL;
 }
 
-static void declare_my(pp_interp *I, pp_node *m) {
+/* declares the variables of an N_MY node; returns 1 only for `state` vars that
+ * were all initialized on an earlier call (the caller then skips the initializer) */
+static int declare_my(pp_interp *I, pp_node *m) {
+    int existed = m->op == 's' && m->n > 0;
     for (int i = 0; i < m->n; i++) {
         pp_node *v = m->list[i];
         if (v->type != N_VAR) continue;
-        if (m->op == 'm') {
+        if (m->op == 'm' || (m->op == 's' && !I->cur_code)) {   /* file-level state: the file runs once */
             if (!(v->flags & PP_VAR_LEX)) continue;
             pp_env *e = I->env;
             for (int d = v->aux; d > 0; d--) e = e->parent;
             pp_env_reset(e, v->op, v->sym->name[0]);    /* a fresh variable each time `my` runs */
+            existed = 0;
+        }
+        else if (m->op == 's') {
+            /* state: the cell lives on the code object (per closure instance) in the
+             * otherwise unused constval slot, as a PP_OARRAY of refs indexed by m->aux+i */
+            pp_obj *code = I->cur_code;
+            if (code->u.code.constval.t != PP_REF) {
+                pp_obj *arr = pp_obj_new(PP_OARRAY);
+                code->u.code.constval = pp_ref(arr);
+                pp_obj_decref(arr);
+            }
+            pp_val *slot = pp_array_slot(code->u.code.constval.u.o, m->aux + i);
+            pp_obj *cell;
+            if (slot->t == PP_REF) cell = slot->u.o;
+            else {
+                char sg = v->sym->name[0];
+                cell = pp_obj_new(sg == '@' ? PP_OARRAY : sg == '%' ? PP_OHASH : PP_OSCALAR);
+                *slot = pp_ref(cell);
+                pp_obj_decref(cell);
+                existed = 0;
+            }
+            if (!(v->flags & PP_VAR_LEX)) continue;
+            pp_env *e = I->env;
+            for (int d = v->aux; d > 0; d--) e = e->parent;
+            if (e->cells[v->op] != cell) {
+                if (e->cells[v->op]) pp_obj_decref(e->cells[v->op]);
+                e->cells[v->op] = cell;
+                pp_obj_incref(cell);
+            }
         }
         else if (m->op == 'o') pp_global(I, v->sym);
         else if (m->op == 'l') { if (v->sym->name[0] == '$') local_push(I, var_cell(I, v)); }
     }
+    return existed;
 }
 
 /* ------------------------------------------------------------------ */
@@ -625,6 +661,12 @@ static void assign_list(pp_interp *I, pp_node *a, pp_list *src) {
 
 static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_node *a = n->a, *b = n->b;
+    if (a->type == N_MY && a->op == 's' && n->op == OP_NONE && declare_my(I, a)) {
+        /* state vars already initialized on an earlier call: skip the initializer */
+        if (ctx == CTX_LIST && out) { pp_eval(I, a, CTX_LIST, out); return pp_undef(); }
+        if (ctx == CTX_SCALAR && a->n == 1 && a->list[0]->type == N_VAR) return pp_eval(I, a->list[0], CTX_SCALAR, NULL);
+        return pp_undef();
+    }
     if (n->op == OP_NONE && is_list_lhs(a)) {
         pp_list src = {0};
         pp_eval(I, b, CTX_LIST, &src);
@@ -714,13 +756,16 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     for (int i = 0; i < args->n; i++) pp_array_push(argv, args->v[i]);
     args->n = 0;
     pp_env *saved_env = I->env;
+    pp_obj *saved_code = I->cur_code;
     int saved_ctx = I->call_ctx, saved_line = I->line, saved_warn = I->warn_on;
     I->env = env;
     I->call_ctx = ctx;
+    I->cur_code = code;                  /* for `state` variables */
     I->depth++;
     code->refcnt++;
     pp_val r = exec_block(I, code->u.code.body, ctx, out);
     I->depth--;
+    I->cur_code = saved_code;
     if (I->ctl == CTL_RETURN) {
         I->ctl = CTL_NONE;
         pp_release(r);
@@ -919,9 +964,13 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
     pp_list items = {0};
     if (src_arr) { for (int i = 0; i < src_arr->u.arr.n; i++) pp_list_push(&items, pp_copy(src_arr->u.arr.v[i])); }
     else pp_eval(I, n->b, CTX_LIST, &items);
+    int nv = 1;                          /* for my ($k, $v) (LIST): stride > 1 */
+    pp_obj *cells[16];
     if (n->a && n->a->type == N_MY) {
-        env = pp_env_new(I->env, 1); I->env = env;
-        cell = pp_env_cell(env, 0, '$');
+        nv = n->a->n > 0 ? n->a->n : 1;
+        env = pp_env_new(I->env, nv); I->env = env;
+        for (int k = 0; k < nv; k++) cells[k] = pp_env_cell(env, k, '$');
+        cell = cells[0];
     } else if (n->a) {
         cell = var_cell(I, n->a);
         saved_val = cell->u.scalar; cell->u.scalar = pp_undef(); restore = 1;
@@ -930,19 +979,26 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
         saved_val = cell->u.scalar; cell->u.scalar = pp_undef(); restore = 1;
     }
     if (!I->ctl) {
-        for (int i = 0; i < items.n; i++) {
+        for (int i = 0; i < items.n; i += nv) {
             if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
             if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
-            pp_release(cell->u.scalar);
-            cell->u.scalar = pp_copy(items.v[i]);
+            if (nv == 1) {
+                pp_release(cell->u.scalar);
+                cell->u.scalar = pp_copy(items.v[i]);
+            } else {
+                for (int k = 0; k < nv; k++) {   /* missing tail elements become undef, like perl */
+                    pp_release(cells[k]->u.scalar);
+                    cells[k]->u.scalar = i + k < items.n ? pp_copy(items.v[i + k]) : pp_undef();
+                }
+            }
             int brk;
             if (n->flags & 2) { pp_val v = pp_eval(I, n->c, CTX_VOID, NULL); pp_release(v); brk = loop_ctl(I, n->sym); }
             else brk = loop_body(I, n->c, n->sym);
-            if (src_arr && i < src_arr->u.arr.n) {
+            if (nv == 1 && src_arr && i < src_arr->u.arr.n) {
                 pp_val *slot = &src_arr->u.arr.v[i];
                 if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
             }
-            else if (!src_arr && !(I->compat_warn & 4) && !I->ctl && !pp_val_same(cell->u.scalar, items.v[i])) {
+            else if (nv == 1 && !src_arr && !(I->compat_warn & 4) && !I->ctl && !pp_val_same(cell->u.scalar, items.v[i])) {
                 /* perl aliases the loop variable to the list element; we only write back for a single array */
                 I->compat_warn |= 4;
                 pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating one array");

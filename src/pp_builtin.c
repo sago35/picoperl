@@ -870,12 +870,13 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         }
         return pp_die(I, "delete argument is not a HASH or ARRAY element or slice");
     }
-    case B_KEYS: case B_VALUES: case B_EACH: {
+    case B_KEYS: case B_VALUES: {
         if (n->n == 0) return pp_die(I, "Not enough arguments for keys");
         pp_obj *c = arg_container(I, n->list[0], 1);
         if (!c) return pp_undef();
         pp_list res = {0};
         if (c->kind == PP_OHASH) {
+            c->u.hash.it = 0;               /* like perl, keys/values reset the each() iterator */
             if (ctx != CTX_LIST || !out) { int cnt = c->u.hash.live; pp_obj_decref(c); return pp_int(cnt); }
             for (int i = 0; i < c->u.hash.n; i++) if (c->u.hash.e[i].klen >= 0) {
                 if (n->op == B_KEYS) pp_list_push(&res, pp_strn(c->u.hash.e[i].key, c->u.hash.e[i].klen));
@@ -886,8 +887,31 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             for (int i = 0; i < c->u.arr.n; i++) pp_list_push(&res, n->op == B_KEYS ? pp_int(i) : pp_copy(c->u.arr.v[i]));
         }
         pp_obj_decref(c);
-        if (n->op == B_EACH) return pp_die(I, "each is not supported; use keys");
         return ret_list(ctx, out, &res);
+    }
+    case B_EACH: {
+        if (n->n == 0) return pp_die(I, "Not enough arguments for each");
+        pp_obj *c = arg_container(I, n->list[0], 1);
+        if (!c) return pp_undef();
+        if (c->kind != PP_OHASH) { pp_obj_decref(c); return pp_die(I, "each is only supported on hashes"); }
+        int i = c->u.hash.it;
+        while (i < c->u.hash.n && c->u.hash.e[i].klen < 0) i++;
+        if (i >= c->u.hash.n) {             /* exhausted: reset and return the empty list / undef */
+            c->u.hash.it = 0;
+            pp_obj_decref(c);
+            if (ctx == CTX_LIST && out) return pp_undef();
+            return pp_undef();
+        }
+        c->u.hash.it = i + 1;
+        if (ctx == CTX_LIST && out) {
+            pp_list_push(out, pp_strn(c->u.hash.e[i].key, c->u.hash.e[i].klen));
+            pp_list_push(out, pp_copy(c->u.hash.e[i].v));
+            pp_obj_decref(c);
+            return pp_undef();
+        }
+        pp_val k = pp_strn(c->u.hash.e[i].key, c->u.hash.e[i].klen);
+        pp_obj_decref(c);
+        return ret(ctx, out, k);
     }
     case B_EXIT: {
         int64_t code = 0;
