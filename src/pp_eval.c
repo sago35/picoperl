@@ -10,6 +10,7 @@
 /* ------------------------------------------------------------------ */
 
 static pp_obj *sig_handler(pp_interp *I, const char *name);
+static int class_isa(pp_interp *I, const char *cls, const char *want, int depth);
 
 pp_val pp_die_val(pp_interp *I, pp_val msg) {
     /* takes ownership of msg */
@@ -259,7 +260,7 @@ static const char *binop_name(int op) {
     case OP_NUM_CMP: return "numeric comparison (<=>)"; case OP_STR_EQ: return "string eq"; case OP_STR_NE: return "string ne";
     case OP_STR_LT: return "string lt"; case OP_STR_GT: return "string gt"; case OP_STR_LE: return "string le"; case OP_STR_GE: return "string ge";
     case OP_STR_CMP: return "string comparison (cmp)"; case OP_REPEAT: return "repeat (x)";
-    case OP_LOGXOR: return "logical xor (^^)";
+    case OP_LOGXOR: return "logical xor (^^)"; case OP_ISA: return "isa";
     default: return "operation";
     }
 }
@@ -275,7 +276,7 @@ static void warn_uninit(pp_interp *I, const char *what, const char *var) {
 void pp_warn_uninit(pp_interp *I, const char *what, const char *var) { warn_uninit(I, what, var); }
 const char *pp_var_name_of(pp_node *n) { return var_name_of(n); }
 static void warn_operand(pp_interp *I, int op, pp_val v, const char *var) {
-    if (op == OP_LOGXOR) return;   /* like &&/||, no uninitialized warning */
+    if (op == OP_LOGXOR || op == OP_ISA) return;   /* like &&/||, no uninitialized warning */
     if (v.t == PP_UNDEF) { warn_uninit(I, binop_name(op), var); return; }
     int numeric = op != OP_CONCAT && op != OP_REPEAT && !(op >= OP_STR_EQ && op <= OP_STR_CMP);
     if (numeric && v.t == PP_STR && !pp_looks_like_number(v.u.s->d, v.u.s->len) && strcmp(v.u.s->d, "0 but true") != 0)
@@ -294,6 +295,15 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
         return pp_str_val(sa);
     }
     case OP_LOGXOR: return truth_val(pp_truth(a) != pp_truth(b));
+    case OP_ISA: {
+        int r = 0;
+        if (a.t == PP_REF && a.u.o->class) {
+            pp_str *tb; const char *want = pp_to_cstr(b, &tb);
+            r = class_isa(I, a.u.o->class->name, want, 0);
+            if (tb) pp_str_decref(tb);
+        }
+        return truth_val(r);
+    }
     case OP_STR_EQ: return truth_val(pp_str_cmp(a, b) == 0);
     case OP_STR_NE: return truth_val(pp_str_cmp(a, b) != 0);
     case OP_STR_LT: return truth_val(pp_str_cmp(a, b) < 0);
@@ -1494,6 +1504,40 @@ static NOINLINE pp_val eval_evalblock(pp_interp *I, pp_node *n, int ctx, pp_list
     return r;
 }
 
+/* try/catch/finally: like eval {}, but return/last/next escape through the try
+ * block, $@ stays empty inside catch (the error is in the catch variable), and
+ * finally always runs, preserving whatever control flow is pending. */
+static NOINLINE pp_val eval_try(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_env *saved_env = I->env; int saved_depth = I->depth, saved_ctx = I->call_ctx;
+    int lh = I->nlocals;
+    pp_val r = exec_block(I, n->a, CTX_VOID, NULL);
+    pp_release(r);
+    if (I->ctl == CTL_DIE) {
+        I->ctl = CTL_NONE;
+        pp_release(I->try_err);
+        I->try_err = I->err; I->err = pp_undef();
+        pp_release(I->g_at->u.scalar);
+        I->g_at->u.scalar = pp_strn("", 0);       /* like perl: $@ is empty inside catch */
+        I->env = saved_env; I->depth = saved_depth; I->call_ctx = saved_ctx;
+        local_unwind(I, lh);
+        pp_val c = exec_block(I, n->b, CTX_VOID, NULL);
+        pp_release(c);
+        pp_release(I->try_err);
+        I->try_err = pp_undef();
+    }
+    if (n->c) {                                   /* finally */
+        int ctl = I->ctl; I->ctl = CTL_NONE;
+        pp_val err = I->err; I->err = pp_undef();
+        pp_list ret = I->ret; I->ret.v = NULL; I->ret.n = I->ret.cap = 0;
+        pp_val f = exec_block(I, n->c, CTX_VOID, NULL);
+        pp_release(f);
+        if (I->ctl) { pp_release(err); pp_list_free(&ret); }   /* die/return in finally wins */
+        else { I->ctl = ctl; pp_release(I->err); I->err = err; pp_list_free(&I->ret); I->ret = ret; }
+    }
+    return pp_undef();
+}
+
 static NOINLINE pp_val eval_return(pp_interp *I, pp_node *n) {
     pp_list rv = {0};
     if (n->a) {
@@ -1818,6 +1862,62 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_WANTARRAY:
         return scalar_or_push(ctx, out, I->call_ctx == CTX_LIST ? pp_int(1) : I->call_ctx == CTX_SCALAR ? pp_int(0) : pp_undef());
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
+    case N_NAMEDBIND: {
+        pp_obj *args = current_args(I);
+        int got = args ? args->u.arr.n : 0;
+        int np = n->op;
+        const char *subnm = n->a->val.u.s->d;
+        if (got > np && ((got - np) & 1))
+            return pp_die(I, "Odd name/value argument for subroutine '%s'", subnm);
+        for (int i = 0; i < n->n && !I->ctl; i++) {
+            pp_node *ent = n->list[i];               /* N_ASSIGN{a: N_MY[$var], b: default|NULL} */
+            pp_node *var = ent->a->list[0];
+            const char *pname = var->sym->name + 1;
+            size_t plen = strlen(pname);
+            declare_my(I, ent->a);
+            int found = -1;
+            for (int k = np; k + 1 < got; k += 2) {  /* the last duplicate wins, like perl */
+                pp_str *t; const char *ks = pp_to_cstr(args->u.arr.v[k], &t);
+                size_t kl = t ? (size_t)t->len : strlen(ks);
+                if (kl == plen && memcmp(ks, pname, plen) == 0) found = k;
+                if (t) pp_str_decref(t);
+            }
+            pp_obj *cell = var_cell(I, var);
+            pp_release(cell->u.scalar);
+            cell->u.scalar = pp_undef();
+            if (found >= 0) cell->u.scalar = pp_copy(args->u.arr.v[found + 1]);
+            else if (ent->b) {
+                pp_val d = pp_eval(I, ent->b, CTX_SCALAR, NULL);
+                if (I->ctl) { pp_release(d); return pp_undef(); }
+                cell->u.scalar = d;
+            }
+            else return pp_die(I, "Missing required named parameter '%s' to subroutine '%s'", pname, subnm);
+        }
+        /* leftover pairs: collected by a trailing %hash, otherwise an error */
+        pp_obj *rest = NULL;
+        if (n->b) { declare_my(I, n->b); rest = var_cell(I, n->b->list[0]); pp_hash_clear(rest); }
+        for (int k = np; k + 1 < got && !I->ctl; k += 2) {
+            pp_str *t; const char *ks = pp_to_cstr(args->u.arr.v[k], &t);
+            size_t kl = t ? (size_t)t->len : strlen(ks);
+            int known = 0;
+            for (int i = 0; i < n->n; i++) {
+                const char *pn = n->list[i]->a->list[0]->sym->name + 1;
+                if (strlen(pn) == kl && memcmp(pn, ks, kl) == 0) { known = 1; break; }
+            }
+            if (!known) {
+                if (rest) pp_hash_set(rest, ks, (int)kl, pp_copy(args->u.arr.v[k + 1]));
+                else {
+                    char nm[64]; snprintf(nm, sizeof nm, "%.*s", (int)(kl > 60 ? 60 : kl), ks);
+                    if (t) pp_str_decref(t);
+                    return pp_die(I, "Unrecognized named parameter '%s' to subroutine '%s'", nm, subnm);
+                }
+            }
+            if (t) pp_str_decref(t);
+        }
+        return pp_undef();
+    }
+    case N_TRY: return eval_try(I, n, ctx, out);
+    case N_TRYERR: return scalar_or_push(ctx, out, pp_copy(I->try_err));
     case N_SIGCHECK: {
         pp_obj *args = current_args(I);
         int got = args ? args->u.arr.n : 0;
@@ -1908,6 +2008,7 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "$,", 2));
     pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
+    pp_core_natives_register(I);
     pp_host_register(I);
     return I;
 }
@@ -1919,6 +2020,7 @@ void pp_free(pp_interp *I) {
     free(I->locals);
     pp_list_free(&I->ret);
     pp_release(I->err);
+    pp_release(I->try_err);
     pp_obj_decref(I->loaded);
     pp_regex_cleanup(I);
     pp_env_decref(I->globals);

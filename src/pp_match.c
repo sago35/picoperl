@@ -75,7 +75,7 @@ static pp_obj *cap_cell(pp_interp *I, int i) {
     return pp_global(I, pp_intern(I, nm, n));
 }
 
-static void set_captures(pp_interp *I, const char *s, const int *caps, int ncap) {
+static void set_captures(pp_interp *I, const pp_regex *re, const char *s, const int *caps, int ncap) {
     for (int i = 0; i <= ncap; i++) {
         pp_obj *c = cap_cell(I, i);
         pp_release(c->u.scalar);
@@ -83,6 +83,37 @@ static void set_captures(pp_interp *I, const char *s, const int *caps, int ncap)
     }
     for (int i = ncap + 1; i <= I->m_nset; i++) { pp_obj *c = cap_cell(I, i); pp_release(c->u.scalar); c->u.scalar = pp_undef(); }
     I->m_nset = ncap;
+    /* $+ : the text of the last group that matched */
+    {
+        pp_obj *c = pp_global(I, pp_intern(I, "$+", 2));
+        int last = 0;
+        for (int i = 1; i <= ncap; i++) if (caps[2 * i] >= 0) last = i;
+        pp_release(c->u.scalar);
+        c->u.scalar = last ? pp_strn(s + caps[2 * last], caps[2 * last + 1] - caps[2 * last]) : pp_undef();
+    }
+    /* @- and @+ : start/end offsets per group (like perl, but global, not scoped) */
+    {
+        pp_obj *mi = pp_global(I, pp_intern(I, "@-", 2));
+        pp_obj *pl = pp_global(I, pp_intern(I, "@+", 2));
+        pp_array_clear(mi); pp_array_clear(pl);
+        for (int i = 0; i <= ncap; i++) {
+            pp_array_push(mi, caps[2 * i] >= 0 ? pp_int(caps[2 * i]) : pp_undef());
+            pp_array_push(pl, caps[2 * i] >= 0 ? pp_int(caps[2 * i + 1]) : pp_undef());
+        }
+    }
+    /* %+ : named groups of this match */
+    {
+        pp_obj *h = pp_global(I, pp_intern(I, "%+", 2));
+        pp_hash_clear(h);
+        if (re) {
+            for (int i = 0; i < re->nnames; i++) {
+                int g = re->names[i].cap;
+                if (g <= ncap && caps[2 * g] >= 0)
+                    pp_hash_set(h, re->source + re->names[i].off, re->names[i].len,
+                                pp_strn(s + caps[2 * g], caps[2 * g + 1] - caps[2 * g]));
+            }
+        }
+    }
 }
 
 /* ---------------- pos() ---------------- */
@@ -166,7 +197,7 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     if (!(flags & PP_M_G)) {
         if (exec_or_die(I, re, s->d, s->len, 0, -1, caps)) {
             matched = 1;
-            set_captures(I, s->d, caps, re->ncap);
+            set_captures(I, re, s->d, caps, re->ncap);
             if (want_list) { if (re->ncap == 0) pp_list_push(out, pp_int(1)); else push_captures(out, s->d, caps, re->ncap); }
         }
     }
@@ -181,7 +212,7 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             push_captures(out, s->d, caps, re->ncap);
             pos = caps[1]; empty = caps[0] == caps[1];
         }
-        if (matched) set_captures(I, s->d, last, re->ncap);
+        if (matched) set_captures(I, re, s->d, last, re->ncap);
         free(last);
         if (pe) pos_reset(pe);
     }
@@ -191,7 +222,7 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         int pos = pe ? pe->pos : 0, empty = pe ? pe->empty : 0;
         if (pos <= s->len && exec_or_die(I, re, s->d, s->len, pos, empty ? pos : -1, caps)) {
             matched = 1;
-            set_captures(I, s->d, caps, re->ncap);
+            set_captures(I, re, s->d, caps, re->ncap);
             if (pe) { pe->pos = caps[1]; pe->empty = caps[0] == caps[1]; }
         }
         else if (pe) pos_reset(pe);
@@ -231,7 +262,7 @@ pp_val pp_eval_subst(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     int pos = 0, last = 0, count = 0, empty = 0;
     while (pos <= s->len && exec_or_die(I, re, s->d, s->len, pos, empty ? pos : -1, caps)) {
         count++;
-        set_captures(I, s->d, caps, re->ncap);
+        set_captures(I, re, s->d, caps, re->ncap);
         str_append(&result, s->d + last, caps[0] - last);
         pp_val rv = pp_eval(I, n->c, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(rv); break; }

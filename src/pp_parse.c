@@ -161,7 +161,9 @@ static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
         char c = name[0];
         if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^')) return 1;
-        if (sigil == '@' && c == '_') return 1;
+        if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
+        if (sigil == '%' && c == '+') return 1;
+        if (sigil == '$' && (c == '+' || c == '-')) return 1;
     }
     if (sigil == '$' && len >= 1 && isdigit((unsigned char)name[0])) return 1;   /* $1 .. */
     if (sigil == '%' && len == 3 && !memcmp(name, "SIG", 3)) return 1;
@@ -503,7 +505,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         int c1 = peekc(L, 1);
         if (c1 == '#') {
             int c2 = peekc(L, 2);
-            if (c2 == '{' || c2 == '$') { L->pos += 2; t->type = T_CAST; strcpy(t->op, "$#"); term = 0; }
+            if (c2 == '{' || c2 == '$' || (c2 == '*' && L->prev_arrow)) { L->pos += 2; t->type = T_CAST; strcpy(t->op, "$#"); term = 0; }
             else if (is_ident_start(c2)) {
                 L->pos += 2; int start = L->pos; int len = lex_name(L);
                 t->type = T_VAR; t->sigil = '#'; t->s = L->src + start; t->len = len; term = 1;
@@ -526,9 +528,10 @@ static void lex_next(pp_parser *P, pp_tok *t) {
                 L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0;
             }
         }
-        else if (c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^') {
+        else if (c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-') {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
+        else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
         else perr(P, "unexpected character after '$'");
     }
     else if (c == '@' && (!L->prev_term || L->prev_brace)) {
@@ -538,7 +541,14 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '@'; t->s = L->src + start; t->len = len; term = 1;
         }
         else if (c1 == '{' || c1 == '$') { L->pos++; t->type = T_CAST; strcpy(t->op, "@"); term = 0; }
+        else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_OP; strcpy(t->op, "@"); term = 0; }   /* $r->@* */
+        else if (c1 == '-' || c1 == '+') {   /* @- / @+ : match offsets */
+            L->pos += 2; t->type = T_VAR; t->sigil = '@'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
+        }
         else perr(P, "unexpected '@'");
+    }
+    else if (c == '%' && (!L->prev_term || L->prev_brace) && peekc(L, 1) == '+') {   /* %+ : named captures */
+        L->pos += 2; t->type = T_VAR; t->sigil = '%'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
     }
     else if (c == '%' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
         if (is_ident_start(peekc(L, 1))) {
@@ -880,7 +890,7 @@ static int interp_extent(const char *s, int len, int i) {
     else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
         return interp_extent(s, len, j);
     }
-    else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&')) {
+    else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&' || s[j] == '+' || s[j] == '-')) {
         j++;
         while (isdigit((unsigned char)s[j-1]) && j < len && isdigit((unsigned char)s[j])) j++;
     }
@@ -1239,6 +1249,7 @@ static int binop_of(pp_tok *t, int *prec, int *rassoc) {
         if (tok_is_ident(t, "eq")) { *prec = 8; return OP_STR_EQ; }
         if (tok_is_ident(t, "ne")) { *prec = 8; return OP_STR_NE; }
         if (tok_is_ident(t, "cmp")) { *prec = 8; return OP_STR_CMP; }
+        if (tok_is_ident(t, "isa")) { *prec = 10; return OP_ISA; }
     }
     return 0;
 }
@@ -1269,7 +1280,12 @@ static pp_node *parse_binary(pp_parser *P, int minprec) {
         /* `x=` assignment */
         if (op == OP_REPEAT && peek(P)->type == T_OP && !strcmp(peek(P)->op, "=") && !peek(P)->space_before) break;
         advance(P);
-        pp_node *rhs = parse_binary(P, rassoc ? prec : prec + 1);
+        pp_node *rhs;
+        if (op == OP_ISA && P->cur.type == T_IDENT) {   /* $x isa Foo::Bar: bareword class name */
+            rhs = const_str(P, P->cur.s, P->cur.len);
+            advance(P);
+        }
+        else rhs = parse_binary(P, rassoc ? prec : prec + 1);
         pp_node *n;
         if (op == OP_MATCH || op == OP_NMATCH) {
             if ((rhs->type == N_MATCH || rhs->type == N_SUBST || rhs->type == N_TRANS) && !rhs->a && !(rhs->type == N_MATCH && (rhs->op & PP_M_QR))) { rhs->a = lhs; n = rhs; }
@@ -1643,7 +1659,7 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
    ignored, as before. Returns the number of statements added to b. */
 static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs) {
     if (noargs) *noargs = cur_is_op(P, ")");
-    if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0]))) {
+    if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0])) && !cur_is_op(P, ":")) {
         while (!cur_is_op(P, ")") && P->cur.type != T_EOF) {   /* prototype: ignored */
             if (P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0]))
                 perr(P, "unsupported subroutine signature (anonymous '$' parameters are not supported)");
@@ -1661,7 +1677,38 @@ static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *
     chk->a = const_str(P, full, (int)strlen(full));
     node_add(b, chk);
     int idx = 0, min = -1, slurpy = 0, nstmt = 1;
+    pp_node *named = NULL;
     while (!cur_is_op(P, ")")) {
+        if (cur_is_op(P, ":")) {                     /* :$name / :$name = default (5.44) */
+            if (!named) {
+                named = node(P, N_NAMEDBIND);
+                named->line = 0;                     /* messages report the caller's line */
+                named->a = const_str(P, chk->a->val.u.s->d, chk->a->val.u.s->len);
+                named->op = (uint8_t)idx;            /* pairs start after the positionals */
+            }
+            advance(P);
+            if (P->cur.type != T_VAR || P->cur.sigil != '$' || !is_ident_start((unsigned char)P->cur.s[0]))
+                perr(P, "syntax error in subroutine signature");
+            pp_node *m = node(P, N_MY); m->op = 'm';
+            node_add(m, decl_var(P, 'm', '$', P->cur.s, P->cur.len));
+            advance(P);
+            pp_node *ent = node(P, N_ASSIGN); ent->a = m; ent->b = NULL;
+            if (accept_op(P, "=")) ent->b = parse_assign(P);
+            node_add(named, ent);
+            if (!accept_op(P, ",")) break;
+            continue;
+        }
+        if (named) {                                 /* only a slurpy hash may follow named params */
+            if (P->cur.type == T_VAR && P->cur.sigil == '%' && is_ident_start((unsigned char)P->cur.s[0])) {
+                pp_node *m = node(P, N_MY); m->op = 'm';
+                node_add(m, decl_var(P, 'm', '%', P->cur.s, P->cur.len));
+                advance(P);
+                named->b = m;
+                accept_op(P, ",");
+                break;
+            }
+            perr(P, "syntax error in subroutine signature (named parameters must come last)");
+        }
         if (P->cur.type != T_VAR || P->cur.len == 0 || !is_ident_start((unsigned char)P->cur.s[0]))
             perr(P, "syntax error in subroutine signature");
         if (slurpy) perr(P, "Slurpy parameter not last");
@@ -1712,13 +1759,15 @@ static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *
             idx++;
         }
         if (scope_top(P)->warnings) as->flags |= PP_STMT_WARN;
+        as->line = 0;                    /* keep the caller's line for signature errors */
         node_add(b, as); nstmt++;
         if (!accept_op(P, ",")) break;
     }
     expect_op(P, ")");
     chk->op = (uint8_t)(min >= 0 ? min : idx);
-    chk->aux = (uint8_t)(slurpy ? 255 : idx);
+    chk->aux = (uint8_t)((slurpy || named) ? 255 : idx);
     chk->b = const_int(P, idx);
+    if (named) { node_add(b, named); nstmt++; }
     return nstmt;
 }
 
@@ -2022,13 +2071,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
         static const char *core_only[] = { "print", "printf", "say", "defined", "undef", "scalar", "exists", "delete", "bless", "die", "warn", "sort", "map", "grep", "push", "pop", "shift", "unshift", "keys", "values", "each", "split", "join", "ref", NULL };
         int core = 0;
         for (int i = 0; core_only[i]; i++) if ((int)strlen(core_only[i]) == len && !memcmp(core_only[i], id, len)) core = 1;
-        if (!core && pp_lookup_sub(P->I, sym_sigil(P, '&', id, len))) bid = 0;
+        if (!core && is_declared(P, sym_sigil(P, '&', id, len))) bid = 0;
     }
     if (bid > 0) {
         advance(P);
         pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)bid; n->line = line;
         int is_sort = len == 4 && !memcmp(id, "sort", 4);
-        int is_mapgrep = (len == 4 && !memcmp(id, "grep", 4)) || (len == 3 && !memcmp(id, "map", 3));
+        int is_mapgrep = (len == 4 && !memcmp(id, "grep", 4)) || (len == 3 && !memcmp(id, "map", 3))
+                       || (len == 3 && (!memcmp(id, "any", 3) || !memcmp(id, "all", 3)));
         if (is_sort || is_mapgrep) return parse_block_or_expr_arg(P, n, is_sort);
         int is_print = (len == 5 && !memcmp(id, "print", 5)) || (len == 6 && !memcmp(id, "printf", 6)) || (len == 3 && !memcmp(id, "say", 3));
         if (is_print) {
@@ -2274,6 +2324,30 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
             I->all_subdefs[I->nall_subdefs++] = n;
             return NULL;
+        }
+        if (tok_is_ident(t, "try") && nx->type == T_OP && !strcmp(nx->op, "{")) {
+            advance(P);
+            pp_node *n = node(P, N_TRY);
+            n->a = parse_block(P);
+            if (!cur_is_ident(P, "catch")) perr(P, "try block without catch is not allowed");
+            advance(P);
+            expect_op(P, "(");
+            if (P->cur.type != T_VAR || P->cur.sigil != '$') perr(P, "syntax error in catch");
+            const char *en = P->cur.s; int el = P->cur.len;
+            advance(P);
+            expect_op(P, ")");
+            pp_node *b = node(P, N_BLOCK);        /* catch block, with `my $e = <caught>` first */
+            scope_push(P, SCOPE_BLOCK);
+            pp_node *m = node(P, N_MY); m->op = 'm';
+            node_add(m, mkvar_decl(P, '$', en, el));
+            pp_node *as = node(P, N_ASSIGN); as->a = m; as->b = node(P, N_TRYERR);
+            node_add(b, as);
+            parse_block_stmts(P, b);
+            int nv = scope_pop(P);
+            if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
+            n->b = b;
+            if (cur_is_ident(P, "finally")) { advance(P); n->c = parse_block(P); }
+            return n;
         }
         if (tok_is_ident(t, "if")) { advance(P); return parse_cond_block(P, 0); }
         if (tok_is_ident(t, "unless")) { advance(P); return parse_cond_block(P, 1); }

@@ -62,3 +62,39 @@ print "\n";
 
 # --- ^^ and ^^= ---
 print( (1 ^^ 0 ? "t" : "f"), (0 ^^ 1 ? "t" : "f"), (1 ^^ 1 ? "t" : "f"), (0 ^^ 0 ? "t" : "f"), "\n" );
+
+# --- try/catch/finally ---
+use feature 'try';
+no warnings;
+sub risky { my ($n) = @_; try { die "odd\n" if $n % 2; return "even" } catch ($e) { chomp $e; return "caught:$e" } finally { print "fin($n) " } }
+print risky(2), " ", risky(3), "\n";
+try { print "clean\n" } catch ($e) { print "unreachable\n" }
+
+# --- isa 演算子 ---
+use feature 'isa';
+package Shape; sub new { bless {}, shift }
+package Circle; our @ISA = ('Shape');
+package main;
+my $c = Circle->new;
+print(($c isa Shape ? "y" : "n"), ($c isa Circle ? "y" : "n"), ($c isa Square ? "y" : "n"), ([] isa Shape ? "y" : "n"), "\n");
+
+# --- 後置デリファレンス ---
+my $aref = [10, 20, 30];
+my $href = { p => 1, q => 2 };
+print scalar($aref->@*), " ", join(",", $aref->@*), " ", $aref->$#*, "\n";
+print join(",", sort keys $href->%*), "\n";
+my $sref = \"deep";
+print $sref->$*, "\n";
+
+# --- builtin:: ---
+use builtin qw(true false ceil floor trim blessed reftype);
+print((true ? "T" : "F"), (false ? "T" : "F"), " ", ceil(2.1), " ", floor(-2.1), " [", trim(" x y \t"), "]\n");
+print blessed($c), " ", blessed([]) // "-", " ", reftype($c), " ", reftype(\"s"), "\n";
+
+# --- 名前付きキャプチャと @- / @+ / $+ ---
+if ("2026-09-02T12:34" =~ /(?<date>[\d-]+)T(?<hh>\d+):(?<mm>\d+)/) {
+    print "$+{date} $+{hh}h$+{mm}m\n";
+    print scalar(keys %+), " names; span $-[0]..$+[0]; g1 $-[1]..$+[1]\n";
+}
+"pair AB" =~ /(A)(B)/;
+print "last group: $+\n";

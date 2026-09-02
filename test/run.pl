@@ -10,7 +10,13 @@ my $pat = shift;
 my @tests = sort glob('test/t_*.pl');
 @tests = grep { /$pat/ } @tests if defined $pat;
 my ($pass, $fail) = (0, 0);
+my $pver = 0 + `$perl -e 'print \$]'`;
 for my $t (@tests) {
+    if (open my $fh, '<', $t) {
+        my $l1 = <$fh> // '';
+        close $fh;
+        if ($l1 =~ /needs-perl\s+([\d.]+)/ && $pver < $1) { print "skip $t (needs perl >= $1)\n"; next; }
+    }
     my $exp = `$perl $t 2>&1`; my $exp_rc = $? >> 8;
     my $got = `$bin $t 2>&1`; my $got_rc = $? >> 8;
     if ($exp eq $got && $exp_rc == $got_rc) { $pass++; print "ok   $t\n"; next; }

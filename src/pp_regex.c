@@ -40,6 +40,8 @@ typedef struct {
     int   ncap;
     int   nmarks;
     rnode *all;
+    const char *base;                            /* start of the pattern (for name offsets) */
+    struct { int off, len, cap; } names[16]; int nnames;
     uint8_t *classes; int nclasses, capclasses;
     char  err[96];
     int   failed;
@@ -217,6 +219,20 @@ static rnode *parse_atom(rparser *P, int depth) {
             else if (k == '!') { look = 1; neg = 1; }
             else if (k == '#') { while (P->p < P->end && *P->p != ')') P->p++; if (P->p < P->end) P->p++; return rnew(P, R_EMPTY); }
             else if (k == '<' && P->p < P->end && (*P->p == '=' || *P->p == '!')) { rfail(P, "lookbehind is not supported"); return NULL; }
+            else if ((k == '<' || k == '\'') && P->p < P->end && (isalpha((unsigned char)*P->p) || *P->p == '_')) {
+                /* (?<name>...) / (?'name'...): a numbered group that also fills $+{name} */
+                char close = k == '<' ? '>' : '\'';
+                const char *ns = P->p;
+                while (P->p < P->end && (isalnum((unsigned char)*P->p) || *P->p == '_')) P->p++;
+                if (P->p >= P->end || *P->p != close) { rfail(P, "syntax error in (?<...>) group name"); return NULL; }
+                if (P->nnames >= 16) { rfail(P, "too many named groups"); return NULL; }
+                cap = ++P->ncap;
+                P->names[P->nnames].off = (int)(ns - P->base);
+                P->names[P->nnames].len = (int)(P->p - ns);
+                P->names[P->nnames].cap = cap;
+                P->nnames++;
+                P->p++;                          /* '>' or the closing quote */
+            }
             else {
                 /* inline flags: (?i) (?^i:...) (?i-m:...) */
                 P->p--;
@@ -464,7 +480,8 @@ static void gen(emitter *E, const rnode *n) {
 
 pp_regex *pp_re_compile(const char *pat, int len, int flags, char *err, int errcap) {
     rparser P; memset(&P, 0, sizeof P);
-    P.p = pat; P.end = pat + len; P.flags = flags & (PP_RE_I | PP_RE_M | PP_RE_S | PP_RE_X);
+    P.p = pat; P.end = pat + len; P.base = pat;
+    P.flags = flags & (PP_RE_I | PP_RE_M | PP_RE_S | PP_RE_X);
     rnode *root = parse_alt(&P, 0);
     if (root && !P.failed && P.p < P.end) rfail(&P, *P.p == ')' ? "Unmatched ) in regex" : "syntax error in regex");
     emitter E; memset(&E, 0, sizeof E);
@@ -480,6 +497,15 @@ pp_regex *pp_re_compile(const char *pat, int len, int flags, char *err, int errc
     re->classes = P.classes; re->nclasses = P.nclasses;
     re->ncap = P.ncap; re->nmarks = E.nmarks; re->flags = flags;
     re->source = malloc((size_t)len + 1); memcpy(re->source, pat, (size_t)len); re->source[len] = 0; re->srclen = len;
+    if (P.nnames) {
+        re->names = calloc((size_t)P.nnames, sizeof *re->names);
+        for (int i = 0; i < P.nnames; i++) {
+            re->names[i].off = (uint16_t)P.names[i].off;
+            re->names[i].len = (uint16_t)P.names[i].len;
+            re->names[i].cap = (uint16_t)P.names[i].cap;
+        }
+        re->nnames = P.nnames;
+    }
     /* cheap optimisations: anchored start, literal first byte */
     re->first = -1;
     int pc = 0;
@@ -492,7 +518,7 @@ pp_regex *pp_re_compile(const char *pat, int len, int flags, char *err, int errc
 
 void pp_re_free(pp_regex *re) {
     if (!re) return;
-    free(re->prog); free(re->classes); free(re->source); free(re);
+    free(re->prog); free(re->classes); free(re->source); free(re->names); free(re);
 }
 
 int pp_re_nslots(const pp_regex *re) { return 2 * (re->ncap + 1) + re->nmarks; }

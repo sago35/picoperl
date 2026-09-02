@@ -170,6 +170,10 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_TRY,          /* a: try block, b: catch block (starts with `my $e = <caught>`), c: finally block or NULL */
+    N_TRYERR,       /* leaf: the error caught by the enclosing try (copied into the catch variable) */
+    N_NAMEDBIND,    /* named signature params (5.44): op: first pair index, a: sub name (const str),
+                       b: slurpy %hash N_MY or NULL, list: one N_ASSIGN{N_MY[$var], default|NULL} per param */
 };
 /* N_MATCH / N_SUBST op bits */
 enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16 };
@@ -183,7 +187,7 @@ enum {
     OP_SHL, OP_SHR, OP_BAND, OP_BOR, OP_BXOR,
     OP_NUM_EQ, OP_NUM_NE, OP_NUM_LT, OP_NUM_GT, OP_NUM_LE, OP_NUM_GE, OP_NUM_CMP,
     OP_STR_EQ, OP_STR_NE, OP_STR_LT, OP_STR_GT, OP_STR_LE, OP_STR_GE, OP_STR_CMP,
-    OP_LOGAND, OP_LOGOR, OP_DEFOR, OP_REPEAT, OP_LOGXOR,
+    OP_LOGAND, OP_LOGOR, OP_DEFOR, OP_REPEAT, OP_LOGXOR, OP_ISA,
 };
 
 /* 32 bytes on 32-bit targets. N_CONST uses `val`; every other node type may use
@@ -274,6 +278,7 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    pp_val   try_err;            /* error being handed to a catch block */
     pp_sym  *sym_dispatch;       /* &PicoPerl::Event::_dispatch (interned on first event) */
     pp_sym  *sym_sig;            /* %SIG (interned on first use) */
 };

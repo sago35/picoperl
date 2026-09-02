@@ -11,7 +11,7 @@ enum {
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
     B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS,
-    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ABS_END
+    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ANY, B_ALL, B_ABS_END
 };
 
 static const struct { const char *name; int id; int kind; } builtins[] = {
@@ -19,6 +19,7 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "push", B_PUSH, BK_LIST }, { "unshift", B_UNSHIFT, BK_LIST }, { "pop", B_POP, BK_UNARY }, { "shift", B_SHIFT, BK_UNARY },
     { "splice", B_SPLICE, BK_LIST }, { "join", B_JOIN, BK_LIST }, { "split", B_SPLIT, BK_LIST }, { "sprintf", B_SPRINTF, BK_LIST },
     { "reverse", B_REVERSE, BK_LIST }, { "sort", B_SORT, BK_LIST }, { "map", B_MAP, BK_LIST }, { "grep", B_GREP, BK_LIST },
+    { "any", B_ANY, BK_LIST }, { "all", B_ALL, BK_LIST },
     { "die", B_DIE, BK_LIST }, { "warn", B_WARN, BK_LIST }, { "substr", B_SUBSTR, BK_LIST }, { "index", B_INDEX, BK_LIST },
     { "rindex", B_RINDEX, BK_LIST }, { "atan2", B_ATAN2, BK_LIST }, { "length", B_LENGTH, BK_UNARY }, { "lc", B_LC, BK_UNARY },
     { "uc", B_UC, BK_UNARY }, { "lcfirst", B_LCFIRST, BK_UNARY }, { "ucfirst", B_UCFIRST, BK_UNARY }, { "chr", B_CHR, BK_UNARY },
@@ -306,6 +307,28 @@ static pp_val do_map_grep(pp_interp *I, pp_node *n, int ctx, pp_list *out, int i
     count = res.n;
     if (ctx != CTX_LIST || !out) { pp_list_free(&res); return pp_int(count); }
     return ret_list(ctx, out, &res);
+}
+
+/* any { } LIST / all { } LIST (perl 5.42): grep that short-circuits to a boolean */
+static pp_val do_any_all(pp_interp *I, pp_node *n, int ctx, pp_list *out, int is_all) {
+    pp_list items = {0};
+    if (!eval_args(I, n, 0, &items)) { pp_list_free(&items); return pp_undef(); }
+    pp_obj *us = I->g_underscore;
+    pp_val saved = us->u.scalar; us->u.scalar = pp_undef();
+    int result = is_all;
+    for (int i = 0; i < items.n && !I->ctl; i++) {
+        pp_release(us->u.scalar);
+        us->u.scalar = pp_copy(items.v[i]);
+        pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
+        int t = !I->ctl && pp_truth(v);
+        pp_release(v);
+        if (I->ctl) break;
+        if (is_all ? !t : t) { result = !is_all; break; }
+    }
+    pp_release(us->u.scalar); us->u.scalar = saved;
+    pp_list_free(&items);
+    if (I->ctl) return pp_undef();
+    return ret(ctx, out, result ? pp_int(1) : pp_strn("", 0));
 }
 
 /* ------------------------------------------------------------------ */
@@ -601,6 +624,8 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_SORT: return do_sort(I, n, ctx, out);
     case B_MAP: return do_map_grep(I, n, ctx, out, 1);
     case B_GREP: return do_map_grep(I, n, ctx, out, 0);
+    case B_ANY: return do_any_all(I, n, ctx, out, 0);
+    case B_ALL: return do_any_all(I, n, ctx, out, 1);
     case B_DIE: case B_WARN: {
         pp_list args = {0};
         if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
@@ -1085,4 +1110,50 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     default: break;
     }
     return pp_die(I, "internal: unknown builtin %d", n->op);
+}
+
+/* ------------------------------------------------------------------ */
+/* builtin:: core functions (perl 5.36+); the exportable wrappers and  */
+/* the pure-perl ones (true/false/trim) live in lib/builtin.pm         */
+/* ------------------------------------------------------------------ */
+
+static pp_val n_bi_ceil(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    double d = a->n ? pp_to_num(a->v[0]) : 0;
+    return pp_num(ceil(d));
+}
+static pp_val n_bi_floor(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    double d = a->n ? pp_to_num(a->v[0]) : 0;
+    return pp_num(floor(d));
+}
+static pp_val n_bi_blessed(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n && a->v[0].t == PP_REF && a->v[0].u.o->class) return pp_cstr(a->v[0].u.o->class->name);
+    return pp_undef();
+}
+static pp_val n_bi_reftype(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (!a->n || a->v[0].t != PP_REF) return pp_undef();
+    switch (a->v[0].u.o->kind) {
+    case PP_OARRAY: return pp_cstr("ARRAY");
+    case PP_OHASH:  return pp_cstr("HASH");
+    case PP_OCODE:  return pp_cstr("CODE");
+    case PP_OREGEX: return pp_cstr("REGEXP");
+    case PP_OFILE:  return pp_cstr("GLOB");
+    default:        return pp_cstr(a->v[0].u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR");
+    }
+}
+static pp_val n_bi_refaddr(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (!a->n || a->v[0].t != PP_REF) return pp_undef();
+    return pp_int((int64_t)(uintptr_t)a->v[0].u.o);
+}
+
+void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "builtin::ceil", n_bi_ceil);
+    pp_register(I, "builtin::floor", n_bi_floor);
+    pp_register(I, "builtin::blessed", n_bi_blessed);
+    pp_register(I, "builtin::reftype", n_bi_reftype);
+    pp_register(I, "builtin::refaddr", n_bi_refaddr);
 }

@@ -19,6 +19,8 @@ typedef struct pp_regex {
     uint8_t *classes;   /* 32-byte bitmaps */
     int      nclasses;
     int      ncap;      /* capture groups, not counting group 0 */
+    struct { uint16_t off, len, cap; } *names;   /* (?<name>...): name is source[off..off+len) */
+    int      nnames;
     int      nmarks;    /* loop-progress slots after the capture slots */
     int      flags;     /* PP_RE_* the pattern was compiled with */
     int      anchored;  /* only position 0 can match */
