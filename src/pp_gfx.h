@@ -13,6 +13,10 @@ typedef struct {
     const pp_glyph *glyphs;
     uint16_t        first, last;
     uint8_t         yadv;
+    /* sparse (tinyfont const1bit) fonts, e.g. shnm: glyphs looked up by codepoint */
+    const uint8_t  *map;    /* sorted 6-byte records: rune (3 bytes BE) + offset (3 bytes BE) */
+    const uint8_t  *data;   /* per glyph: w h adv xo yo bitmap-bytes */
+    int             nmap;
 } pp_font;
 extern const pp_font pp_fonts[];
 extern const int     pp_nfonts;

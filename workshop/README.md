@@ -26,5 +26,5 @@ make uf2 SCRIPT=workshop/01_blinky1/main.pl NAME=01_blinky1   # -> dist/picoperl
 | `14_hid_keyboard` | ボタンを押している間 `a` を送る | `Hid::keyboard_report`, `KC_A` |
 | `15_hid_mouse` | ボタンを押している間マウスの左ボタンを押す | `Mouse->new`, `press(Mouse::LEFT)`, `release` |
 | `16_oled_inverted_hw` | 09 を 180 度回転して表示 | `set_rotation(180)` |
-| `20_rotary_gopher` | エンコーダで gophers フォントのアルファベットをスクロール | `Encoder`, `Tinyfont::LineWidth`, `clear_buffer` |
+| `17_oled_japanese_font` | 東雲フォントで「こんにちは世界」を表示 | `Tinyfont::SHNMK12` (12px、かな + JIS 漢字) || `20_rotary_gopher` | エンコーダで gophers フォントのアルファベットをスクロール | `Encoder`, `Tinyfont::LineWidth`, `clear_buffer` |
 | `22_buzzer` | 圧電ブザー (EX01 = GPIO14) でドレミファソラシド | `Tone->new(14)`, `set_note(Tone::C5)` |

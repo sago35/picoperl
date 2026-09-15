@@ -15,6 +15,7 @@ use constant {
     FREEMONO_BOLD_9PT => 'freemono_bold_9pt',
     GOPHERS_32PT     => 'gophers_32pt',
     GOPHERS_58PT     => 'gophers_58pt',
+    SHNMK12          => 'shnmk12',       # 東雲 12px (ASCII + かな + JIS 第 1/2 水準漢字)
 };
 
 sub WriteLine { my ($d, $font, $x, $y, $text, $color, $scale) = @_; return $d->write_line($font, $x, $y, $text, $color, $scale) }

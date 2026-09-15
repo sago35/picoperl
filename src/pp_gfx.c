@@ -138,35 +138,61 @@ static unsigned next_char(const char **s) {
     return c;
 }
 
+/* glyph for codepoint c: fills *tmp, returns the bitmap bytes (NULL if the font
+ * has no usable glyph). Sparse fonts fall back to their first glyph, like tinyfont. */
+static const uint8_t *find_glyph(const pp_font *f, unsigned c, pp_glyph *tmp) {
+    if (f->map) {
+        int lo = 0, hi = f->nmap - 1, hit = -1;
+        while (lo <= hi) {
+            int m = (lo + hi) / 2;
+            const uint8_t *r = f->map + m * 6;
+            unsigned rc = ((unsigned)r[0] << 16) | ((unsigned)r[1] << 8) | r[2];
+            if (rc < c) lo = m + 1;
+            else if (rc > c) hi = m - 1;
+            else { hit = m; break; }
+        }
+        const uint8_t *rec = f->map + (hit >= 0 ? hit : 0) * 6;
+        uint32_t off = ((uint32_t)rec[3] << 16) | ((uint32_t)rec[4] << 8) | rec[5];
+        const uint8_t *d = f->data + off;
+        tmp->off = 0; tmp->w = d[0]; tmp->h = d[1]; tmp->adv = d[2];
+        tmp->xo = (int8_t)d[3]; tmp->yo = (int8_t)d[4];
+        return d + 5;
+    }
+    const pp_glyph *gl = glyph_of(f, c);
+    if (!gl) gl = glyph_of(f, '?');
+    if (!gl) return NULL;
+    *tmp = *gl;
+    return f->bitmap + gl->off;
+}
+
 int pp_gfx_text(pp_gfx *g, const pp_font *f, int x, int y, const char *s, int on, int scale) {
     if (scale < 1) scale = 1;
     int start = x;
     while (*s) {
         unsigned c = next_char(&s);
-        const pp_glyph *gl = glyph_of(f, c);
-        if (!gl) gl = glyph_of(f, '?');
-        if (!gl) continue;
-        const uint8_t *bm = f->bitmap + gl->off;
+        pp_glyph gl;
+        const uint8_t *bm = find_glyph(f, c, &gl);
+        if (!bm) continue;
         unsigned bits = 0, bit = 0;
-        for (int yy = 0; yy < gl->h; yy++) {
-            for (int xx = 0; xx < gl->w; xx++) {
+        for (int yy = 0; yy < gl.h; yy++) {
+            for (int xx = 0; xx < gl.w; xx++) {
                 if (!(bit & 7)) bits = *bm++;
                 bit++;
                 if (bits & 0x80) {
-                    if (scale == 1) pp_gfx_pixel(g, x + gl->xo + xx, y + gl->yo + yy, on);
-                    else pp_gfx_fill_rect(g, x + (gl->xo + xx) * scale, y + (gl->yo + yy) * scale, scale, scale, on);
+                    if (scale == 1) pp_gfx_pixel(g, x + gl.xo + xx, y + gl.yo + yy, on);
+                    else pp_gfx_fill_rect(g, x + (gl.xo + xx) * scale, y + (gl.yo + yy) * scale, scale, scale, on);
                 }
                 bits <<= 1;
             }
         }
-        x += gl->adv * scale;
+        x += gl.adv * scale;
     }
     return x - start;
 }
 int pp_gfx_text_width(const pp_font *f, const char *s, int scale) {
     if (scale < 1) scale = 1;
     int w = 0;
-    while (*s) { const pp_glyph *gl = glyph_of(f, next_char(&s)); if (!gl) gl = glyph_of(f, '?'); if (gl) w += gl->adv * scale; }
+    while (*s) { pp_glyph gl; if (find_glyph(f, next_char(&s), &gl)) w += gl.adv * scale; }
     return w;
 }
 
