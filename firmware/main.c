@@ -408,6 +408,17 @@ NATIVE(n_hid_consumer_report) {
     if (!tud_hid_n_ready(1)) return pp_int(0);
     return pp_int(tud_hid_n_report(1, 0, &usage, sizeof usage) ? 1 : 0);
 }
+/* USB MIDI: Midi::_write($cable, @bytes) sends one raw MIDI message */
+NATIVE(n_midi_ready) { UNUSED; return pp_int(tud_midi_mounted() ? 1 : 0); }
+NATIVE(n_midi_write) {
+    UNUSED;
+    uint8_t buf[16]; int n = 0;
+    uint8_t cable = (uint8_t)ARG_INT(0, 0);
+    for (int i = 1; i < a->n && n < 16; i++) buf[n++] = (uint8_t)pp_to_int(a->v[i]);
+    if (!n || !tud_midi_mounted()) return pp_int(0);
+    return pp_int((int)tud_midi_stream_write(cable, buf, (uint32_t)n));
+}
+
 /* mouse: hid_mouse_report(buttons, dx, dy, wheel, pan); buttons bit0 left, bit1 right, bit2 middle */
 NATIVE(n_hid_mouse_ready)  { UNUSED; return pp_int(tud_hid_n_ready(2) ? 1 : 0); }
 NATIVE(n_hid_mouse_report) {
@@ -630,6 +641,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Hid::_consumer_report", n_hid_consumer_report);
     pp_register(I, "Hid::_mouse_ready", n_hid_mouse_ready);
     pp_register(I, "Hid::_mouse_report", n_hid_mouse_report);
+    pp_register(I, "Midi::_ready", n_midi_ready);
+    pp_register(I, "Midi::_write", n_midi_write);
     pp_register(I, "Pwm::_init", n_pwm_init);
     pp_register(I, "Pwm::_set_freq", n_pwm_set_freq);
     pp_register(I, "Pwm::_set_duty", n_pwm_set_duty);

@@ -5,10 +5,11 @@
 #include "picoperl.h"
 
 int pp_tone_const(const char *name, pp_val *out) {
-    static const char prefix[] = "Tone::";
     static const signed char semitone[] = { 9, 11, 0, 2, 4, 5, 7 };   /* A B C D E F G */
-    if (strncmp(name, prefix, sizeof prefix - 1) != 0) return 0;
-    const char *p = name + sizeof prefix - 1;
+    const char *p;
+    if (strncmp(name, "Tone::", 6) == 0) p = name + 6;
+    else if (strncmp(name, "Midi::", 6) == 0) p = name + 6;   /* Midi::C4 = 60, like tinygo's midi.C4 */
+    else return 0;
     if (*p < 'A' || *p > 'G') return 0;
     int n = semitone[*p++ - 'A'];
     if (*p == 'S') { n++; p++; }

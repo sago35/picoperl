@@ -19,11 +19,13 @@ extern "C" {
 
 #define CFG_TUD_ENDPOINT0_SIZE  64
 
-/* Classes: CDC (serial console) + HID (boot keyboard, consumer control, mouse) + MSC (script drive) */
+/* Classes: CDC (serial console) + HID (boot keyboard, consumer control, mouse) + MSC (script drive) + MIDI */
 #define CFG_TUD_CDC             1
 #define CFG_TUD_HID             3
 #define CFG_TUD_MSC             1
-#define CFG_TUD_MIDI            0
+#define CFG_TUD_MIDI            1
+#define CFG_TUD_MIDI_RX_BUFSIZE 64
+#define CFG_TUD_MIDI_TX_BUFSIZE 64
 #define CFG_TUD_VENDOR          0
 
 #define CFG_TUD_CDC_RX_BUFSIZE  256

@@ -348,6 +348,18 @@ static pp_val n_hid_mouse_report(pp_interp *I, pp_list *a, int ctx, pp_list *out
            (int)pp_list_arg_int(a, 2, 0), (int)pp_list_arg_int(a, 3, 0), (int)pp_list_arg_int(a, 4, 0));
     return pp_int(1);
 }
+static pp_val n_midi_ready(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_midi_write(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    int n = a->n - 1;
+    pp_wasm_note("midi", n > 0 ? (int)pp_to_int(a->v[1]) : 0, n > 1 ? (int)pp_to_int(a->v[2]) : 0,
+                 n > 2 ? (int)pp_to_int(a->v[3]) : 0, (int)pp_list_arg_int(a, 0, 0), 0);
+    if (getenv("PICOPERL_SIM_QUIET")) return pp_int(n);
+    printf("[midi]");
+    for (int i = 1; i < a->n; i++) printf(" %02x", (unsigned)pp_to_int(a->v[i]) & 0xFF);
+    printf("\n"); fflush(stdout);
+    return pp_int(n);
+}
 /* PWM: prints what the firmware would program; the period is modelled with a 16-bit counter at 125 MHz */
 static int pwm_top_of[8] = { 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535 };
 static pp_val n_pwm_init(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int((pp_list_arg_int(a, 0, 0) >> 1) & 7); }
@@ -423,6 +435,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Hid::_consumer_report", n_hid_consumer_report);
     pp_register(I, "Hid::_mouse_ready", n_hid_mouse_ready);
     pp_register(I, "Hid::_mouse_report", n_hid_mouse_report);
+    pp_register(I, "Midi::_ready", n_midi_ready);
+    pp_register(I, "Midi::_write", n_midi_write);
     pp_register(I, "Pwm::_init", n_pwm_init);
     pp_register(I, "Pwm::_set_freq", n_pwm_set_freq);
     pp_register(I, "Pwm::_set_duty", n_pwm_set_duty);

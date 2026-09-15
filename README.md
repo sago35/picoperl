@@ -19,7 +19,7 @@ PICOPERL/
 
 ## できること
 
-- USB HID キーボード (boot protocol、6KRO) + メディアキー (consumer control) + マウス + USB CDC シリアルコンソール + USB マスストレージ
+- USB HID キーボード (boot protocol、6KRO) + メディアキー (consumer control) + マウス + USB MIDI + USB CDC シリアルコンソール + USB マスストレージ
 - GPIO の入出力、PWM (ブザー)、ADC、I2C (SSD1306 OLED)、WS2812 LED、ロータリーエンコーダ、フラッシュ上の FAT ファイルシステム (1 MiB、`Fs::read`/`Fs::write` からも使える)
 - Perl のモジュール機構: `package`、`use Module qw(...)`、`require`、`@EXPORT`/`@EXPORT_OK`
   (Exporter 相当を内蔵)、`use constant`、`__PACKAGE__`
@@ -170,7 +170,8 @@ EOF です。
 | `Encoder` | `my $e = Encoder->new($a, $b, precision => 4)`; `$e->read` (前回からのクリック数), `$e->position`, `$e->read_raw` (割り込みデコード)。コールバック: `Encoder->new(3, 4, on_turn => sub { my ($clicks) = @_; ... })` |
 | `Ssd1306` | `my $d = Ssd1306->new(sda => 12, scl => 13, address => 0x3C, width => 128, height => 64, rotation => 180)`; `$d->clear_display`, `$d->set_pixel($x,$y,$c)`, `$d->display`, `$d->size`, `$d->set_rotation`, `$d->invert`, `$d->contrast` + `Gfx` の描画メソッド |
 | `Gfx` | フレームバッファ (C 実装): `line`, `rectangle`, `filled_rectangle`, `circle`, `filled_circle`, `triangle`, `filled_triangle`, `write_line($font, $x, $y, $text, $c, $scale)` (x,y はベースライン)、`Gfx::fonts()` |
-| `Tinydraw` / `Tinyfont` | tinygo 風の関数形式: `Tinydraw::Rectangle($d, ...)`, `Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, $x, $y, "hello", $c)`。内蔵フォント: `classic` (5x7), `freemono_bold_9pt`, `gophers_32pt`, `gophers_58pt`, `shnmk12` (東雲 12px、UTF-8 でかな + JIS 第 1/2 水準漢字、フラッシュ +約 160 KB) || `I2c` (低レベル) | `I2c::_init($bus, $sda, $scl, $hz)`, `I2c::_write($bus, $addr, $bytes)`, `I2c::_read($bus, $addr, $n)` |
+| `Tinydraw` / `Tinyfont` | tinygo 風の関数形式: `Tinydraw::Rectangle($d, ...)`, `Tinyfont::WriteLine($d, Tinyfont::FREEMONO_BOLD_9PT, $x, $y, "hello", $c)`。内蔵フォント: `classic` (5x7), `freemono_bold_9pt`, `gophers_32pt`, `gophers_58pt`, `shnmk12` (東雲 12px、UTF-8 でかな + JIS 第 1/2 水準漢字、フラッシュ +約 160 KB) |
+| `Midi` | USB MIDI: `my $m = Midi->new`; `$m->note_on($cable, $ch, Midi::C4, $vel)`, `note_off`, `control_change` (`Midi::CC_MODULATION_WHEEL` など), `pitch_bend($cable, $ch, $v14)`, `program_change`, `write($cable, @bytes)`。音名定数 `Midi::A0`〜`Midi::G9` (= MIDI ノート番号) || `I2c` (低レベル) | `I2c::_init($bus, $sda, $scl, $hz)`, `I2c::_write($bus, $addr, $bytes)`, `I2c::_read($bus, $addr, $n)` |
 | `Adc` | `my $a = Adc->new(29)` (GPIO26-29); `$a->get` (0..0xFFFF、TinyGo 互換), `$a->read_raw` (0..4095), `$a->voltage`; `Adc->new(Adc::TEMPERATURE)->temperature` |
 | `Hid` | `Hid::keyboard_report($mod, @keys)`, `Hid::ready()`, `Hid::leds()`, `Hid::consumer_report($usage)` (0xE2 ミュート, 0xE9/0xEA 音量, 0 で離す), `Hid::consumer_ready()`, `Hid::mouse_report($buttons, $dx, $dy, $wheel, $pan)`, `Hid::mouse_ready()`。`use Hid qw(keyboard_report)` で import 可 |
 | `Mouse` | `my $m = Mouse->new`; `$m->press(Mouse::LEFT)`, `$m->release(...)`, `$m->click(Mouse::RIGHT)`, `$m->move($dx, $dy)`, `$m->wheel($n)`, `$m->wheel_up` / `wheel_down` (`LEFT`, `RIGHT`, `MIDDLE`, `BACK`, `FORWARD`) |

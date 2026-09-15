@@ -51,7 +51,8 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
 }
 
 /* ---- configuration ---- */
-enum { ITF_NUM_CDC = 0, ITF_NUM_CDC_DATA, ITF_NUM_HID, ITF_NUM_HID_CONSUMER, ITF_NUM_HID_MOUSE, ITF_NUM_MSC, ITF_NUM_TOTAL };
+enum { ITF_NUM_CDC = 0, ITF_NUM_CDC_DATA, ITF_NUM_HID, ITF_NUM_HID_CONSUMER, ITF_NUM_HID_MOUSE, ITF_NUM_MSC,
+       ITF_NUM_MIDI, ITF_NUM_MIDI_STREAMING, ITF_NUM_TOTAL };
 
 #define EPNUM_CDC_NOTIF 0x81
 #define EPNUM_CDC_OUT   0x02
@@ -61,8 +62,10 @@ enum { ITF_NUM_CDC = 0, ITF_NUM_CDC_DATA, ITF_NUM_HID, ITF_NUM_HID_CONSUMER, ITF
 #define EPNUM_MSC_IN    0x84
 #define EPNUM_HID2_IN   0x85
 #define EPNUM_HID3_IN   0x86
+#define EPNUM_MIDI_OUT  0x05
+#define EPNUM_MIDI_IN   0x87
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + TUD_MIDI_DESC_LEN)
 
 static const uint8_t desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
@@ -71,6 +74,7 @@ static const uint8_t desc_configuration[] = {
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_CONSUMER, 7, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report_consumer), EPNUM_HID2_IN, CFG_TUD_HID_EP_BUFSIZE, 10),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, 8, HID_ITF_PROTOCOL_MOUSE, sizeof(desc_hid_report_mouse), EPNUM_HID3_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
     TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 6, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
+    TUD_MIDI_DESCRIPTOR(ITF_NUM_MIDI, 9, EPNUM_MIDI_OUT, EPNUM_MIDI_IN, 64),
 };
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) { (void)index; return desc_configuration; }
@@ -86,6 +90,7 @@ static const char *string_desc_arr[] = {
     "picoperl drive",               /* 6 */
     "picoperl media keys",          /* 7 */
     "picoperl mouse",               /* 8 */
+    "picoperl midi",                /* 9 */
 };
 
 static uint16_t desc_str[32 + 1];
