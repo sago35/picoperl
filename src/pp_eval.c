@@ -744,12 +744,43 @@ pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
     return NULL;
 }
 
+/* %Pkg:: / %main:: -- a package's name table. picoperl keeps no such table (symbols are
+   looked up by their full name), so the hash is filled in from the symbols each time it is
+   used: one key per name ("name" => "*Pkg::name") and one per nested package ("Sub::").
+   It can be read; storing into it or deleting from it does not change the symbols. */
+static pp_obj *stash_fill(pp_interp *I, pp_sym *hs) {
+    pp_obj *h = pp_global(I, hs);
+    size_t hl = strlen(hs->name);
+    if (hl < 3 || hs->name[hl - 1] != ':' || hs->name[hl - 2] != ':') return h;
+    const char *pkg = hs->name + 1;                    /* "Pkg::" */
+    int main_pkg = !strcmp(pkg, "main::");
+    size_t pl = main_pkg ? 0 : strlen(pkg);
+    pp_hash_clear(h);
+    for (int b = 0; b < PP_SYM_BUCKETS; b++)
+        for (pp_sym *s = I->syms[b]; s; s = s->next) {
+            if (!strchr("$@%&*", s->name[0]) || !(isalpha((unsigned char)s->name[1]) || s->name[1] == '_')) continue;
+            if (s->name[0] == '&' ? !s->sub : !s->gcell) continue;
+            const char *name = s->name + 1;
+            if (pl && strncmp(name, pkg, pl)) continue;
+            const char *rest = name + pl, *sep = strstr(rest, "::");
+            if (!*rest) continue;
+            int kl = sep ? (int)(sep - rest) + 2 : (int)strlen(rest);
+            if (pp_hash_find(h, rest, kl)) continue;
+            char buf[264];
+            int n = pp_snprintf(buf, sizeof buf, "*%s%.*s", main_pkg ? "main::" : pkg, kl, rest);
+            pp_hash_set(h, rest, kl, pp_strn(buf, n));
+        }
+    return h;
+}
+static int is_stash_name(const char *name) { size_t l = strlen(name); return l >= 3 && name[l - 1] == ':' && name[l - 2] == ':'; }
+
 pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
     (void)unused;
     switch (n->type) {
     case N_VAR: {
         if (n->sym->name[0] != '%') break;
         pp_obj *c = var_cell(I, n);
+        if (!(n->flags & PP_VAR_LEX) && is_stash_name(n->sym->name)) stash_fill(I, n->sym);
         c->refcnt++;
         return c;
     }
@@ -771,7 +802,7 @@ pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
             if (slot) {
                 if (slot->t == PP_UNDEF) { pp_obj *h = pp_obj_new(PP_OHASH); *slot = pp_ref(h); return h; }
                 if (slot->t == PP_REF && slot->u.o->kind == PP_OHASH) { slot->u.o->refcnt++; return slot->u.o; }
-                if (is_symname(*slot)) { pp_sym *s = pp_symref(I, n, *slot, '%', 1); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
+                if (is_symname(*slot)) { pp_sym *s = pp_symref(I, n, *slot, '%', 1); if (!s) return NULL; pp_obj *c = is_stash_name(s->name) ? stash_fill(I, s) : pp_global(I, s); c->refcnt++; return c; }
                 pp_die(I, "Not a HASH reference");
                 return NULL;
             }
@@ -780,7 +811,7 @@ pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
         if (I->ctl) { pp_release(v); return NULL; }
         if (v.t == PP_REF && v.u.o->kind == PP_OHASH) return v.u.o;
         if (v.t == PP_UNDEF) { pp_release(v); return pp_obj_new(PP_OHASH); }
-        if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '%', 1); pp_release(v); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
+        if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '%', 1); pp_release(v); if (!s) return NULL; pp_obj *c = is_stash_name(s->name) ? stash_fill(I, s) : pp_global(I, s); c->refcnt++; return c; }
         pp_release(v);
         pp_die(I, "Not a HASH reference");
         return NULL;

@@ -393,6 +393,23 @@ static int lex_name(pp_lex *L) {
     return L->pos - start;
 }
 
+/* The name of a variable at pos: like lex_name, plus the two ways a package's name table is
+   written -- a trailing :: ($Pkg::{name}, %Pkg::) and a bare :: for main ($::{name}, $::x).
+   Sets the token's s/len. */
+static void lex_var_name(pp_lex *L, pp_tok *t) {
+    int start = L->pos;
+    if (peekc(L, 0) == ':' && peekc(L, 1) == ':') L->pos += 2;
+    lex_name(L);
+    if (peekc(L, 0) == ':' && peekc(L, 1) == ':' && !is_ident_start(peekc(L, 2)) && L->pos > start) L->pos += 2;
+    t->s = L->src + start; t->len = L->pos - start;
+    if (t->len == 2 && t->s[0] == ':') { t->s = "main::"; t->len = 6; }
+}
+/* does a variable name start here? (an identifier, or :: followed by one or by a subscript) */
+static int var_name_start(pp_lex *L, int off) {
+    if (is_ident_start(peekc(L, off))) return 1;
+    return peekc(L, off) == ':' && peekc(L, off + 1) == ':' && (is_ident_start(peekc(L, off + 2)) || peekc(L, off + 2) == '{');
+}
+
 /* <$fh> in term position: one token (t->s/len = the variable name) */
 static int lex_try_readline(pp_lex *L, pp_tok *t) {
     int save = L->pos;
@@ -570,9 +587,9 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             }
             else perr(P, "unexpected '$#'");
         }
-        else if (is_ident_start(c1)) {
-            L->pos++; int start = L->pos; int len = lex_name(L);
-            t->type = T_VAR; t->sigil = '$'; t->s = L->src + start; t->len = len; term = 1;
+        else if (var_name_start(L, 1)) {
+            L->pos++; lex_var_name(L, t);
+            t->type = T_VAR; t->sigil = '$'; term = 1;
         }
         else if (isdigit(c1)) {
             L->pos++; int start = L->pos;
@@ -604,9 +621,9 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     }
     else if (c == '@' && (!L->prev_term || L->prev_brace)) {
         int c1 = peekc(L, 1);
-        if (is_ident_start(c1)) {
-            L->pos++; int start = L->pos; int len = lex_name(L);
-            t->type = T_VAR; t->sigil = '@'; t->s = L->src + start; t->len = len; term = 1;
+        if (var_name_start(L, 1)) {
+            L->pos++; lex_var_name(L, t);
+            t->type = T_VAR; t->sigil = '@'; term = 1;
         }
         else if (c1 == '{' || c1 == '$') { L->pos++; t->type = T_CAST; strcpy(t->op, "@"); term = 0; }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_OP; strcpy(t->op, "@"); term = 0; }   /* $r->@* */
@@ -623,8 +640,8 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     }
     else if (c == '%' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
         if (is_ident_start(peekc(L, 1))) {
-            L->pos++; int start = L->pos; int len = lex_name(L);
-            t->type = T_VAR; t->sigil = '%'; t->s = L->src + start; t->len = len; term = 1;
+            L->pos++; lex_var_name(L, t);
+            t->type = T_VAR; t->sigil = '%'; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "%"); term = 0; }
     }
     else if (c == ':' && peekc(L, 1) == ':' && !L->prev_term && is_ident_start(peekc(L, 2))) {
@@ -1043,8 +1060,10 @@ static int interp_extent(const char *s, int len, int i) {
         if (e < 0) return 0;
         j = e;
     }
-    else if (is_ident_start((unsigned char)s[j])) {
+    else if (is_ident_start((unsigned char)s[j]) || (s[j] == ':' && j + 2 < len && s[j+1] == ':' && is_ident_start((unsigned char)s[j+2]))) {
+        if (s[j] == ':') j += 2;                       /* "$::name" is main's */
         while (j < len && (is_ident_char((unsigned char)s[j]) || (s[j] == ':' && j + 2 < len && s[j+1] == ':' && is_ident_start((unsigned char)s[j+2])))) j += (s[j] == ':') ? 2 : 1;
+        if (j + 2 < len && s[j] == ':' && s[j+1] == ':' && s[j+2] == '{') j += 2;   /* "$Pkg::{name}": the name table */
     }
     else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
         return interp_extent(s, len, j);

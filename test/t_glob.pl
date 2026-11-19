@@ -171,4 +171,20 @@ sub lg_new    { local *lg_never = sub { "n" }; lg_never() }
 print "local glob: ", lg_empty(), " ", lg_scalar(), " ", lg_code(), " ", lg_named(), " ", lg_later(), " ", lg_glob(), " ", lg_gref(), " ", lg_args(4, 5), " ", lg_new(), "\n";
 eval { local *lg = sub { "in eval" }; die "x\n" };
 print "restored: [@lg][$lg] ", lg(), " [@lg2] ", (defined &lg_never ? "leaked" : "gone"), "\n";
+# パッケージの名前表 %Pkg:: (読み取り)
+our $st_var = 1; our @st_arr = (1, 2); sub st_sub { 1 }
+{ package StPk::Deep; our @list = (1); sub m1 { 1 } }
+{ package StPk; sub top { 1 } our %cfg = (a => 1); }
+print "main's table: ", (exists $::{"main::"} ? "main:: " : ""), (exists $::{"StPk::"} ? "StPk:: " : ""), (exists($::{"StNoSuch::"}) ? "StNoSuch:: " : ""),
+    (exists $main::{st_sub} ? "st_sub " : ""), (exists $main::{st_var} ? "st_var " : ""), (exists $main::{st_nosuch} ? "st_nosuch" : "(no st_nosuch)"), "\n";
+print "package table: ", join(",", sort grep { /^(Deep::|cfg|top)$/ } keys %StPk::), " | ", join(",", sort grep { /^(list|m1)$/ } keys %StPk::Deep::),
+    " | $StPk::{top} ", $StPk::{"Deep::"}, " ", (exists $StPk::{nope} ? "nope" : "(no nope)"), "\n";
+{
+    no strict 'refs';
+    my $c = "StPk"; my $st = \%{"StPk::"};
+    print "by name: ", (%{"$c\::"} ? "has symbols" : "empty"), " ", (%{"St::Nothing::Here::"} ? "has symbols" : "empty"), " ",
+        scalar(grep { $_ eq "m1" } keys %{"StPk::Deep::"}), " ", ref($st), " ", (exists $st->{top} ? "top" : "no top"), "\n";
+}
+delete @StPk::{qw(nothing here)};
+print "\$::name: $::st_var $main::st_var @::st_arr $::st_arr[1] ", $::st_var + 1, " ", scalar(@::st_arr), "\n";
 print "done\n";
