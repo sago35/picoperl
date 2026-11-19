@@ -68,4 +68,17 @@ print "use lib: ", IncMod::hi(), " ", Deep::Mod::hi(), " ", $INC{"IncMod.pm"}, "
 unshift @INC, "test/lib/inc_b"; require IncOther;
 print "unshift \@INC: ", IncOther::hi(), " $INC{'IncOther.pm'}\n";
 eval { require No::Such::Thing::Here }; print "not in \@INC: ", ($@ =~ /^Can't locate No\/Such\/Thing\/Here\.pm in \@INC/ ? "dies" : $@), "\n";
+# 別のファイルのサブの中で起きたエラーは、そのファイルの名前と行で報告される
+use TestWhere;
+sub tw_short { my $m = shift; $m =~ s{ at \S*?(\w+\.p[lm]) line}{ at $1 line}; $m }
+{
+    local $SIG{__WARN__} = sub { print "warn in a module: ", tw_short($_[0]) };
+    TestWhere::careful();
+}
+eval { TestWhere::boom() }; print "die in a module: ", tw_short($@);
+eval { TestWhere::bad_ref() }; print "runtime error in a module: ", tw_short($@);
+{ my $cb = \&TestWhere::boom; eval { $cb->() }; print "through a code ref: ", tw_short($@); }
+eval { TestWhere::via(sub { die "callback" }) }; print "callback defined here: ", tw_short($@);
+eval { die "here" }; print "back in this file: ", tw_short($@);
+{ my @w = TestWhere::where(); s{.*/}{} for @w; print "__FILE__ / caller: @w\n"; }
 print "done modules\n";

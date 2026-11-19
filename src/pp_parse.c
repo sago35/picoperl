@@ -769,6 +769,7 @@ static void predefine_subs(pp_parser *P) {
         d->flags |= PP_SUB_EARLY;
         pp_obj *code = pp_obj_new(PP_OCODE);
         code->u.code.body = d->a;
+        pp_note_sub_file(I, d->a, P->file);
         code->u.code.env = I->pending_env; pp_env_incref(I->pending_env);
         code->u.code.name = d->sym->name + 1;
         code->u.code.block_proto = d->op == 1;

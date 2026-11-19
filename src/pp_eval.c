@@ -179,6 +179,14 @@ static void add_lazy_export(pp_interp *I, const char *dst, const char *src, cons
     I->lazy[I->nlazy].prefix = pp_xmalloc(strlen(prefix) + 1); strcpy(I->lazy[I->nlazy].prefix, prefix);
     I->nlazy++;
 }
+/* A sub remembers the file it was written in (for die / warn / caller while it runs): the
+   name is kept as a symbol in its body block, which has no other use for that field. */
+void pp_note_sub_file(pp_interp *I, pp_node *body, const char *file) {
+    if (!body || body->type != N_BLOCK || body->sym || !file) return;
+    char buf[300];
+    int n = pp_snprintf(buf, sizeof buf, "\001%s", file);
+    body->sym = pp_intern(I, buf, n);
+}
 pp_obj *pp_lookup_sub(pp_interp *I, pp_sym *sym) { return pp_resolve_sub(I, sym); }
 
 /* the symbol for `sigil` + a name written the way scripts spell it: "x", "main::x", "::x",
@@ -1174,7 +1182,10 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     code->refcnt++;
     struct pp_frame fr = { I->frame, saved_code, I->file_pkg, I->file, code, saved_line, ctx };
     I->frame = &fr;
+    const char *saved_file = I->file;
+    if (code->u.code.body->type == N_BLOCK && code->u.code.body->sym) I->file = code->u.code.body->sym->name + 1;
     pp_val r = exec_block(I, code->u.code.body, ctx, out);
+    I->file = saved_file;
     I->frame = fr.up;
     I->file_pkg = fr.caller_pkg;         /* a `package` statement inside the sub ends with it */
     I->depth--;
@@ -1925,6 +1936,7 @@ static NOINLINE pp_val eval_anon(pp_interp *I, pp_node *n, int ctx, pp_list *out
 static NOINLINE pp_val eval_anonsub(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_obj *code = pp_obj_new(PP_OCODE);
     code->u.code.body = n->a;
+    pp_note_sub_file(I, n->a, I->file);
     code->u.code.env = I->env; if (I->env) pp_env_incref(I->env);
     code->u.code.name = n->sym ? n->sym->name : "__ANON__";   /* "Pkg::__ANON__" outside main */
     code->u.code.block_proto = n->op == 1;
@@ -2300,6 +2312,7 @@ static NOINLINE pp_val eval_assign_node(pp_interp *I, pp_node *n, int ctx, pp_li
 static NOINLINE pp_val eval_subdef(pp_interp *I, pp_node *n) {
     pp_obj *code = pp_obj_new(PP_OCODE);
     code->u.code.body = n->a;
+    pp_note_sub_file(I, n->a, I->file);
     code->u.code.env = I->env; if (I->env) pp_env_incref(I->env);
     code->u.code.name = n->sym->name + 1;
     code->u.code.block_proto = n->op == 1;
@@ -2636,6 +2649,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         if (d->flags & PP_SUB_EARLY) continue;       /* a BEGIN block needed it: defined already */
         pp_obj *code = pp_obj_new(PP_OCODE);
         code->u.code.body = d->a;
+        pp_note_sub_file(I, d->a, I->file);
         code->u.code.env = env; pp_env_incref(env);
         code->u.code.name = d->sym->name + 1;
         code->u.code.block_proto = d->op == 1;

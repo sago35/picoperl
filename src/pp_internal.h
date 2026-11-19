@@ -89,6 +89,7 @@ void     pp_env_grow(pp_env *e, int nslots);        /* make room for at least ns
 pp_obj *pp_glob_obj(pp_interp *I, pp_sym *gsym);
 /* the interned "*name" for a glob written as a string: "FH", "main::FH", "*main::FH" */
 pp_sym *pp_glob_named(pp_interp *I, const char *name);
+void pp_note_sub_file(pp_interp *I, pp_node *body, const char *file);
 /* snprintf that returns the number of characters actually stored (at most cap - 1), so the
    result can be used as a length even when the text was cut */
 int      pp_snprintf(char *buf, size_t cap, const char *fmt, ...);
