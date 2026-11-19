@@ -52,6 +52,11 @@ void *pp_host_fopen(const char *path, const char *mode) {
     snprintf(m, sizeof m, "%sb", mode);   /* binary, like the board */
     return fopen(path, m);
 }
+const char *pp_host_strerror(int errnum) {
+    if (errnum <= 0 || errnum > 133) return NULL;
+    const char *m = strerror(errnum);
+    return m && strncmp(m, "Unknown error", 13) ? m : NULL;
+}
 int  pp_host_fclose(void *f) { return fclose((FILE *)f); }
 int  pp_host_filetest(const char *path, long long *size) {
     struct stat st;

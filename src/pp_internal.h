@@ -47,6 +47,10 @@ pp_obj *pp_env_cell(pp_env *e, int slot, char sigil);    /* create on first use;
 pp_obj *pp_env_reset(pp_env *e, int slot, char sigil);   /* fresh cell (re-executed `my`); borrowed */
 pp_obj *pp_global(pp_interp *I, pp_sym *s);        /* find/create global; borrowed */
 #define PP_VAR_LEX  1      /* N_VAR flag: lexical (depth in op, slot in n) */
+/* $! holds an error number; reading it gives the message, or the number when the variable is
+   an operand of arithmetic or a numeric comparison ($! + 0, $! == 2) */
+#define PP_VAR_ERRNO  0x10 /* N_VAR flag: this is $! */
+#define PP_VAR_ERRNUM 0x20 /* ... read as a number */
 #define PP_STMT_WARN 0x40  /* statement flag: `use warnings` in effect */
 void    pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell);   /* make s refer to an existing cell */
 

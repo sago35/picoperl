@@ -85,6 +85,22 @@ int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name
 
 /* file I/O maps onto the script drive (FatFs in flash) */
 void *pp_host_fopen(const char *path, const char *mode) { return fs_ok ? flashfs_fopen(path, mode) : NULL; }
+/* the error numbers scripts usually test, with the same messages flashfs.c reports */
+const char *pp_host_strerror(int errnum) {
+    switch (errnum) {
+    case 2:  return "No such file or directory";
+    case 5:  return "Input/output error";
+    case 9:  return "Bad file descriptor";
+    case 12: return "Out of memory";
+    case 13: return "Permission denied";
+    case 17: return "File exists";
+    case 20: return "Not a directory";
+    case 21: return "Is a directory";
+    case 22: return "Invalid argument";
+    case 28: return "No space left on device";
+    default: return NULL;
+    }
+}
 int   pp_host_fclose(void *f) { return flashfs_fclose(f); }
 int   pp_host_filetest(const char *path, long long *size) { return fs_ok ? flashfs_filetest(path, size) : -1; }
 int   pp_host_fread(void *f, void *buf, int n) { return flashfs_fread(f, buf, n); }

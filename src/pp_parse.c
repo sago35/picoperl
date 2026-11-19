@@ -872,6 +872,7 @@ static pp_node *mkvar(pp_parser *P, char sigil, const char *name, int len) {
     pp_node *v = node(P, N_VAR);
     v->sym = sym_sigil(P, sigil, name, len);
     resolve_var(P, v, name, len);
+    if (sigil == '$' && len == 1 && name[0] == '!') v->flags |= PP_VAR_ERRNO;
     return v;
 }
 /* N_VAR for a `my` declaration in the current scope */
@@ -1444,7 +1445,14 @@ static pp_node *parse_binary(pp_parser *P, int minprec) {
         else if (op == OP_LOGOR) n = node(P, N_LOGOR);
         else if (op == OP_DEFOR) n = node(P, N_DEFOR);
         else if (op == OP_REPEAT) { n = node(P, N_REPEAT); n->op = (lhs->type == N_LIST && (lhs->flags & 1)) ? 1 : 0; }
-        else { n = node(P, N_BINOP); n->op = (uint8_t)op; }
+        else {
+            n = node(P, N_BINOP); n->op = (uint8_t)op;
+            if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV || op == OP_MOD || op == OP_POW
+                || (op >= OP_NUM_EQ && op <= OP_NUM_CMP)) {       /* $! in arithmetic is the error number */
+                if (lhs->type == N_VAR && (lhs->flags & PP_VAR_ERRNO)) lhs->flags |= PP_VAR_ERRNUM;
+                if (rhs->type == N_VAR && (rhs->flags & PP_VAR_ERRNO)) rhs->flags |= PP_VAR_ERRNUM;
+            }
+        }
         n->a = lhs; n->b = rhs;
         lhs = n;
     }
@@ -1611,6 +1619,7 @@ static pp_node *parse_unary(pp_parser *P) {
                 }
             }
             pp_node *n = node(P, N_NEG); n->a = parse_binary(P, 15);
+            if (n->a->type == N_VAR && (n->a->flags & PP_VAR_ERRNO)) n->a->flags |= PP_VAR_ERRNUM;
             if (n->a->type == N_CONST && n->a->val.t == PP_INT) { n->a->val.u.i = -n->a->val.u.i; return n->a; }
             if (n->a->type == N_CONST && n->a->val.t == PP_NUM) { n->a->val.u.n = -n->a->val.u.n; return n->a; }
             return n;

@@ -422,7 +422,9 @@ int         pp_host_feof(void *f);                          /* 1 when the next r
 /* file tests (-e -f -d ...): -1 if the path does not exist, else a bit mask and the size */
 enum { PP_FT_FILE = 1, PP_FT_DIR = 2, PP_FT_READ = 4, PP_FT_WRITE = 8, PP_FT_EXEC = 16, PP_FT_LINK = 32 };
 int         pp_host_filetest(const char *path, long long *size);
-const char *pp_host_io_error(void);                         /* message for $! after a failed call */
+const char *pp_host_io_error(void);
+/* the message for an error number ($! = 2; print $!), NULL if the host has none for it */
+const char *pp_host_strerror(int errnum);                         /* message for $! after a failed call */
 /* register host-specific natives (gpio_*, hid_*, ...) */
 void        pp_host_register(pp_interp *I);
 /* unrecoverable error (out of memory): must not return */

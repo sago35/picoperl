@@ -1955,10 +1955,34 @@ static NOINLINE pp_val eval_return(pp_interp *I, pp_node *n) {
     return pp_undef();
 }
 
+/* $! as a number: the cell holds the number itself, a numeric string, or a message (set by a
+   failed I/O call, or by `$! = $saved` where $saved was read as a string) that is looked up */
+static int errno_number(pp_val v) {
+    if (v.t == PP_INT || v.t == PP_NUM) return (int)pp_to_int(v);
+    if (v.t != PP_STR || v.u.s->len == 0) return 0;
+    if (pp_looks_like_number(v.u.s->d, v.u.s->len)) return (int)pp_to_int(v);
+    for (int e = 1; e < 200; e++) {
+        const char *m = pp_host_strerror(e);
+        if (m && !strcmp(m, v.u.s->d)) return e;
+    }
+    return 0;
+}
+static NOINLINE pp_val eval_errno(pp_node *n, pp_val v) {
+    if (n->flags & PP_VAR_ERRNUM) return pp_int(errno_number(v));
+    if (v.t == PP_STR && !pp_looks_like_number(v.u.s->d, v.u.s->len)) return pp_copy(v);   /* already a message */
+    int e = errno_number(v);
+    const char *m = e ? pp_host_strerror(e) : "";
+    if (m) return pp_cstr(m);
+    char buf[32];
+    int len = snprintf(buf, sizeof buf, "Unknown error %d", e);
+    return pp_strn(buf, len);
+}
 static NOINLINE pp_val eval_var(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_obj *c = var_cell(I, n);
     switch (n->sym->name[0]) {
-    case '$': return scalar_or_push(ctx, out, pp_copy(c->u.scalar));
+    case '$':
+        if (n->flags & PP_VAR_ERRNO) return scalar_or_push(ctx, out, eval_errno(n, c->u.scalar));
+        return scalar_or_push(ctx, out, pp_copy(c->u.scalar));
     case '@':
         if (ctx == CTX_LIST && out) { for (int i = 0; i < c->u.arr.n; i++) pp_list_push(out, pp_copy(c->u.arr.v[i])); return pp_undef(); }
         return pp_int(c->u.arr.n);
@@ -2495,6 +2519,7 @@ pp_interp *pp_new(void) {
     I->g_at = pp_global(I, pp_intern(I, "$@", 2));
     I->g_at->u.scalar = pp_strn("", 0);
     I->g_argv = pp_global(I, pp_intern(I, "@ARGV", 5));
+    pp_global(I, pp_intern(I, "$!", 2))->u.scalar = pp_int(0);       /* no error yet */
     I->g_ofs = pp_global(I, pp_intern(I, "$,", 2));
     I->g_ors = pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);

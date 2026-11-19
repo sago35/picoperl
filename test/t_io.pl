@@ -70,4 +70,14 @@ print "chdir: ", (chdir("test") ? "ok" : "failed"), " ", (Cwd::getcwd() eq "$cd_
 print "chdir back: ", (chdir "..") ? "ok" : "failed", " ", (Cwd::getcwd() eq $cd_start ? "back" : "elsewhere"), "\n";
 print "chdir missing: ", (chdir("no_such_dir_here") ? "ok" : "failed"), "\n";
 { package ChdirPkg; sub go { chdir "." } } print "chdir in package: ", (ChdirPkg::go() ? "ok" : "failed"), "\n";
+# $! は文字列としてはメッセージ、数値としてはエラー番号
+$! = 0;
+print "errno clear: [", $! + 0, "] [$!] ", ($! ? "true" : "false"), "\n";
+open(my $en_fh, '<', 'test/no_such_file_here') or print "errno after open: $! (", $! + 0, ") ", ($! == 2 ? "ENOENT" : "other"), " ", ($! ? "true" : "false"), "\n";
+$! = 13; print "errno set: $! / ", 0 + $!, " / ", -$!, " / ", ($! > 12 ? "gt" : "le"), ($! != 0 ? " set" : " clear"), "\n";
+my $en_saved = do { open(my $f, '<', 'test/no_such_file_here'); $! };
+$! = 0; $! = $en_saved; print "errno restored from a copy: ", $! + 0, " $!\n";
+sub en_local { local $!; open(my $f, '<', 'test/no_such_file_here'); $! + 0 }
+$! = 1; my $en_in = en_local(); print "errno local: inside $en_in, outside ", $! + 0, "\n";
+my $en_copy = $!; print "errno copy is the message: $en_copy / " . $! . "\n";
 
