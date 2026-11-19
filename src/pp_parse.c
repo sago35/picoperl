@@ -2460,7 +2460,9 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             advance(P);
             int save = P->in_sub, save_state = P->state_n;
             P->in_sub = 1; P->state_n = 0;
+            int first_rec = P->sc->nrecs;
             scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
+            int sub_scope = scope_top(P)->id;
             pp_node *b = node(P, N_BLOCK);
             scope_push(P, SCOPE_BLOCK);
             int noargs = 0, nsig = 0;
@@ -2484,10 +2486,21 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             scope_pop(P);
             P->in_sub = save; P->state_n = save_state;
             pp_interp *I = P->I;
-            I->subdefs = pp_xrealloc(I->subdefs, (I->nsubdefs + 1) * sizeof(pp_node *));
-            I->subdefs[I->nsubdefs++] = n;
+            /* Named subs are normally defined before the file runs, closing over the file scope.
+               One that uses `my` variables of an enclosing block ({ my $n; sub next_id { ++$n } })
+               needs that block's scope instead, so it is defined when the block runs. */
+            int in_place = 0;
+            for (int i = first_rec; i < P->sc->nrecs && !in_place; i++)
+                in_place = P->sc->recs[i].target < sub_scope && P->sc->recs[i].target != P->sc->st[0].id;
             I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
             I->all_subdefs[I->nall_subdefs++] = n;
+            if (in_place) {
+                n->flags |= PP_SUB_INPLACE;
+                pp_node *c = node(P, N_SUBCLOSE); c->sym = n->sym;
+                return c;
+            }
+            I->subdefs = pp_xrealloc(I->subdefs, (I->nsubdefs + 1) * sizeof(pp_node *));
+            I->subdefs[I->nsubdefs++] = n;
             return NULL;
         }
         if (tok_is_ident(t, "try") && nx->type == T_OP && !strcmp(nx->op, "{")) {

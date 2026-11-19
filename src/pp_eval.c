@@ -2142,6 +2142,10 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_CALLER: return eval_caller(I, n, ctx, out);
     case N_FILETEST: return eval_filetest(I, n, ctx, out);
     case N_LOCALELEM: eval_local_elem(I, n); return pp_undef();
+    case N_SUBCLOSE:
+        for (int i = I->nall_subdefs - 1; i >= 0; i--)
+            if (I->all_subdefs[i]->sym == n->sym && (I->all_subdefs[i]->flags & PP_SUB_INPLACE)) return eval_subdef(I, I->all_subdefs[i]);
+        return pp_undef();
     case N_END: {   /* queue the block; pp_run calls the queue in reverse order */
         pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(code); return pp_undef(); }

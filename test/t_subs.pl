@@ -96,4 +96,11 @@ print "comma idents: @cl ", join(",", map { $ch{$_} } qw(s m y)), "\n";
 sub sh_elem { shift->[1] } sub sh_key { shift->{k} } sub sh_meth { shift->name(@_) } sub sh_code { shift->(2) } sub sh_pop { pop->[0] }
 { package ShObj; sub new { bless { n => $_[1] }, $_[0] } sub name { "name:$_[0]{n}:" . scalar(@_) } }
 print "shift arrow: ", sh_elem([7, 8]), " ", sh_key({ k => "v" }), " ", sh_meth(ShObj->new("o"), 1, 2), " ", sh_code(sub { $_[0] * 21 }), " ", sh_pop(1, [9]), "\n";
+# ブロックの my 変数を使う名前付きサブ
+{ my $bc_n = 0; my @bc_list = (1, 2, 3); sub bc_next { ++$bc_n } sub bc_peek { $bc_n } sub bc_sum { my $s = 0; foreach my $x (@bc_list) { $s += $x } $s } }
+BEGIN { my %bc_tab = (a => "A"); sub bc_lookup { $bc_tab{$_[0]} // "?" } }
+my $bc_top = "top"; sub bc_file { $bc_top }
+{ package BcPkg; sub early { "early" } }
+sub bc_outer { my $v = shift; sub bc_inner { defined $v ? "def" : "undef" } bc_inner() }
+print "block subs: ", bc_next(), bc_next(), bc_peek(), " ", bc_sum(), " ", bc_lookup("a"), bc_lookup("z"), " ", bc_file(), " ", BcPkg::early(), " ", bc_outer(1), "\n";
 print "done\n";

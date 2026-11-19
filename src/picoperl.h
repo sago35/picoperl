@@ -181,6 +181,8 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_SUBCLOSE,     /* a named sub that uses `my` variables of an enclosing block: define it here, when
+                       the block runs (sym: the sub; its N_SUBDEF is flagged PP_SUB_INPLACE) */
     N_LOCALELEM,    /* local $h{k} / local $a[i] / local @h{...} / local @a[...]: a: the element or slice */
     N_END,          /* END { ... }: a: N_ANONSUB; evaluating it queues the block to run at exit */
     N_FILETEST,     /* -e $path etc.: op: the letter (e f d s z r w x l), a: path expr */
@@ -226,6 +228,7 @@ struct pp_node {
     };
 };
 #define PP_NODE_HEAP 0x80
+#define PP_SUB_INPLACE 0x10        /* N_SUBDEF: not defined up front, see N_SUBCLOSE */
 #define PP_BLOCK_PKG 0x10          /* N_BLOCK: contains a `package` statement, restore the package on exit */
 #define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
 
