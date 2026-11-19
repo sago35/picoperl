@@ -52,4 +52,7 @@ print "tags: ", ImpTagUser::sum(), "\n";
 print "export_to_level: ", ImpLevel::go(), "\n";
 eval { ImpTags->import('no_such_name') };
 print "unknown name: ", ($@ =~ /^"no_such_name" is not exported by the ImpTags module/ ? "dies" : "no: $@"), "\n";
+# サブの中から require したファイルでも、caller はそのファイルのパッケージを返す
+{ package LoaderPkg; sub load { require TestCallerUser; TestCallerUser::get() } }
+print "caller while loading: ", LoaderPkg::load(), " / body: $TestCallerUser::body_caller\n";
 print "done modules\n";

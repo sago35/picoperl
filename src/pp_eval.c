@@ -2427,6 +2427,8 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     pp_env *saved = I->env;
     const char *saved_pkg = I->file_pkg;
     I->file_pkg = NULL;                  /* every file starts in package main */
+    pp_obj *saved_code = I->cur_code;    /* the file's own statements are not part of the sub that */
+    I->cur_code = NULL;                  /* required it: caller() sees the file's package */
     /* the file scope: the one subs defined during parsing already closed over, if any */
     pp_env *env = I->pending_env ? I->pending_env : pp_env_new(NULL, unit->aux);
     I->pending_env = NULL;
@@ -2509,6 +2511,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     local_unwind(I, lh);
     I->env = saved;
     I->file_pkg = saved_pkg;
+    I->cur_code = saved_code;
     pp_env_decref(env);
     return last;
 }

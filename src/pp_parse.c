@@ -772,12 +772,15 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
     pp_env_grow(I->pending_env, P->sc->st[0].n);
     I->env = I->pending_env;
     const char *sf = I->file; int sl = I->line;
+    pp_obj *scode = I->cur_code;        /* ... and are file-level code, not part of the sub that asked */
+    I->cur_code = NULL;                 /*     for this file (caller must not report that sub's package) */
     const char *sp = I->file_pkg;       /* BEGIN / use run in the package being parsed */
     I->file_pkg = strcmp(P->pkg, "main") ? pp_intern(I, P->pkg, (int)strlen(P->pkg))->name : NULL;
     I->file = P->file; I->line = n->line;
     pp_val v = pp_eval(I, n, CTX_VOID, NULL);
     pp_release(v);
     I->file = sf; I->line = sl; I->file_pkg = sp;
+    I->cur_code = scode;
     I->env = saved;
     if (I->ctl == CTL_DIE) {
         pp_str *s = pp_to_str(I->err);
