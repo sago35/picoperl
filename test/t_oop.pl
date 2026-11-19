@@ -82,3 +82,9 @@ my $mn_cls = "main";
 print "class main: ", ($mn_cls->can("mn_hello") ? "can" : "cannot"), " ", (main->can("mn_hello") ? "can" : "cannot"), " ", $mn_cls->mn_hello, " / ", main->mn_hello, " ", (UNIVERSAL::can("main", "mn_hello") ? "can" : "cannot"), " ", (main->can("mn_nope") ? "y" : "n"), "\n";
 { package StrCls; sub new { bless { v => $_[1] }, $_[0] } sub get { $_[0]{v} } sub name { "StrCls" } }
 print "string as class: ", "StrCls"->new(5)->get, " ", 'StrCls'->name, " ", ("StrCls"->can("get") ? "can" : "cannot"), " ", "main"->mn_hello, "\n";
+# Class::->method (末尾の :: はクラス名の文字列)
+{ package Tc::Deep; sub new { bless { v => $_[1] }, $_[0] } sub get { $_[0]{v} } sub name { "name of $_[0]" } }
+my $tc_name = Tc::Deep::; my %tc_h = (StrCls:: => 1);
+print "trailing :: ", Tc::Deep::->new(3)->get, " ", Tc::Deep::->name, " ", StrCls::->name, " $tc_name ", join(",", keys %tc_h), " ", (1 ? StrCls::->name : 0), "\n";
+{ my ($p, $q) = (StrCls->new(1), StrCls->new(2)); print "paren invocant: ", ($p || $q)->get, (0 || $q)->get, ((StrCls->new(5)))->get, "\n"; }
+

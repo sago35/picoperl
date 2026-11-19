@@ -491,6 +491,12 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         int start = L->pos;
         int len = lex_name(L);
         const char *id = L->src + start;
+        if (peekc(L, 0) == ':' && peekc(L, 1) == ':') {   /* Foo::Bar:: is the string "Foo::Bar" (Class::->method) */
+            L->pos += 2;
+            t->type = T_STR; t->s = id; t->len = len;
+            term = 1;
+            goto lexed;
+        }
         if (id[0] == 'v' && len >= 2) {          /* v5.36: keep the version string as one token */
             int alld = 1;
             for (int i = 1; i < len; i++) if (!isdigit((unsigned char)id[i])) alld = 0;
@@ -621,9 +627,15 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '%'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "%"); term = 0; }
     }
-    else if (c == '&' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
-        if (is_ident_start(peekc(L, 1))) {
-            L->pos++; int start = L->pos; int len = lex_name(L);
+    else if (c == ':' && peekc(L, 1) == ':' && !L->prev_term && is_ident_start(peekc(L, 2))) {
+        int start = L->pos; L->pos += 2; lex_name(L);            /* ::name is main::name */
+        t->type = T_IDENT; t->s = L->src + start; t->len = L->pos - start; term = 0;
+    }
+    else if (c == '&' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$'
+                          || (peekc(L, 1) == ':' && peekc(L, 2) == ':' && is_ident_start(peekc(L, 3))))) {
+        if (is_ident_start(peekc(L, 1)) || peekc(L, 1) == ':') {
+            L->pos++; int start = L->pos; if (peekc(L, 0) == ':') L->pos += 2;
+            lex_name(L); int len = L->pos - start;
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
     }
@@ -652,6 +664,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     done_op:
         term = (c == ')' || c == ']' || c == '}');
     }
+lexed:
     L->prev_term = term;
     L->prev_brace = t->type == T_OP && t->op[0] == '}' && t->op[1] == 0;
     L->prev_split = tok_is_ident_raw(t, "split") || (L->prev_split && t->type == T_OP && t->op[0] == '(' && t->op[1] == 0);
@@ -2112,7 +2125,11 @@ static pp_node *parse_term(pp_parser *P) {
             else l = adopt(P, wrap_list(P, parse_expr(P)));
             expect_op(P, ")");
             l->flags |= 1;
-            if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_LSLICE); s->a = l; s->b = parse_expr(P); expect_op(P, "]"); return s; }
+            if (cur_is_op(P, "[")) {
+                advance(P); pp_node *s = node(P, N_LSLICE); s->a = l; s->b = parse_expr(P); expect_op(P, "]");
+                return cur_is_op(P, "->") ? parse_postfix(P, s) : s;      /* (LIST)[0]->method */
+            }
+            if (cur_is_op(P, "->")) return parse_postfix(P, l);           /* (sub { ... })->(...), ($x || $y)->{k} */
             return l;
         }
         if (!strcmp(t->op, "[")) {
@@ -2275,7 +2292,10 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     if (len == 2 && !memcmp(id, "do", 2)) {
         advance(P);
-        if (cur_is_op(P, "{")) { pp_node *n = node(P, N_DOBLOCK); n->a = parse_block(P); return n; }
+        if (cur_is_op(P, "{")) {
+            pp_node *n = node(P, N_DOBLOCK); n->a = parse_block(P);
+            return cur_is_op(P, "->") ? parse_postfix(P, n) : n;
+        }
         pp_node *n = node(P, N_REQUIRE); n->op = 1; n->a = parse_unary(P); return n;
     }
     if (len == 4 && !memcmp(id, "eval", 4)) {

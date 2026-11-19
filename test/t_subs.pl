@@ -132,4 +132,14 @@ my %bl_reg; BEGIN { $bl_reg{a} = 1 } use constant BL_KEY => "k"; BEGIN { $bl_reg
 print "begin and use constant: ", join(",", map { "$_=$bl_reg{$_}" } sort keys %bl_reg), "\n";
 my @bl_order; { my $blk = 2; BEGIN { push @bl_order, "begin" } push @bl_order, $blk } for my $i (1 .. 2) { my $t = $i; push @bl_order, $t }
 print "begin inside a block: @bl_order\n";
+# 括弧の式に続く -> : (sub { ... })->(...)、(LIST)[i]->()、do { }->()
+sub pa_mk { sub { "mk@_" } } sub pa_f { "f@_" }
+my @pa_f = (sub { 1 }, sub { 2 }); my %pa_h = (k => sub { "k@_" });
+print "paren arrow: ", (sub { "a@_" })->(1), " ", (sub { $_[0] * 2 })->(21), " ", (@pa_f)[1]->(), " ", ($pa_h{k})->(5), " ",
+    ($pa_h{none} || $pa_h{k})->(7), " ", ([1, 2, 3])->[1], " ", ({ a => 5 })->{a}, " ", (1 ? \&pa_f : \&pa_mk)->(3), " ",
+    (pa_mk())->(2), " ", do { sub { 9 } }->(), "\n";
+my ($pa_a, $pa_b) = (4, 5, 6)[0, 1]; print "list slice still works: $pa_a$pa_b ", (4, 5, 6)[1], "\n";
+# ::name は main::name
+sub cc_f { "mainf@_" }
+{ package CcPkg; sub cc_f { "pkgf" } print "leading ::  ", ::cc_f(1), " ", &::cc_f(2), " ", cc_f(), " ", (\&::cc_f == \&main::cc_f ? "same" : "differs"), "\n"; }
 print "done\n";
