@@ -143,6 +143,19 @@ static void pos_reset(pp_pos_ent *e) {
     e->s = NULL; e->cell = NULL; e->pos = 0; e->empty = 0;
 }
 
+void pp_pos_set(pp_interp *I, pp_obj *cell, pp_val v) {
+    pp_str *s = pp_to_str(cell->u.scalar);
+    if (v.t == PP_UNDEF) pos_reset(pos_entry(I, cell, s, 0));
+    else {
+        int64_t p = pp_to_int(v);
+        if (p < 0) p += s->len;          /* from the end, like substr */
+        if (p < 0) p = 0;
+        if (p > s->len) p = s->len;
+        pp_pos_ent *e = pos_entry(I, cell, s, 1);
+        e->pos = (int)p; e->empty = 0;
+    }
+    pp_str_decref(s);
+}
 pp_val pp_pos_of(pp_interp *I, pp_obj *cell) {
     pp_str *s = pp_to_str(cell->u.scalar);
     pp_pos_ent *e = pos_entry(I, cell, s, 0);

@@ -130,6 +130,7 @@ pp_val   pp_eval_trans(pp_interp *I, pp_node *n, int ctx, pp_list *out);
 pp_obj  *pp_regex_of(pp_interp *I, pp_node *pat, int cflags);      /* new reference to a PP_OREGEX object; NULL after die */
 pp_obj  *pp_regex_from_val(pp_interp *I, pp_val v, int cflags);    /* qr object or pattern text -> new reference */
 int      pp_split_regex(pp_interp *I, pp_obj *ro, const char *s, int len, int limit, pp_list *res);   /* 0 after die */
+void     pp_pos_set(pp_interp *I, pp_obj *cell, pp_val v);          /* pos($x) = v (undef clears it) */
 pp_val   pp_pos_of(pp_interp *I, pp_obj *cell);                     /* pos() of a scalar cell */
 void     pp_regex_cleanup(pp_interp *I);
 pp_obj  *pp_var_cell(pp_interp *I, pp_node *n);

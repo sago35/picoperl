@@ -173,3 +173,16 @@ print "done\n";
     { local ($ls{apad}, $ls{n}) = ($ls{n}, $ls{apad}); print "local rhs 3: ", $lshow->(), "\n"; }
     print "local rhs after: ", $lshow->(), "\n";
 }
+# 左辺値: $#a = N、リスト代入の中の undef、pos($s) = N
+{
+my @a = (1, 2, 3, 4); $#a = 1; print "@a ", scalar(@a), "\n"; $#a = 3; print scalar(@a), " ", defined $a[3] ? "def" : "undef", "\n"; $#a = -1; print scalar(@a), "\n";
+my $r = [1, 2, 3, 4]; $#{$r} = 1; print "@$r\n"; $#$r = 0; print "@$r\n"; my %h; $#{$h{new}} = 2; print scalar(@{$h{new}}), "\n";
+my @b = (1, 2); (undef) = shift @b; print "@b\n";
+my ($x, $y); (undef, $x, $y) = (1, 2, 3); print "$x$y\n"; ($x, undef, $y) = (7, 8, 9); print "$x$y\n";
+if ((undef, $x, $y) = "a1b" =~ /(a)(1)(b)/ or 0) { print "$x$y\n" }
+my $s = "aXbXc"; pos($s) = 2; $s =~ /X/g; print pos($s), "\n"; pos($s) = 0; my @m = $s =~ /X/g; print scalar(@m), "\n";
+pos($s) = 1; pos($s) = undef; print defined pos($s) ? "d" : "u", "\n";
+pos($s) = 3; my @rest = $s =~ /(\w)/g; print "@rest\n"; pos($s) = -1; $s =~ /\G(.)/g; print "$1\n"; pos($s) = 99; print pos($s), "\n";
+$_ = "xyz"; pos = 1; /\G(.)/g; print "$1 ", pos, "\n"; my $v = (pos($s) = 2); print "$v\n";
+while ($s =~ /X/g) { print "at ", pos($s), "\n"; pos($s) = length $s if pos($s) < 3 }
+}

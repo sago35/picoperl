@@ -2064,7 +2064,29 @@ static pp_val n_re_pattern(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_list_push(out, pp_strn(re->source, re->srclen));
     return pp_strn(fl, n);                 /* the caller appends the last element */
 }
+/* pos($s) = N and $#a = N: the parser passes \$s / \@a and the new value, which is returned */
+static pp_val n_pos_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2 || a->v[0].t != PP_REF || a->v[0].u.o->kind != PP_OSCALAR) return pp_die(I, "Can't modify non-lvalue expression");
+    pp_pos_set(I, a->v[0].u.o, a->v[1]);
+    return pp_copy(a->v[1]);
+}
+static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2 || a->v[0].t != PP_REF || a->v[0].u.o->kind != PP_OARRAY) return pp_die(I, "Can't modify non-lvalue expression");
+    pp_obj *arr = a->v[0].u.o;
+    if (arr->tied) pp_tie_sync(I, arr);
+    int64_t want = pp_to_int(a->v[1]) + 1;
+    if (want < 0) want = 0;
+    if (want > 50000000) return pp_die(I, "Out of memory during array extend");
+    while (arr->u.arr.n > want) pp_release(pp_array_pop(arr));
+    while (arr->u.arr.n < want) pp_array_push(arr, pp_undef());
+    if (arr->tied) pp_tie_writeback(I, arr);
+    return pp_copy(a->v[1]);
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "__pos_set", n_pos_set);
+    pp_register(I, "__lastidx_set", n_lastidx_set);
     pp_register(I, "re::is_regexp", n_re_is_regexp);
     pp_register(I, "re::regexp_pattern", n_re_pattern);
     pp_register(I, "overload::_enable", n_ovl_enable);

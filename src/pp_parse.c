@@ -1621,6 +1621,25 @@ static pp_node *parse_assign(pp_parser *P) {
         node_add(lhs, parse_assign(P));
         return lhs;
     }
+    if (op == OP_NONE && lhs->type == N_LIST) {
+        /* (undef, $x) = LIST: an undef on the left skips one value */
+        for (int i = 0; i < lhs->n; i++) {
+            pp_node *c = lhs->list[i];
+            if (c->type == N_BUILTIN && c->n == 0 && c->op == (uint8_t)pp_builtin_id("undef", 5, NULL)) c->type = N_NOP;
+        }
+    }
+    if (op == OP_NONE && ((lhs->type == N_BUILTIN && lhs->n <= 1 && lhs->op == (uint8_t)pp_builtin_id("pos", 3, NULL)) || lhs->type == N_LASTIDX)) {
+        /* pos($s) = N is __pos_set(\$s, N); $#a = N is __lastidx_set(\@a, N) */
+        int is_pos = lhs->type == N_BUILTIN;
+        advance(P);
+        pp_node *c = node(P, N_CALL); c->line = lhs->line;
+        c->sym = is_pos ? pp_intern(P->I, "&__pos_set", 10) : pp_intern(P->I, "&__lastidx_set", 14);
+        pp_node *r = node(P, N_REF);
+        r->a = !is_pos ? lhs->a : lhs->n ? lhs->list[0] : mkvar(P, '$', "_", 1);
+        node_add(c, r);
+        node_add(c, parse_assign(P));
+        return c;
+    }
     if (op == OP_NONE && lhs->type == N_CALL && lhs->n == 3 && lhs->sym && !strcmp(lhs->sym->name, "&vec")) {
         /* vec($s, OFF, BITS) = VALUE is $s = __vec_set($s, OFF, BITS, VALUE) */
         advance(P);
