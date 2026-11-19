@@ -251,6 +251,35 @@ static NOINLINE pp_val eval_glob_assign(pp_interp *I, pp_node *n) {
     pp_str_decref(name);
     return v;
 }
+/* -e $path and friends: 1 / "" like perl, undef when the path does not exist; -s gives the size */
+static NOINLINE pp_val eval_filetest(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
+    if (I->ctl) { pp_release(v); return pp_undef(); }
+    pp_val r = pp_undef();
+    if (v.t != PP_UNDEF && v.t != PP_REF) {
+        pp_str *s = pp_to_str(v);
+        long long size = 0;
+        int m = (int)strlen(s->d) == s->len ? pp_host_filetest(s->d, &size) : -1;
+        pp_str_decref(s);
+        if (m >= 0) {
+            int t;
+            switch (n->op) {
+            case 'e': t = 1; break;
+            case 'f': t = m & PP_FT_FILE; break;
+            case 'd': t = m & PP_FT_DIR; break;
+            case 'r': t = m & PP_FT_READ; break;
+            case 'w': t = m & PP_FT_WRITE; break;
+            case 'x': t = m & PP_FT_EXEC; break;
+            case 'l': t = m & PP_FT_LINK; break;
+            case 'z': t = size == 0; break;
+            default:  t = size > 0; break;   /* 's' */
+            }
+            r = !t ? pp_strn("", 0) : n->op == 's' ? pp_int(size) : pp_int(1);
+        }
+    }
+    pp_release(v);
+    return scalar_or_push(ctx, out, r);
+}
 /* the package a sub belongs to, from its qualified name ("Pkg::name"; plain names are main) */
 static pp_val code_pkg(pp_obj *code) {
     const char *name = code->u.code.name, *last = NULL;
@@ -2051,6 +2080,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
     case N_GLOB: return eval_glob(I, n, ctx, out);
     case N_CALLER: return eval_caller(I, n, ctx, out);
+    case N_FILETEST: return eval_filetest(I, n, ctx, out);
     case N_PACKAGE: I->file_pkg = n->sym ? n->sym->name : NULL; return pp_undef();
     case N_NAMEDBIND: {
         pp_obj *args = current_args(I);

@@ -92,4 +92,8 @@ my $cm = "a/b/c"; (my $cm2 = $cm) =~ s,/,-,g; my $cm3 = $cm; $cm3 =~ s,/[^/]+$,,
 print "comma delim: $cm2 $cm3 ", ($cm =~ m,^a/, ? "m" : "-"), " ", ($cm !~ m,x, ? "nm" : "-"), " ", join("|", (my $cm4 = $cm) =~ tr,/,,), "\n";
 my %ch = (s => 1, m => 2, y => 3); my @cl = ($ch{s}, $ch{m}, $ch{y});
 print "comma idents: @cl ", join(",", map { $ch{$_} } qw(s m y)), "\n";
+# shift-> / pop->
+sub sh_elem { shift->[1] } sub sh_key { shift->{k} } sub sh_meth { shift->name(@_) } sub sh_code { shift->(2) } sub sh_pop { pop->[0] }
+{ package ShObj; sub new { bless { n => $_[1] }, $_[0] } sub name { "name:$_[0]{n}:" . scalar(@_) } }
+print "shift arrow: ", sh_elem([7, 8]), " ", sh_key({ k => "v" }), " ", sh_meth(ShObj->new("o"), 1, 2), " ", sh_code(sub { $_[0] * 21 }), " ", sh_pop(1, [9]), "\n";
 print "done\n";

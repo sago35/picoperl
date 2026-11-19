@@ -86,6 +86,7 @@ int pp_host_const(const char *name, pp_val *out) { return pp_keycodes_const(name
 /* file I/O maps onto the script drive (FatFs in flash) */
 void *pp_host_fopen(const char *path, const char *mode) { return fs_ok ? flashfs_fopen(path, mode) : NULL; }
 int   pp_host_fclose(void *f) { return flashfs_fclose(f); }
+int   pp_host_filetest(const char *path, long long *size) { return fs_ok ? flashfs_filetest(path, size) : -1; }
 int   pp_host_fread(void *f, void *buf, int n) { return flashfs_fread(f, buf, n); }
 int   pp_host_fwrite(void *f, const void *buf, int n) { return flashfs_fwrite(f, buf, n); }
 long  pp_host_fseek(void *f, long off, int whence) { return flashfs_fseek(f, off, whence); }

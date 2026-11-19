@@ -46,3 +46,15 @@ print "13: $t";
 while (my $line = <$in>) { print "14: unreachable\n" }
 print "15: eof=", (eof($in) ? 1 : 0), "\n";
 close($in);
+# ファイルテスト
+my $ft_file = 'test/t_io_data.txt';
+my $ft_none = 'test/no_such_file.txt';
+sub ft { defined $_[0] ? ($_[0] eq '' ? "''" : $_[0] > 1 ? "size" : $_[0]) : "undef" }
+print "filetest file: ", join(" ", map { ft($_) } -e $ft_file, -f $ft_file, -d $ft_file, -s $ft_file, -z $ft_file, -r $ft_file, -l $ft_file), "\n";
+print "filetest dir: ", join(" ", map { ft($_) } -e "test", -f "test", -d "test", -d 'test/'), "\n";
+print "filetest none: ", join(" ", map { ft($_) } -e $ft_none, -f $ft_none, -d $ft_none, -s $ft_none), "\n";
+print "filetest size: ", ((-s $ft_file) == length(do { open(my $f, '<', $ft_file) or die; local $/; my $c = join("", <$f>); $c }) ? "match" : "differ"), "\n";
+print "filetest expr: ", (-e $ft_file ? "yes" : "no"), " ", (-e $ft_none ? "yes" : "no"), " ", (-f $ft_file && -s $ft_file > 0 ? "nonempty" : "empty"), " ", ((not -f $ft_none or -d $ft_none) ? "ok" : "ng"), " ", (-d "te" . "st" ? "concat" : "no"), "\n";
+my %ft_h = (-s => 1, -e => 2, -x => 3); my $ft_n = 5; my $ft_e = 2;
+print "filetest not: $ft_h{-s} $ft_h{-e} $ft_h{-x} ", $ft_n -$ft_e, " ", $ft_n - $ft_e, " ", -$ft_e, "\n";
+unless (-e $ft_none) { print "filetest unless\n" }

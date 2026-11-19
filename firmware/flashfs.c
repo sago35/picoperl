@@ -192,6 +192,22 @@ static const char *fr_str(FRESULT r) {
 static const char *io_err = "";
 const char *flashfs_io_error(void) { return io_err; }
 
+/* for -e -f -d -s ...: FAT has no permissions, so everything is readable, writable unless
+   marked read-only, and only directories count as "executable" (searchable) */
+int flashfs_filetest(const char *path, long long *size) {
+    remount_if_stale();
+    if (!mounted) return -1;
+    *size = 0;
+    if (!path[0] || !strcmp(path, "/") || !strcmp(path, ".")) return 2 | 4 | 8 | 16;   /* the root has no entry */
+    static FILINFO fi;               /* FILINFO is large (LFN); single-threaded here */
+    if (f_stat(path, &fi) != FR_OK) return -1;
+    int r = 4;
+    if (fi.fattrib & AM_DIR) r |= 2 | 16; else r |= 1;
+    if (!(fi.fattrib & AM_RDO)) r |= 8;
+    *size = (long long)fi.fsize;
+    return r;
+}
+
 void *flashfs_fopen(const char *path, const char *mode) {
     remount_if_stale();
     if (!mounted) { io_err = "filesystem not mounted"; return NULL; }

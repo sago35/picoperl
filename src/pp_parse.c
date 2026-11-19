@@ -160,6 +160,17 @@ static void scope_finalize(pp_parser *P, int from, int min_target) {
     }
     S->nrecs = from;
 }
+static int is_ident_start(int c);
+/* after "-e" (L->pos is at the '-'): does a path follow? Only a scalar or a string literal
+   counts, so that -s => 1, -e, and -x(...) keep their old meaning. */
+static int lex_filetest_operand(pp_lex *L) {
+    int i = L->pos + 2;
+    while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+    if (i >= L->len) return 0;
+    char c = L->src[i];
+    if (c == '$') return i + 1 < L->len && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$');
+    return c == '"' || c == '\'';
+}
 /* is a '*' here a typeglob sigil rather than multiplication? Yes where a term is expected.
    After '}' the previous token may have ended a block or a subscript ($h{a} *$x), so there it
    only counts when the '*' starts its line (a statement after a block). */
@@ -579,6 +590,13 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             L->pos++; int start = L->pos; int len = lex_name(L);
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
+    }
+    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzl", peekc(L, 1))
+             && !is_ident_char(peekc(L, 2)) && lex_filetest_operand(L)) {
+        /* file test: -e $path, -d "dir" ... (one token "-e"; the letter must not reach the
+           lexer on its own, `s $x` would start a substitution) */
+        t->type = T_OP; t->op[0] = '-'; t->op[1] = (char)peekc(L, 1); t->op[2] = 0;
+        L->pos += 2; term = 0;
     }
     else if (c == '*' && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')
              && lex_glob_position(L)) {
@@ -1478,6 +1496,12 @@ static pp_node *parse_unary(pp_parser *P) {
     pp_tok *t = &P->cur;
     if (t->type == T_OP) {
         if (!strcmp(t->op, "!")) { advance(P); pp_node *n = node(P, N_NOT); n->a = parse_unary(P); return n; }
+        if (t->op[0] == '-' && isalpha((unsigned char)t->op[1]) && !t->op[2]) {   /* file test: a named unary operator */
+            pp_node *n = node(P, N_FILETEST); n->op = (uint8_t)t->op[1];
+            advance(P);
+            n->a = parse_binary(P, PREC_NAMED_UNARY);
+            return n;
+        }
         if (!strcmp(t->op, "-")) {
             advance(P);
             if (P->cur.type == T_IDENT && !P->cur.space_before) {
@@ -2027,6 +2051,7 @@ static int starts_term(pp_parser *P) {
     case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: case T_READLINE: return 1;
     case T_IDENT: return !at_list_end(P);
     case T_OP: return !strcmp(t->op, "(") || !strcmp(t->op, "[") || !strcmp(t->op, "{") || !strcmp(t->op, "\\") || !strcmp(t->op, "!")
+        || (t->op[0] == '-' && isalpha((unsigned char)t->op[1]) && !t->op[2])
         || !strcmp(t->op, "-") || !strcmp(t->op, "+") || !strcmp(t->op, "++") || !strcmp(t->op, "--") || !strcmp(t->op, "~") || !strcmp(t->op, "<");
     default: return 0;
     }
@@ -2198,7 +2223,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (kind == BK_UNARY) {
             if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); return parse_postfix(P, n); }
             if (starts_term(P) && !(cur_is_op(P, "<") && !tok_is_ident(peek(P), "STDIN"))) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
-            return n;
+            return n->n ? n : parse_postfix(P, n);   /* shift->[0], shift->method(...) */
         }
         parse_call_args(P, n);
         if (bid == pp_builtin_id("bless", 5, NULL) && n->n == 1) node_add(n, const_str(P, P->pkg, (int)strlen(P->pkg)));

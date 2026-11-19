@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <errno.h>
 
 static char *script_dir;
@@ -52,6 +53,22 @@ void *pp_host_fopen(const char *path, const char *mode) {
     return fopen(path, m);
 }
 int  pp_host_fclose(void *f) { return fclose((FILE *)f); }
+int  pp_host_filetest(const char *path, long long *size) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    int r = 0;
+    if (S_ISREG(st.st_mode)) r |= PP_FT_FILE;
+    if (S_ISDIR(st.st_mode)) r |= PP_FT_DIR;
+    if (access(path, R_OK) == 0) r |= PP_FT_READ;
+    if (access(path, W_OK) == 0) r |= PP_FT_WRITE;
+    if (access(path, X_OK) == 0) r |= PP_FT_EXEC;
+#ifdef S_ISLNK
+    struct stat lst;
+    if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode)) r |= PP_FT_LINK;
+#endif
+    *size = (long long)st.st_size;
+    return r;
+}
 int  pp_host_fread(void *f, void *buf, int n) { return (int)fread(buf, 1, (size_t)n, (FILE *)f); }
 int  pp_host_fwrite(void *f, const void *buf, int n) { return (int)fwrite(buf, 1, (size_t)n, (FILE *)f); }
 long pp_host_fseek(void *f, long off, int whence) {
