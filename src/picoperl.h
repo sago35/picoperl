@@ -287,6 +287,7 @@ struct pp_interp {
     pp_obj  *g_a, *g_b;          /* $a, $b for sort */
     pp_obj  *g_at;               /* $@ */
     pp_obj  *g_argv;             /* @ARGV */
+    pp_obj  *g_ofs, *g_ors;      /* $, and $\ : what print puts between its arguments and after them */
     pp_node **subdefs; int nsubdefs;   /* named subs collected while parsing */
     pp_node **units; char **unit_files; int nunits;   /* parsed files, freed by pp_free */
     pp_arena *arena;             /* AST storage for every file loaded by this interpreter */

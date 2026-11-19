@@ -270,6 +270,8 @@ reftype refaddr indexed)`、
 (`local $h{k} = 1;`、`local $a[0];`、`local @ENV{qw(PATH HOME)};`、`local $r->{k};`)。
 括弧のリストにも混ぜて書けます (`local($@, $!, $SIG{__DIE__});`、`local($x, $h{k}) = (1, 2);`)。
 
+`print` は **`$,`** (引数の間に入れる文字列) と **`$\`** (最後に付ける文字列) に従います。`say` は `$\` の代わりに改行を付けます。
+
 **`${^NAME}`** 形式の変数と **`%^H`** を読み書きできます。値が入っているのは `${^TAINT}` (0)、
 `${^UNICODE}` (0)、`${^GLOBAL_PHASE}` (`RUN`、`END` ブロックの中では `END`) だけで、
 `${^WARNING_BITS}` などは undef です。`%^H` に書いてもレキシカルなヒントとしては働きません。

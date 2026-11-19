@@ -506,12 +506,15 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
         pp_str_decref(t); pp_release(s);
     } else {
         pp_str *buf = pp_str_new(NULL, 0);
+        pp_val ofs = I->g_ofs->u.scalar, ors = I->g_ors->u.scalar;   /* $, between the arguments, $\ after them */
         for (int i = 0; i < args.n; i++) {
+            if (i && ofs.t == PP_STR) str_append(&buf, ofs.u.s->d, ofs.u.s->len);
             pp_str *t; const char *p = pp_to_cstr(args.v[i], &t);
             str_append(&buf, p, t ? t->len : args.v[i].u.s->len);
             if (t) pp_str_decref(t);
         }
         if (id == B_SAY) str_append(&buf, "\n", 1);
+        else if (ors.t == PP_STR) str_append(&buf, ors.u.s->d, ors.u.s->len);
         if (fh) wr_ok = pp_host_fwrite(fh->u.file.fp, buf->d, buf->len) == buf->len;
         else pp_host_write(fd, buf->d, buf->len);
         pp_str_decref(buf);

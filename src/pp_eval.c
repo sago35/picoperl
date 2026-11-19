@@ -2495,8 +2495,8 @@ pp_interp *pp_new(void) {
     I->g_at = pp_global(I, pp_intern(I, "$@", 2));
     I->g_at->u.scalar = pp_strn("", 0);
     I->g_argv = pp_global(I, pp_intern(I, "@ARGV", 5));
-    pp_global(I, pp_intern(I, "$,", 2));
-    pp_global(I, pp_intern(I, "$\\", 2));
+    I->g_ofs = pp_global(I, pp_intern(I, "$,", 2));
+    I->g_ors = pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
     /* ${^NAME} variables scripts commonly read: no taint mode, no -C, and the main program is running */
     pp_global(I, pp_intern(I, "$^TAINT", 7))->u.scalar = pp_int(0);

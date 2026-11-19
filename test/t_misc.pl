@@ -102,4 +102,8 @@ print "local list assign: ", ll_assign(), " / ", ll_show(), "\n";
 print "local list mixed: ", ll_mixed(), " / ", ll_show(), "\n";
 sub ll_guard { local($@, $!, $SIG{__DIE__}); eval { die "inner\n" }; "inside: $@" }
 $@ = "outer"; (my $ll_r = ll_guard()) =~ s/\n//; print "local \$\@ in a list: $ll_r / after: $@\n";
+# $, と $\ は print に効く
+{ local($,, $\) = ("-", "!\n"); print 1, 2, 3; }
+{ local $, = ","; print "a", "b"; print "\n"; }
+print "plain", " print", "\n";
 print "done\n";
