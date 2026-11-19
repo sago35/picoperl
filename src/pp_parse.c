@@ -3180,6 +3180,9 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 pp_node *c = node(P, N_SUBCLOSE); c->sym = n->sym;
                 return c;
             }
+            /* defined up front, it runs directly below the file scope: the blocks the source
+               nests it in are not between its variables and the file's `my` variables */
+            P->sc->parent_of[sub_scope] = P->sc->st[0].id;
             I->subdefs = pp_xrealloc(I->subdefs, (I->nsubdefs + 1) * sizeof(pp_node *));
             I->subdefs[I->nsubdefs++] = n;
             return NULL;
