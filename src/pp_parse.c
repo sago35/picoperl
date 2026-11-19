@@ -36,6 +36,7 @@ typedef struct {
     int   prev_split;   /* previous token was the identifier 'split' (so // is a pattern) */
     int   prev_arrow;   /* previous token was '->' (so s, y, m, tr are method names) */
     int   prev_op;      /* previous token was an operator (so '/' must start a pattern) */
+    int   prev_bind;    /* previous token was =~ or !~ (so `s,a,b,` is a substitution, not `s` and a comma) */
     /* pending heredoc bodies: when lexing crosses `from`, jump to `to` (past the
        terminator line) and set the line counter to `line_after` */
     struct { int from, to, line_after; } hd[4];
@@ -78,6 +79,7 @@ struct pp_parser {
     unsigned char *declnoargs;           /* 1 if declared with an empty prototype */
     pp_sym *pending_label;               /* LABEL: before a loop statement */
     char pkg[96];                        /* current package */
+    int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
 };
@@ -486,7 +488,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             int spaced = 0;
             if (isspace(peekc(L, 0))) { skip_ws(L); spaced = 1; }
             int d = peekc(L, 0);
-            if (d && !is_ident_char(d) && d != ',' && d != ';' && d != ')' && d != '=' && d != '}' && d != ']' && !(spaced && d == '#')
+            if (d && !is_ident_char(d) && (d != ',' || L->prev_bind) && d != ';' && d != ')' && d != '=' && d != '}' && d != ']' && !(spaced && d == '#')
                 && !(d == '-' && peekc(L, 1) == '>')) {
                 lex_pattern(P, t, pk);
                 L->prev_term = 1; L->prev_brace = 0; L->prev_split = 0; L->prev_arrow = 0;
@@ -601,6 +603,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     L->prev_split = tok_is_ident_raw(t, "split") || (L->prev_split && t->type == T_OP && t->op[0] == '(' && t->op[1] == 0);
     L->prev_arrow = t->type == T_OP && t->op[0] == '-' && t->op[1] == '>';
     L->prev_op = t->type == T_OP && !term;
+    L->prev_bind = t->type == T_OP && (!strcmp(t->op, "=~") || !strcmp(t->op, "!~"));
 }
 
 /* ------------------------------------------------------------------ */
@@ -672,10 +675,12 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
     pp_env *saved = I->env; int made = 0;
     if (!I->env) { I->env = pp_env_new(NULL, 0); made = 1; }
     const char *sf = I->file; int sl = I->line;
+    const char *sp = I->file_pkg;       /* BEGIN / use run in the package being parsed */
+    I->file_pkg = strcmp(P->pkg, "main") ? pp_intern(I, P->pkg, (int)strlen(P->pkg))->name : NULL;
     I->file = P->file; I->line = n->line;
     pp_val v = pp_eval(I, n, CTX_VOID, NULL);
     pp_release(v);
-    I->file = sf; I->line = sl;
+    I->file = sf; I->line = sl; I->file_pkg = sp;
     if (made) pp_env_decref(I->env);
     I->env = saved;
     if (I->ctl == CTL_DIE) {
@@ -2051,6 +2056,10 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 3 && !memcmp(id, "sub", 3)) {
         advance(P);
         pp_node *n = node(P, N_ANONSUB);
+        if (strcmp(P->pkg, "main") != 0) {   /* its name, for caller: "Pkg::__ANON__" */
+            char an[128]; int al = snprintf(an, sizeof an, "%s::__ANON__", P->pkg);
+            n->sym = pp_intern(P->I, an, al);
+        }
         int save = P->in_sub, save_state = P->state_n;
         P->in_sub = 1; P->state_n = 0;
         scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
@@ -2083,6 +2092,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
         n->a = cur_is_op(P, ")") ? const_int(P, 0) : parse_expr(P);
         expect_op(P, ")");
         return n;
+    }
+    if (len == 6 && !memcmp(id, "caller", 6)) {   /* caller, caller(), caller(N), caller N */
+        advance(P);
+        pp_node *n = node(P, N_CALLER);
+        if (accept_op(P, "(")) { if (!cur_is_op(P, ")")) n->a = parse_expr(P); expect_op(P, ")"); }
+        else if (P->cur.type == T_NUM || (P->cur.type == T_VAR && P->cur.sigil == '$')) n->a = parse_unary(P);
+        return parse_postfix(P, n);
     }
     if (len == 9 && !memcmp(id, "wantarray", 9)) { advance(P); if (accept_op(P, "(")) expect_op(P, ")"); return node(P, N_WANTARRAY); }
     if (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6))) {
@@ -2212,6 +2228,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
 
 static void parse_block_stmts(pp_parser *P, pp_node *b) {
     char saved_pkg[sizeof P->pkg]; strcpy(saved_pkg, P->pkg);   /* `package X;` lasts to the end of its block */
+    int saved_stmt = P->pkg_stmt; P->pkg_stmt = 0;
     expect_op(P, "{");
     while (!cur_is_op(P, "}")) {
         if (P->cur.type == T_EOF) perr(P, "Missing right curly bracket");
@@ -2219,6 +2236,8 @@ static void parse_block_stmts(pp_parser *P, pp_node *b) {
         if (s) node_add(b, s);
     }
     strcpy(P->pkg, saved_pkg);
+    if (P->pkg_stmt) b->flags |= PP_BLOCK_PKG;   /* and at run time (for caller) */
+    P->pkg_stmt = saved_stmt;
     expect_op(P, "}");
 }
 static pp_node *parse_block(pp_parser *P) {
@@ -2553,9 +2572,17 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             snprintf(P->pkg, sizeof P->pkg, "%.*s", P->cur.len, P->cur.s);
             advance(P);
             if (P->cur.type == T_NUM) advance(P);   /* version */
-            if (cur_is_op(P, "{")) { pp_node *b = parse_block(P); strcpy(P->pkg, saved); return b; }
+            pp_node *pn = node(P, N_PACKAGE);   /* file-level code tells caller() its package */
+            if (strcmp(P->pkg, "main") != 0) pn->sym = pp_intern(P->I, P->pkg, (int)strlen(P->pkg));
+            if (cur_is_op(P, "{")) {            /* package X { ... } */
+                pp_node *b = parse_block(P); strcpy(P->pkg, saved);
+                pp_node *w = node(P, N_BLOCK); w->flags |= PP_BLOCK_PKG;
+                node_add(w, pn); node_add(w, b);
+                return w;
+            }
             accept_op(P, ";");
-            return NULL;
+            P->pkg_stmt = 1;
+            return pn;
         }
         if (tok_is_ident(t, "BEGIN")) {
             advance(P);

@@ -86,6 +86,17 @@ struct pp_obj {
 };
 
 /* symbols: interned, sigil included in name ("$x", "@x", "%x", "&x") */
+/* one sub call, for caller(): who called (code + line), and what was called */
+struct pp_frame {
+    struct pp_frame *up;
+    pp_obj     *caller_code;     /* sub the call was made from; NULL = file-level code */
+    const char *caller_pkg;      /* package of that file-level code (NULL = main) */
+    const char *file;
+    pp_obj     *code;            /* the sub that was called */
+    int         line;
+    int         ctx;
+};
+
 struct pp_sym {
     pp_sym  *next;
     unsigned h;
@@ -170,6 +181,9 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_CALLER,       /* caller / caller(N): a: frame number expr or NULL */
+    N_PACKAGE,      /* `package X;` at run time: sym = package name (interned, no sigil; NULL = main).
+                       Only file-level code needs it (subs know their package from their name). */
     N_GLOB,         /* typeglob *name / *{expr}: a: name expr (static names are a const, already
                        package-qualified), b: current package (const) for a dynamic name outside main */
     N_TRY,          /* a: try block, b: catch block (starts with `my $e = <caught>`), c: finally block or NULL */
@@ -209,6 +223,7 @@ struct pp_node {
     };
 };
 #define PP_NODE_HEAP 0x80
+#define PP_BLOCK_PKG 0x10          /* N_BLOCK: contains a `package` statement, restore the package on exit */
 #define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
 
 /* bump allocator for the AST of one file */
@@ -281,6 +296,8 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    const char *file_pkg;        /* package of the file-level code being run (NULL = main), for caller */
+    struct pp_frame *frame;      /* innermost sub call (frames live on the C stack of pp_call) */
     pp_val   try_err;            /* error being handed to a catch block */
     pp_sym  *sym_dispatch;       /* &PicoPerl::Event::_dispatch (interned on first event) */
     pp_sym  *sym_sig;            /* %SIG (interned on first use) */

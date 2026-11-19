@@ -251,6 +251,35 @@ static NOINLINE pp_val eval_glob_assign(pp_interp *I, pp_node *n) {
     pp_str_decref(name);
     return v;
 }
+/* the package a sub belongs to, from its qualified name ("Pkg::name"; plain names are main) */
+static pp_val code_pkg(pp_obj *code) {
+    const char *name = code->u.code.name, *last = NULL;
+    if (name) for (const char *p = name; *p; p++) if (p[0] == ':' && p[1] == ':') last = p;
+    return last ? pp_strn(name, (int)(last - name)) : pp_strn("main", 4);
+}
+/* caller: (package, file, line) of the code that called the current sub; caller(N) looks N
+   calls further up and adds (sub name, hasargs, wantarray). Empty list / undef at file level. */
+static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    int64_t up = 0;
+    if (n->a) { pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL); if (I->ctl) { pp_release(v); return pp_undef(); } up = pp_to_int(v); pp_release(v); }
+    struct pp_frame *f = I->frame;
+    while (f && up-- > 0) f = f->up;
+    if (!f) return pp_undef();
+    pp_val pkg = f->caller_code ? code_pkg(f->caller_code) : f->caller_pkg ? pp_cstr(f->caller_pkg) : pp_strn("main", 4);
+    if (!(ctx == CTX_LIST && out)) return pkg;
+    pp_list_push(out, pkg);
+    pp_list_push(out, pp_cstr(f->file ? f->file : "-"));
+    pp_list_push(out, pp_int(f->line));
+    if (n->a) {
+        const char *name = f->code->u.code.name ? f->code->u.code.name : "__ANON__";
+        char buf[200];
+        int len = snprintf(buf, sizeof buf, "%s%s", strstr(name, "::") ? "" : "main::", name);
+        pp_list_push(out, pp_strn(buf, len >= (int)sizeof buf ? (int)sizeof buf - 1 : len));
+        pp_list_push(out, pp_int(1));
+        pp_list_push(out, f->ctx == CTX_LIST ? pp_int(1) : f->ctx == CTX_SCALAR ? pp_strn("", 0) : pp_undef());
+    }
+    return pp_undef();
+}
 /* a glob used as a value is its name: "*main::name" (enough for *a = *b and for printing) */
 static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val nv = pp_eval(I, n->a, CTX_SCALAR, NULL);
@@ -888,7 +917,11 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->cur_code = code;                  /* for `state` variables */
     I->depth++;
     code->refcnt++;
+    struct pp_frame fr = { I->frame, saved_code, I->file_pkg, I->file, code, saved_line, ctx };
+    I->frame = &fr;
     pp_val r = exec_block(I, code->u.code.body, ctx, out);
+    I->frame = fr.up;
+    I->file_pkg = fr.caller_pkg;         /* a `package` statement inside the sub ends with it */
     I->depth--;
     I->cur_code = saved_code;
     if (I->ctl == CTL_RETURN) {
@@ -991,6 +1024,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
 static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
     if (blk->type != N_BLOCK) return pp_eval(I, blk, ctx, out);
     int lh = I->nlocals;
+    const char *saved_pkg = I->file_pkg;
     pp_val r;
     if (blk->flags & 1) {
         pp_env *env = pp_env_new(I->env, blk->aux);
@@ -1003,6 +1037,7 @@ static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         r = exec_stmts(I, blk, ctx, out);
     }
     if (I->nlocals > lh) local_unwind(I, lh);
+    if (blk->flags & PP_BLOCK_PKG) I->file_pkg = saved_pkg;
     return r;
 }
 
@@ -1558,7 +1593,7 @@ static NOINLINE pp_val eval_anonsub(pp_interp *I, pp_node *n, int ctx, pp_list *
     pp_obj *code = pp_obj_new(PP_OCODE);
     code->u.code.body = n->a;
     code->u.code.env = I->env; if (I->env) pp_env_incref(I->env);
-    code->u.code.name = "__ANON__";
+    code->u.code.name = n->sym ? n->sym->name : "__ANON__";   /* "Pkg::__ANON__" outside main */
     pp_val r = pp_ref(code); pp_obj_decref(code);
     return scalar_or_push(ctx, out, r);
 }
@@ -2015,6 +2050,8 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return scalar_or_push(ctx, out, I->call_ctx == CTX_LIST ? pp_int(1) : I->call_ctx == CTX_SCALAR ? pp_int(0) : pp_undef());
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
     case N_GLOB: return eval_glob(I, n, ctx, out);
+    case N_CALLER: return eval_caller(I, n, ctx, out);
+    case N_PACKAGE: I->file_pkg = n->sym ? n->sym->name : NULL; return pp_undef();
     case N_NAMEDBIND: {
         pp_obj *args = current_args(I);
         int got = args ? args->u.arr.n : 0;
@@ -2101,6 +2138,8 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
 
 pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     pp_env *saved = I->env;
+    const char *saved_pkg = I->file_pkg;
+    I->file_pkg = NULL;                  /* every file starts in package main */
     pp_env *env = pp_env_new(NULL, unit->aux);
     I->env = env;
     /* named subs are defined before the unit body runs; they close over the unit scope */
@@ -2132,6 +2171,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     }
     local_unwind(I, lh);
     I->env = saved;
+    I->file_pkg = saved_pkg;
     pp_env_decref(env);
     return last;
 }

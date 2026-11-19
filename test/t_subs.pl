@@ -60,4 +60,36 @@ sub p_opt($;$) { scalar(@_) }
 sub p_under(_) { "u:$_[0]" }
 my $p_anon = sub ($$) { $_[0] * $_[1] };
 print "proto: ", p_two(1, 2), " ", p_code(sub { $_[0] * 2 }, 21), " ", p_opt(1), p_opt(1, 2), " ", p_under("v"), " ", $p_anon->(6, 7), "\n";
+# caller
+sub c_who { my @c = caller; "$c[0] line $c[2]" }
+sub c_scalar { my $p = caller; $p }
+sub c_paren { my ($p, $f, $l) = caller(); "$p:" . ($f =~ /t_subs/ ? "file" : "?") . ":$l" }
+sub c_frame { my @c = caller(0); "$c[3] " . ($c[5] ? "list" : defined $c[5] ? "scalar" : "void") }
+sub c_outer { c_inner() } sub c_inner { my @c = caller(1); my @d = caller 0; "$c[3] > $d[3]" }
+sub c_idx { (caller)[0] . "/" . (caller(0))[3] }
+sub c_none { my @c = caller(5); scalar(@c) }
+print "caller: ", c_who(), " / ", c_scalar(), " / ", c_paren(), "\n";
+my @cf = c_frame(); my $cs = c_frame();
+print "caller frame: $cf[0] / $cs / ", c_outer(), " / ", c_idx(), " / ", c_none(), "\n";
+print "caller top: ", (defined(caller) ? "def" : "undef"), " ", scalar(my @ct = caller), "\n";
+{
+    package CPkg;
+    sub who { my $p = caller; $p }
+    sub call_main { main::c_scalar() }
+    sub via_anon { my $c = sub { (caller(0))[3] . " from " . caller }; $c->() }
+    sub import_like { my $target = caller; no strict 'refs'; *{"${target}::imported"} = sub { "imported into $target" }; }
+    our $at_file_level = main::c_scalar();
+}
+{ package CUser; CPkg::import_like(); our $r = CPkg::who(); }
+print "caller pkg: ", CPkg::who(), " ", CPkg::call_main(), " ", CPkg::via_anon(), " $CPkg::at_file_level $CUser::r ", CUser::imported(), " ", c_scalar(), "\n";
+package CStmt;
+sub probe { my $p = caller; $p }
+my $c_stmt = main::c_scalar();
+package main;
+print "caller stmt: $c_stmt ", CStmt::probe(), " ", c_scalar(), "\n";
+# s,,, など区切り文字がカンマの置換とマッチ
+my $cm = "a/b/c"; (my $cm2 = $cm) =~ s,/,-,g; my $cm3 = $cm; $cm3 =~ s,/[^/]+$,,;
+print "comma delim: $cm2 $cm3 ", ($cm =~ m,^a/, ? "m" : "-"), " ", ($cm !~ m,x, ? "nm" : "-"), " ", join("|", (my $cm4 = $cm) =~ tr,/,,), "\n";
+my %ch = (s => 1, m => 2, y => 3); my @cl = ($ch{s}, $ch{m}, $ch{y});
+print "comma idents: @cl ", join(",", map { $ch{$_} } qw(s m y)), "\n";
 print "done\n";
