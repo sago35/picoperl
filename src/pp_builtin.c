@@ -374,6 +374,8 @@ static pp_val do_split(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         pp_obj_decref(ro); if (pat) pp_str_decref(pat); pp_str_decref(s); pp_list_free(&args); pp_list_free(&res);
         return pp_undef();
     }
+    /* splitting an empty string gives no fields at all, whatever the limit */
+    if (len == 0) { for (int i = 0; i < res.n; i++) pp_release(res.v[i]); res.n = 0; }
     /* remove trailing empty fields when limit == 0 */
     if (limit == 0) while (res.n > 0 && (res.v[res.n - 1].t == PP_UNDEF || (res.v[res.n - 1].t == PP_STR && res.v[res.n - 1].u.s->len == 0))) { pp_release(res.v[res.n - 1]); res.n--; }
     if (ro) pp_obj_decref(ro);

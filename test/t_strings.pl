@@ -55,4 +55,6 @@ indented delimiter $hd_v
 print <<'-- end --';
 symbols in delimiter $hd_v
 -- end --
+# 空文字列の split は、制限数にかかわらず要素なし
+print "split empty: ", join("", map { scalar(@$_) } [split /,/, "", -1], [split /,/, ""], [split ",", "", 5], [split //, ""], [split /,/, "a", -1], [split " ", ""], [split /,/, ",", -1]), "\n";
 print "end\n";
