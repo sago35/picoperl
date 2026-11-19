@@ -269,6 +269,13 @@ reftype refaddr indexed)`、
 ブロックの中では終了コードが **`$?`** に入っていて、書き換えると終了コードが変わります。
 perl と違い、登録されるのは `END` の文に実行が到達したときです (コンパイル時ではありません)。
 
+**`Test::More`** の小さな実装が `test/lib/Test/More.pm` にあります (本家は依存が深くて読み込めないため)。
+ホスト版のテスト用で、uf2 には入りません。ボードで使うときはドライブの `lib/Test/More.pm` にコピーしてください。
+`ok is isnt like unlike cmp_ok is_deeply pass fail can_ok isa_ok new_ok use_ok require_ok
+diag note explain plan done_testing skip todo_skip subtest BAIL_OUT` と `$TODO` が使え、
+TAP の出力、失敗時の診断、終了コードは本家と同じです。本家との違い: `use_ok` は `@EXPORT` の名前だけを
+取り込む、`explain` は簡易表示、`Test::More->builder` (Test::Builder のオブジェクト) は無い。
+
 `=~` / `!~` の直後なら、区切り文字がカンマの `s,a,b,` / `m,a,` / `tr,a,b,` も書けます
 (それ以外の位置の `s,` は、従来どおり識別子 `s` とカンマとして読みます)。
 
