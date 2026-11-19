@@ -66,4 +66,10 @@ my $cmh = <<"EOT";
 heredoc \U$cm\E and \u$ch{k}
 EOT
 print "case mods heredoc: $cmh";
+# substr: 文字列の外にかかる範囲
+{ no warnings;
+  my $se = "";
+  print "substr edges: ", join("|", map { defined $_ ? "[$_]" : "undef" } substr($se, -1), substr("ab", -5), substr("ab", 2), substr("ab", 5), substr("abc", -2),
+      substr("abc", -5, 3), substr("abc", -5), substr("abc", -5, 1), substr("abc", -5, 2), substr("abc", -4, 2), substr("abcdef", -4, -1), substr("abc", 1, 99)), "\n"; }
+print "pid: ", ($$ > 0 ? "positive" : "missing"), " ", ($$ == $$ + 0 ? "numeric" : "odd"), "\n";
 print "end\n";

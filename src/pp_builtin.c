@@ -657,10 +657,22 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         pp_str *s = pp_to_str(sv); pp_release(sv);
         int len = s->len;
         int64_t off = pp_to_int(args.v[0]);
+        int64_t before = 0;                      /* how far a negative offset reaches before the string */
         if (off < 0) off += len;
-        if (off < 0 || off > len) { pp_str_decref(s); pp_list_free(&args); return ret(ctx, out, pp_undef()); }
+        if (off < 0) { before = -off; off = 0; }
+        if (off > len) {                         /* starts past the end: undef, with a warning */
+            if (I->warn_on) pp_warn(I, "substr outside of string");
+            pp_str_decref(s); pp_list_free(&args); return ret(ctx, out, pp_undef());
+        }
         int64_t cnt = args.n > 1 && args.v[1].t != PP_UNDEF ? pp_to_int(args.v[1]) : len - off;
         if (cnt < 0) cnt = len - off + cnt;
+        else if (before && args.n > 1 && args.v[1].t != PP_UNDEF) {
+            cnt -= before;                       /* the part before the string is not there */
+            if (cnt < 0) {                       /* ... and nothing else was asked for */
+                if (I->warn_on) pp_warn(I, "substr outside of string");
+                pp_str_decref(s); pp_list_free(&args); return ret(ctx, out, pp_undef());
+            }
+        }
         if (cnt < 0) cnt = 0;
         if (off + cnt > len) cnt = len - off;
         pp_val r = pp_strn(s->d + off, (int)cnt);
