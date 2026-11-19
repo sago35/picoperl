@@ -236,13 +236,32 @@ reftype refaddr indexed)`、
 **シンボリックリファレンス** (`&{"name"}` `&$name()` `\&{"name"}` `@{"Pkg::x"}` `${"name"}` `%{"name"}`
 `defined &{"name"}`) も使えます。perl と同じく `use strict` の下では
 `Can't use string ("x") as an ARRAY ref while "strict refs" in use` で die し、`no strict 'refs'` で許可されます。
-グロブを値として使う機能 (`\*STDOUT`、`*FH{IO}`、`*x{CODE}`、`local *name`、バレワードのファイルハンドル) は未対応です。
+
+**値としてのグロブ**:
+
+- `\*name` はグロブへのリファレンスです (`ref` は `GLOB`、同じ名前なら同じリファレンス)。
+  `*$ref` / `*{$ref}` で元のグロブに戻り、`${*$ref}` `@{*$ref}` `&{*$ref}()` で中身を取り出せます
+- `*name{SLOT}` (`*$ref{SLOT}`、`*{"Pkg::name"}{CODE}`): `SCALAR` `ARRAY` `HASH` `CODE` `GLOB` はリファレンス
+  (無ければ undef)、`NAME` と `PACKAGE` は名前、`IO` / `FILEHANDLE` はハンドルがあればそのグロブへのリファレンス
+- `local *name;` はスカラー、配列、ハッシュ、サブ、ファイルハンドルをまとめて空にし、スコープを抜けると戻します。
+  `local *name = \&code;` はその 1 つだけを差し替え、`local *name = *other;` は全体を別名にします
+- **bareword のファイルハンドル**: `open(FH, '<', $path)`、`<FH>`、`print FH LIST`、`close(FH)`、`eof(FH)`。
+  `\*FH`、`*FH`、`*FH{IO}` を値として渡せ、`print $fh ...` / `print {$fh} ...` / `<$fh>` / `readline($fh)` で使えます。
+  `open($ref, ...)` に `\*{"Pkg::NAME"}` (`Symbol::gensym` が返すもの) を渡すと、そのグロブにファイルが付きます
+- `\*STDOUT` `\*STDERR` `\*STDIN` も同じように渡せます。`fileno` は標準ハンドルに 0 / 1 / 2、開いているファイルに 3 を返します
+- `open(my $dup, '>&', \*STDOUT)`、`'>&1'`、`'>&='`、`'<&'` はハンドルの複製です。本当の複製ではなく
+  同じハンドルを指すだけなので、バッファは共有で、複製を `close` すると元も閉じます (標準ハンドルは閉じません)
+
+perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `"*main::name"` です (`ref(\$g)` は `SCALAR`)。
+`*name{IO}` は `IO::File` オブジェクトではなくグロブへのリファレンスを返し、ハンドルのメソッド呼び出し
+(`$fh->print(...)`、`STDOUT->autoflush(1)`) は未対応です。パッケージの名前表 (`%Pkg::`) もありません。
+`use strict` の下でも、大文字だけの bareword (`FH`、`LOG2`) はファイルハンドルの名前として通ります
+(perl はハンドルを書ける位置でだけ通すので、打ち間違えた定数名がコンパイルエラーになりません)。
 
 **型グロブへの代入**に対応しています: `*name = \&func;` / `*name = sub {...};` (サブの定義)、
 `*name = \@array;` / `\%hash` / `\$scalar` (変数の別名)、`*a = *b;` (4 種類すべての別名)。
 名前は `*Pkg::name`、`*{"${class}::$name"}`、`*$name` の形でも書けます。
 `BEGIN { *DEBUG = sub () { 0 } }` のように `BEGIN` で定義したものは定数として使えます。
-未対応: 値としてのグロブ (`\*STDOUT`、`*FH{IO}`、`*name{CODE}`)、`local *name`、バレワードのファイルハンドル。
 `}` の直後の `*` は行頭にあるときだけグロブとして読みます (`$h{w} *$x` を乗算として読むため)。
 
 **シンボリックリファレンス** (`&{"name"}`、`\&{"Pkg::name"}`、`@{"Pkg::ISA"}`、`${"name"}`、`%{"name"}`、
@@ -473,7 +492,7 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 `localtime`/`gmtime`、
 `system`/バッククォート、`tie`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)、
-値としての型グロブ (`\*STDOUT` など)。
+ファイルハンドルのメソッド呼び出し (`$fh->print`)、パッケージの名前表 (`%Pkg::`)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 **`%SIG`** は `__WARN__` / `__DIE__` フックと `alarm` + `$SIG{ALRM}` に対応しています
 (perl の safe signals と同じく文の切れ目で配送。未捕捉の ALRM は `Alarm clock` で die)。

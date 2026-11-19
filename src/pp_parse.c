@@ -1815,6 +1815,28 @@ static pp_node *parse_cast_target(pp_parser *P) {
     return NULL;
 }
 
+/* FH, STDERR, MY_LOG2: the way file handles are written as barewords */
+static int is_handle_name(const char *id, int len) {
+    if (len < 1 || !isupper((unsigned char)id[0])) return 0;
+    for (int i = 0; i < len; i++) if (!isupper((unsigned char)id[i]) && !isdigit((unsigned char)id[i]) && id[i] != '_') return 0;
+    return 1;
+}
+/* the glob name of a bareword handle as a constant: "*Pkg::FH" */
+static pp_node *handle_const(pp_parser *P, const char *id, int len) {
+    char buf[264];
+    int std = (len == 5 && !memcmp(id, "STDIN", 5)) || (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6)));
+    int n = pp_snprintf(buf, sizeof buf, "*%s::%.*s", std ? "main" : P->pkg, len, id);
+    return const_str(P, buf, n);
+}
+/* after *name: a {SLOT} subscript makes it *name{SLOT} */
+static pp_node *glob_slot(pp_parser *P, pp_node *g) {
+    if (!cur_is_op(P, "{") || P->cur.space_before) return g;
+    advance(P);
+    pp_node *n = node(P, N_GLOBSLOT); n->a = g; n->b = parse_hash_key(P);
+    expect_op(P, "}");
+    return parse_postfix(P, n);
+}
+
 static pp_node *decl_var(pp_parser *P, int kind, char sigil, const char *name, int len) {
     if (kind == 'm' || kind == 's') return mkvar_decl(P, sigil, name, len);
     if (kind == 'o') { pp_node *v = node(P, N_VAR); v->sym = declare_our(P, sigil, name, len); return v; }
@@ -2064,11 +2086,12 @@ static pp_node *parse_term(pp_parser *P) {
             pp_node *g = node(P, N_GLOB);
             char buf[256]; int bl;
             if (len > 6 && !memcmp(name, "main::", 6)) { name += 6; len -= 6; }
-            if (has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = pp_snprintf(buf, sizeof buf, "%.*s", len, name);
+            int std = (len == 5 && !memcmp(name, "STDIN", 5)) || (len == 6 && (!memcmp(name, "STDOUT", 6) || !memcmp(name, "STDERR", 6)));
+            if (std || has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = pp_snprintf(buf, sizeof buf, "%.*s", len, name);
             else bl = pp_snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
             g->b = NULL;
             g->a = const_str(P, buf, bl);
-            return g;
+            return glob_slot(P, g);
         }
         if (sigil == '$') return parse_scalar_var_subscript(P, name, len);
         if (sigil == '@') {
@@ -2106,7 +2129,7 @@ static pp_node *parse_term(pp_parser *P) {
             return av;
         }
         if (!strcmp(op, "%")) { pp_node *inner = parse_cast_target(P); pp_node *hv = node(P, N_RV2HV); hv->a = inner; return hv; }
-        if (!strcmp(op, "*")) { pp_node *inner = parse_cast_target(P); pp_node *g = node(P, N_GLOB); g->a = inner; return g; }
+        if (!strcmp(op, "*")) { pp_node *inner = parse_cast_target(P); pp_node *g = node(P, N_GLOB); g->a = inner; return glob_slot(P, g); }
         if (!strcmp(op, "$#")) { pp_node *inner = parse_cast_target(P); pp_node *av = node(P, N_RV2AV); av->a = inner; pp_node *n = node(P, N_LASTIDX); n->a = av; return n; }
         if (!strcmp(op, "&")) {
             pp_node *inner = parse_cast_target(P);
@@ -2149,6 +2172,12 @@ static pp_node *parse_term(pp_parser *P) {
         if (!strcmp(t->op, "<")) {
             advance(P);
             if (cur_is_ident(P, "STDIN")) { advance(P); expect_op(P, ">"); pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL); return n; }
+            if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len) && is_op(peek(P), ">")) {   /* <FH> */
+                pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL);
+                node_add(n, handle_const(P, P->cur.s, P->cur.len));
+                advance(P); expect_op(P, ">");
+                return n;
+            }
             perr(P, "syntax error near '<'");
         }
         if (!strcmp(t->op, "-") || !strcmp(t->op, "!") || !strcmp(t->op, "\\") || !strcmp(t->op, "+") || !strcmp(t->op, "~") || !strcmp(t->op, "++") || !strcmp(t->op, "--")) return parse_unary(P);
@@ -2264,6 +2293,12 @@ static pp_node *parse_ident_term(pp_parser *P) {
                 pp_node *n = node(P, N_LOCALELEM); n->a = e;
                 return n;
             }
+        }
+        if ((P->cur.type == T_VAR && P->cur.sigil == '*') || (P->cur.type == T_CAST && !strcmp(P->cur.op, "*"))) {
+            pp_node *g = parse_term(P);              /* local *name / local *{"name"} / local *$ref */
+            if (g->type != N_GLOB) perr(P, "Can't localize this kind of expression");
+            pp_node *n = node(P, N_LOCALGLOB); n->a = g;
+            return n;
         }
         return parse_var_decl_list(P, 'l');
     }
@@ -2454,6 +2489,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
                     pp_node *fh = node(P, N_FILEHANDLE); fh->op = P->cur.s[3] == 'O' ? 1 : 2; n->a = fh; advance(P);
                 }
             }
+            else if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len)
+                     && !is_declared(P, sym_sigil(P, '&', P->cur.s, P->cur.len))) {
+                /* print FH LIST / print FH; -- not `print FH, ...` (a list) or FH->method */
+                pp_tok *nx2 = peek(P);
+                int binop = nx2->type == T_OP && strcmp(nx2->op, "(") && strcmp(nx2->op, ";") && strcmp(nx2->op, ")") && strcmp(nx2->op, "\\")
+                            && strcmp(nx2->op, "-") && strcmp(nx2->op, "[") && strcmp(nx2->op, "<") && strcmp(nx2->op, "!") && strcmp(nx2->op, "}");
+                if (!binop) { n->a = handle_const(P, P->cur.s, P->cur.len); advance(P); }
+            }
             else if (cur_is_op(P, "{")) { advance(P); n->a = parse_expr(P); expect_op(P, "}"); }
             else if (P->cur.type == T_VAR && P->cur.sigil == '$') {
                 /* `print $fh LIST` (no comma): the handle is a plain scalar followed by a value */
@@ -2468,7 +2511,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
             if (parens) expect_op(P, ")");
             return n;
         }
-        if (kind == BK_NOARG) { if (accept_op(P, "(")) expect_op(P, ")"); return parse_postfix(P, n); }
+        if (kind == BK_NOARG) {
+            if (accept_op(P, "(")) {
+                if (len == 8 && !memcmp(id, "readline", 8) && !cur_is_op(P, ")")) node_add(n, parse_expr(P));   /* readline($fh) */
+                expect_op(P, ")");
+            }
+            return parse_postfix(P, n);
+        }
         if (kind == BK_UNARY) {
             if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); return parse_postfix(P, n); }
             if (starts_term(P) && !(cur_is_op(P, "<") && !tok_is_ident(peek(P), "STDIN"))) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
@@ -2511,6 +2560,10 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     n->flags |= 1;   /* bareword: call sub if it exists at runtime, else string */
     if (!has_pkg_sep(id, len)) n->flags |= 4;   /* written without a package: the string is the bare name */
+    /* FH, STDIN, DATA ...: a bareword in capitals is a file handle (the glob *FH), unless it is
+       a class name (FOO->new) or a hash key (FOO => 1) */
+    /* (without strict subs it stays the string "FH", which names the same handle) */
+    if (scope_top(P)->strict_subs && is_handle_name(id, len) && !cur_is_op(P, "->") && !cur_is_op(P, "=>")) { n->flags |= 8; return n; }
     if (scope_top(P)->strict_subs && !cur_is_op(P, "->") && !has_pkg_sep(id, len))
         perr(P, "Bareword \"%.*s\" not allowed while \"strict subs\" in use", len, id);
     return parse_postfix(P, n);

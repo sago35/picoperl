@@ -144,6 +144,7 @@ static const char *ref_name(pp_obj *o) {
     case PP_OCODE:  return "CODE";
     case PP_OREGEX: return "Regexp";
     case PP_OFILE:  return "GLOB";
+    case PP_OGLOB:  return "GLOB";
     default:
         if (o->u.scalar.t == PP_REF) return "REF";
         return "SCALAR";
@@ -354,6 +355,10 @@ static void obj_free(pp_obj *o) {
         break;
     case PP_OFILE:
         if (o->u.file.fp) pp_host_fclose(o->u.file.fp);
+        break;
+    case PP_OGLOB:
+        pp_release(o->u.glob.name);
+        if (o->u.glob.io) pp_obj_decref(o->u.glob.io);
         break;
     }
     free(o);
@@ -597,6 +602,16 @@ pp_obj *pp_global(pp_interp *I, pp_sym *s) {
     s->gcell = cell_for_sigil(s->name[0]);
     globals_push(I->globals, s->gcell);
     return s->gcell;
+}
+pp_obj *pp_glob_obj(pp_interp *I, pp_sym *gsym) {
+    if (gsym->gcell) return gsym->gcell;
+    pp_obj *g = pp_obj_new(PP_OGLOB);
+    char buf[264];
+    int n = pp_snprintf(buf, sizeof buf, "*%s%s", strstr(gsym->name, "::") ? "" : "main::", gsym->name + 1);
+    g->u.glob.name = pp_strn(buf, n);
+    gsym->gcell = g;
+    globals_push(I->globals, g);
+    return g;
 }
 void pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell) {
     cell->refcnt++;

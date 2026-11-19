@@ -85,6 +85,10 @@ pp_val   pp_die_val(pp_interp *I, pp_val msg);
 int      pp_builtin_id(const char *name, int len, int *kind);
 void     pp_core_natives_register(pp_interp *I);   /* builtin:: functions */
 void     pp_env_grow(pp_env *e, int nslots);        /* make room for at least nslots cells */
+/* the object behind \*name (gsym: the interned "*name"); created on first use */
+pp_obj *pp_glob_obj(pp_interp *I, pp_sym *gsym);
+/* the interned "*name" for a glob written as a string: "FH", "main::FH", "*main::FH" */
+pp_sym *pp_glob_named(pp_interp *I, const char *name);
 /* snprintf that returns the number of characters actually stored (at most cap - 1), so the
    result can be used as a length even when the text was cut */
 int      pp_snprintf(char *buf, size_t cap, const char *fmt, ...);

@@ -52,7 +52,7 @@ struct pp_list {
     int n, cap;
 };
 
-enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE, PP_OREGEX, PP_OFILE };
+enum { PP_OSCALAR = 0, PP_OARRAY, PP_OHASH, PP_OCODE, PP_OREGEX, PP_OFILE, PP_OGLOB };
 
 typedef struct pp_hent {
     char    *key;
@@ -83,6 +83,9 @@ struct pp_obj {
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
         struct { void *fp; uint8_t writable; } file;   /* PP_OFILE (open my $fh, ...) */
+        /* PP_OGLOB: what \*name points to, one per name. name: the string "*main::name" (the
+           value of *name itself stays that string); io: the file opened under this name */
+        struct { pp_val name; pp_obj *io; } glob;
     } u;
 };
 
@@ -206,6 +209,8 @@ enum {
                        Only file-level code needs it (subs know their package from their name). */
     N_GLOB,         /* typeglob *name / *{expr}: a: name expr (static names are a const, already
                        package-qualified), b: current package (const) for a dynamic name outside main */
+    N_GLOBSLOT,     /* *name{SLOT}: a: the N_GLOB, b: slot name expr (CODE, SCALAR, IO, NAME ...) */
+    N_LOCALGLOB,    /* local *name: a: the N_GLOB */
     N_TRY,          /* a: try block, b: catch block (starts with `my $e = <caught>`), c: finally block or NULL */
     N_TRYERR,       /* leaf: the error caught by the enclosing try (copied into the catch variable) */
     N_NAMEDBIND,    /* named signature params (5.44): op: first pair index, a: sub name (const str),
@@ -301,7 +306,7 @@ struct pp_interp {
     pp_obj  *lv_hold;            /* keeps a container alive while an lvalue slot is in use */
     /* `local` save stack. kind 0: a scalar cell. kind 1/2: one hash / array element of `cell`
        (key / idx), where `existed` says whether a hash key was there before. */
-    struct { pp_obj *cell; pp_val saved; pp_str *key; int idx; uint8_t kind, existed; } *locals; int nlocals, caplocals;
+    struct { pp_obj *cell; pp_val saved; pp_str *key; pp_sym *sym; int idx; uint8_t kind, existed; } *locals; int nlocals, caplocals;
     pp_obj  *unit_env_holder;
     /* symbols frequently needed */
     pp_sym  *sym_args;           /* @_ */

@@ -140,4 +140,35 @@ print "loop closures: ", join(",", map { $_->() } @subs), "\n";
 { package Inner; sub where { __PACKAGE__ } }
 sub outer_where { package Other; __PACKAGE__ }
 print "package scope: ", __PACKAGE__, " ", Inner::where(), " ", outer_where(), " ", __PACKAGE__, "\n";
+# グロブへのリファレンス
+our $gr_v = 5; our @gr_v = (1, 2); sub gr_v { "sub" }
+{
+    no strict 'refs';
+    my $r = \*gr_v;
+    print "glob ref: ", ref($r), " ", ($r =~ /^GLOB\(0x[0-9a-f]+\)$/ ? "GLOB(0x..)" : "other"), " ", ${*$r}, " @{*$r} ", &{*$r}(), " ", *{$r}, " ",
+        $$r, " ", (\*gr_v == $r ? "same" : "differs"), " ", ref(\*{"main::gr_v"}), "\n";
+}
+# *name{SLOT}
+{
+    no strict 'refs';
+    my $r = \*gr_v; my $t = "ARRAY";
+    print "slots: ", ${*gr_v{SCALAR}}, " @{*gr_v{ARRAY}} ", *gr_v{CODE}->(), " ", (defined *gr_v{HASH} ? "hash" : "no hash"), " ", *gr_v{PACKAGE}, " ", *gr_v{NAME}, " ",
+        ref(*gr_v{GLOB}), " ", (defined *STDOUT{IO} ? "io" : "no io"), " ", (defined *gr_v{IO} ? "io" : "no io"), " @{*$r{ARRAY}} @{*{$r}{$t}} ",
+        (defined(*{$r}{FORMAT}) ? 1 : 0), " ", *{"main::gr_v"}{CODE}->(), " ", *Some::pkg_var{PACKAGE}, " ", *Some::pkg_var{NAME}, "\n";
+}
+# local *name
+our @lg = (1); our $lg = 2; our @lg2 = (8, 9);
+sub lg { "orig" } sub lg_other { "other" }
+sub lg_empty  { local *lg; "[@lg][" . (defined $lg ? $lg : "undef") . "]" . (defined &lg ? "sub" : "nosub") }
+sub lg_scalar { local *lg = \7; "[@lg][$lg]" . lg() }
+sub lg_code   { local *lg = sub { "anon" }; "[@lg][$lg]" . lg() }
+sub lg_named  { local *lg = \&lg_other; lg() }
+sub lg_later  { local *lg; *lg = \7; "[@lg][$lg]" }
+sub lg_glob   { local *lg = *lg2; "[@lg]" }
+sub lg_gref   { local *lg = \*lg2; push @lg, 1; "[@lg]" }
+sub lg_args   { local *lg = \@_; "[@lg]" }
+sub lg_new    { local *lg_never = sub { "n" }; lg_never() }
+print "local glob: ", lg_empty(), " ", lg_scalar(), " ", lg_code(), " ", lg_named(), " ", lg_later(), " ", lg_glob(), " ", lg_gref(), " ", lg_args(4, 5), " ", lg_new(), "\n";
+eval { local *lg = sub { "in eval" }; die "x\n" };
+print "restored: [@lg][$lg] ", lg(), " [@lg2] ", (defined &lg_never ? "leaked" : "gone"), "\n";
 print "done\n";

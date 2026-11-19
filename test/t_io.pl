@@ -85,4 +85,34 @@ my @pw_none = getpwnam("no_such_user_xyz_123"); my $pw_none = getpwnam("no_such_
 my @pw_root = getpwuid(0); my $pw_name = getpwuid(0); my $pw_uid = getpwnam($pw_name);
 my @gr_none = getgrnam("no_such_group_xyz_123"); my @gr_zero = getgrgid(0);
 print "passwd: ", scalar(@pw_none), " ", (defined $pw_none ? "def" : "undef"), " ", scalar(@pw_root), " ", ($pw_root[0] eq $pw_name ? "same name" : "differs"), " uid=$pw_uid $pw_root[2] / group: ", scalar(@gr_none), " ", scalar(@gr_zero), " gid=$gr_zero[2]\n";
+# bareword のファイルハンドル
+open(BW, '>', 'test/io_tmp.txt') or die "open: $!";
+print BW "a\n"; printf BW "%s\n", "b"; print {*BW} "c\n"; print {\*BW} "d\n";
+{ my $g = \*BW; print $g "e\n"; print {$g} "f\n"; }
+close(BW);
+open(BW, '<', 'test/io_tmp.txt') or die "open: $!";
+{ my $first = <BW>; chomp $first; my @rest = <BW>; print "bareword handle: $first ", scalar(@rest), " ", (eof(BW) ? "eof" : "more"), "\n"; }
+close BW;
+open(BW, '<', 'test/io_tmp.txt') or die;
+{ my $all = ""; while (<BW>) { chomp; $all .= "[$_]" } print "while (<BW>): $all\n"; }
+close(BW);
+# ハンドルを値として渡す: \*FH、*FH、*FH{IO}、文字列に入ったグロブ
+sub io_line { my $fh = shift; my $l = <$fh>; chomp $l; $l }
+open(BW, '<', 'test/io_tmp.txt') or die;
+print "passing a handle: ", io_line(\*BW), io_line(*BW), io_line(*BW{IO}), " ", scalar(readline(BW)) =~ /^d/ ? "readline(BW)" : "?", "\n";
+{ local *BW; open(BW, '<', 'test/io_tmp.txt') or die; print "local *BW: ", io_line(\*BW), "\n"; close BW; }
+print "after the scope: ", io_line(\*BW), " ", (defined *BW{IO} ? "io" : "no io"), " ", (defined *BW_NEVER{IO} || defined *BW_NEVER{IO} ? "io" : "no io"), "\n";
+close BW;
+{ no strict 'refs'; my $sym = \*{"IoGen::H1"}; open($sym, '<', 'test/io_tmp.txt') or die; print "glob ref as handle: ", ref($sym), " ", io_line($sym), "\n"; close($sym); }
+# 標準ハンドル
+{
+    my $o = \*STDOUT; my $s = *STDOUT; my %h = (out => \*STDOUT);
+    print $o "std: ref "; print {$o} "block "; print $s "glob "; print {*STDOUT} "star "; print {*STDOUT{IO}} "io "; print { $h{out} } "hash\n";
+    print "fileno: ", fileno(STDIN), fileno(STDOUT), fileno(STDERR), fileno($o), " ", (defined fileno(BW) ? "open" : "closed"), "\n";
+    $| = 1;      # perl の複製は別のバッファを持つので、順番が決まるように毎回書き出す
+    open(my $dup, ">&", \*STDOUT) or die "dup: $!"; print $dup "dup of STDOUT\n"; close($dup);
+    open(my $dup2, ">&" . fileno(STDOUT)) or die "dup: $!"; print {$dup2} "dup by number\n"; close($dup2);
+    print "still open after close(\$dup)\n";
+}
+{ package IoPkg; print "std handles belong to main: ", *STDOUT, " ", *STDERR{PACKAGE}, "\n"; }
 

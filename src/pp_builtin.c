@@ -398,10 +398,36 @@ static void set_errno_var(pp_interp *I, const char *msg) {
     c->u.scalar = pp_cstr(msg);
 }
 
+/* What a value names as a file handle: a handle from open(my $fh ...), a glob (\*FH, *FH,
+   "FH") with a file opened under it, or a standard handle. Returns the file (borrowed) and
+   sets *fd to -1; or NULL with *fd = 0 / 1 / 2 for STDIN / STDOUT / STDERR; or NULL and
+   *fd = -1 when it is no handle at all. */
+static pp_obj *handle_of(pp_interp *I, pp_val v, int *fd) {
+    *fd = -1;
+    pp_sym *gs = NULL;
+    if (v.t == PP_REF && v.u.o->kind == PP_OFILE) return v.u.o;
+    if (v.t == PP_REF && v.u.o->kind == PP_OGLOB) gs = pp_glob_named(I, v.u.o->u.glob.name.u.s->d);
+    else if (v.t == PP_INT && (v.u.i == 1 || v.u.i == 2)) { *fd = (int)v.u.i; return NULL; }   /* STDOUT / STDERR written out */
+    else if (v.t == PP_STR && v.u.s->len > 0) gs = pp_glob_named(I, v.u.s->d);
+    if (!gs) return NULL;
+    if (gs->gcell && gs->gcell->kind == PP_OGLOB && gs->gcell->u.glob.io) return gs->gcell->u.glob.io;
+    if (!strcmp(gs->name, "*STDIN")) *fd = 0;
+    else if (!strcmp(gs->name, "*STDOUT")) *fd = 1;
+    else if (!strcmp(gs->name, "*STDERR")) *fd = 2;
+    return NULL;
+}
 /* evaluated argument -> the PP_OFILE object (borrowed) or NULL + die */
 static pp_obj *file_of(pp_interp *I, pp_val v, const char *what) {
-    if (v.t == PP_REF && v.u.o->kind == PP_OFILE) return v.u.o;
+    int fd;
+    pp_obj *f = handle_of(I, v, &fd);
+    if (f) return f;
     pp_die(I, "%s: not a filehandle (expected a handle from open)", what);
+    return NULL;
+}
+/* the glob a value names, for open(FH, ...) / open($globref, ...): NULL if it is none */
+static pp_obj *glob_of(pp_interp *I, pp_val v) {
+    if (v.t == PP_REF && v.u.o->kind == PP_OGLOB) return v.u.o;
+    if (v.t == PP_STR && v.u.s->len > 1 && v.u.s->d[0] == '*') return pp_glob_obj(I, pp_glob_named(I, v.u.s->d));
     return NULL;
 }
 
@@ -432,10 +458,63 @@ static void check_irs(pp_interp *I) {
 
 static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     if (n->n < 2) return pp_die(I, "Not enough arguments for open");
-    pp_val *slot = pp_lvalue(I, n->list[0]);
-    if (!slot) return pp_undef();
+    /* open(FH, ...), open(*FH, ...), open(\*FH, ...): the file goes under that name */
+    pp_node *hn = n->list[0];
+    int named = hn->type == N_CALL || hn->type == N_CONST || hn->type == N_GLOB || hn->type == N_REF || hn->type == N_GLOBSLOT;
+    pp_obj *glob = NULL;
+    pp_val *slot = NULL;
+    if (named) {
+        pp_val hv = pp_eval(I, hn, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(hv); return pp_undef(); }
+        glob = glob_of(I, hv);
+        if (!glob && hv.t == PP_STR && hv.u.s->len > 0) glob = pp_glob_obj(I, pp_glob_named(I, hv.u.s->d));
+        pp_release(hv);
+        if (!glob) return pp_die(I, "Bad filehandle in open");
+    } else {
+        slot = pp_lvalue(I, hn);
+        if (!slot) return pp_undef();
+        glob = glob_of(I, *slot);          /* open($sym, ...) with a glob (Symbol::gensym) in $sym */
+    }
+    /* (a glob lives as long as the interpreter, so it needs no reference held here) */
     pp_list args = {0};
     if (!eval_args(I, n, 1, &args)) { pp_list_free(&args); return pp_undef(); }
+    {   /* open($dup, ">&", $fh) / open($dup, ">&1") / ">&=", "<&", ">>&": another name for a handle
+           that is already open. There is no real dup: both names share one file. */
+        pp_str *ms = pp_to_str(args.v[0]);
+        const char *m = ms->d;
+        while (*m == ' ') m++;
+        if (*m == '+') m++;
+        if (*m == '>' && m[1] == '>') m++;
+        int isdup = (*m == '>' || *m == '<') && m[1] == '&';
+        if (isdup) {
+            m += 2; if (*m == '=') m++;
+            while (*m == ' ') m++;
+            pp_val target = args.n > 1 ? pp_copy(args.v[1]) : pp_cstr(m);
+            int fd = -1;
+            pp_obj *file = NULL;
+            if (target.t != PP_REF) {              /* a file number, or a handle's name */
+                pp_str *ts = pp_to_str(target);
+                if (ts->len == 1 && ts->d[0] >= '0' && ts->d[0] <= '2') fd = ts->d[0] - '0';
+                else file = handle_of(I, target, &fd);
+                pp_str_decref(ts);
+            } else file = handle_of(I, target, &fd);
+            pp_val nv = pp_undef();
+            if (file) nv = pp_ref(file);
+            else if (fd >= 0) nv = pp_ref(pp_glob_obj(I, pp_glob_named(I, fd == 0 ? "STDIN" : fd == 1 ? "STDOUT" : "STDERR")));
+            pp_release(target); pp_str_decref(ms); pp_list_free(&args);
+            if (nv.t == PP_UNDEF) { set_errno_var(I, "Bad file descriptor"); return ret(ctx, out, pp_undef()); }
+            if (glob) {
+                if (file) { file->refcnt++; if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io); glob->u.glob.io = file; }
+                pp_release(nv);
+                return ret(ctx, out, pp_int(1));
+            }
+            slot = pp_lvalue(I, n->list[0]);
+            if (!slot) { pp_release(nv); return pp_undef(); }
+            pp_release(*slot); *slot = nv;
+            return ret(ctx, out, pp_int(1));
+        }
+        pp_str_decref(ms);
+    }
     if (args.n < 2) {
         if (!(I->compat_warn & 8)) { I->compat_warn |= 8; pp_warn(I, "picoperl: 2-argument open is not supported, use open(my $fh, '<', $path)"); }
         set_errno_var(I, "2-argument open is not supported");
@@ -467,6 +546,11 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_obj *o = pp_obj_new(PP_OFILE);
     o->u.file.fp = fp;
     o->u.file.writable = (uint8_t)(base[0] != 'r' || base[1] == '+');
+    if (glob) {
+        if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io);
+        glob->u.glob.io = o;
+        return ret(ctx, out, fp ? pp_int(1) : pp_undef());
+    }
     slot = pp_lvalue(I, n->list[0]);
     if (!slot) { pp_obj_decref(o); return pp_undef(); }
     pp_release(*slot);
@@ -481,16 +565,18 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
     if (n->a) {
         pp_val f = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) return pp_undef();
-        if (f.t == PP_REF && f.u.o->kind == PP_OFILE) {
-            fh = f.u.o; pp_obj_incref(fh); pp_release(f);
+        int hfd;
+        pp_obj *hf = handle_of(I, f, &hfd);
+        if (hf) {
+            fh = hf; pp_obj_incref(fh); pp_release(f);
             if (!fh->u.file.fp) {
                 if (I->warn_on) pp_warn(I, "%s() on closed filehandle", id == B_SAY ? "say" : id == B_PRINTF ? "printf" : "print");
                 pp_obj_decref(fh);
                 return pp_strn("", 0);
             }
         } else {
-            fd = (int)pp_to_int(f); pp_release(f);
-            if (fd != 1 && fd != 2) fd = 1;
+            pp_release(f);
+            fd = hfd == 2 ? 2 : 1;
         }
     }
     pp_list args = {0};
@@ -843,7 +929,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             case PP_OHASH: r = "HASH"; break;
             case PP_OCODE: r = "CODE"; break;
             case PP_OREGEX: r = "Regexp"; break;
-            case PP_OFILE: r = "GLOB"; break;
+            case PP_OFILE: case PP_OGLOB: r = "GLOB"; break;
             default: r = v.u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR"; break;
             }
         }
@@ -1059,8 +1145,21 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         }
         pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
-        pp_obj *f = file_of(I, hv, "readline");
-        if (!f) { pp_release(hv); return pp_undef(); }
+        int hfd;
+        pp_obj *f = handle_of(I, hv, &hfd);
+        if (!f && hfd == 0) {              /* <STDIN> through a glob: readline(*STDIN), <$in> */
+            pp_release(hv);
+            if (ctx == CTX_LIST && out) {
+                for (;;) { char *line = pp_host_read_line(); if (!line) break; pp_list_push(out, pp_cstr(line)); free(line); }
+                return pp_undef();
+            }
+            char *line = pp_host_read_line();
+            if (!line) return ret(ctx, out, pp_undef());
+            pp_val r = pp_cstr(line);
+            free(line);
+            return ret(ctx, out, r);
+        }
+        if (!f) { pp_release(hv); return pp_die(I, "readline: not a filehandle (expected a handle from open)"); }
         if (ctx == CTX_LIST && out) {
             for (;;) { pp_val l = read_fline(f); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
             pp_release(hv);
@@ -1073,8 +1172,10 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_CLOSE: {
         pp_val hv = unary_arg(I, n);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
-        pp_obj *f = file_of(I, hv, "close");
-        if (!f) { pp_release(hv); return pp_undef(); }
+        int hfd;
+        pp_obj *f = handle_of(I, hv, &hfd);
+        if (!f && hfd >= 0) { pp_release(hv); return ret(ctx, out, pp_int(1)); }   /* close(STDOUT): stays open here */
+        if (!f) { pp_release(hv); return pp_die(I, "close: not a filehandle (expected a handle from open)"); }
         int r = f->u.file.fp ? pp_host_fclose(f->u.file.fp) == 0 : 0;
         f->u.file.fp = NULL;
         pp_release(hv);
@@ -1165,7 +1266,7 @@ static pp_val n_bi_reftype(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     case PP_OHASH:  return pp_cstr("HASH");
     case PP_OCODE:  return pp_cstr("CODE");
     case PP_OREGEX: return pp_cstr("REGEXP");
-    case PP_OFILE:  return pp_cstr("GLOB");
+    case PP_OFILE: case PP_OGLOB: return pp_cstr("GLOB");
     default:        return pp_cstr(a->v[0].u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR");
     }
 }
@@ -1188,7 +1289,17 @@ static pp_val n_looks_like_number(pp_interp *I, pp_list *a, int ctx, pp_list *ou
     return pp_looks_like_number(a->v[0].u.s->d, a->v[0].u.s->len) ? pp_int(1) : pp_strn("", 0);
 }
 
+/* fileno(HANDLE): 0 / 1 / 2 for the standard handles, 3 for any other open file, undef otherwise */
+static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    int fd;
+    pp_obj *f = handle_of(I, a->v[0], &fd);
+    if (f) return f->u.file.fp ? pp_int(3) : pp_undef();
+    return fd >= 0 ? pp_int(fd) : pp_undef();
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "fileno", n_fileno);
     pp_register(I, "builtin::ceil", n_bi_ceil);
     pp_register(I, "builtin::floor", n_bi_floor);
     pp_register(I, "builtin::blessed", n_bi_blessed);
