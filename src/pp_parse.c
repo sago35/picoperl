@@ -224,6 +224,14 @@ static void resolve_var(pp_parser *P, pp_node *node, const char *name, int len) 
         }
     }
     node->flags &= ~PP_VAR_LEX;
+    if (strcmp(P->pkg, "main") != 0 && !strstr(node->sym->name, "::") && !is_special_var(node->sym->name[0], name, len)) {
+        /* a plain global is main's, except when this package already has a variable of that
+           name: one imported by `use Module qw($x %h)` (or set as $Pkg::x earlier) */
+        char buf[256];
+        int n = snprintf(buf, sizeof buf, "%c%s::%.*s", node->sym->name[0], P->pkg, len, name);
+        pp_sym *q = n < (int)sizeof buf ? pp_sym_find(P->I, buf, n) : NULL;
+        if (q && q->gcell) node->sym = q;
+    }
     pscope *top = scope_top(P);
     if (top && top->strict_vars && !is_special_var(node->sym->name[0], name, len) && !ours_has(P, node->sym) && !node->sym->gcell)
         perr(P, "Global symbol \"%s\" requires explicit package name (did you forget to declare \"my %s\"?)", node->sym->name, node->sym->name);
@@ -1087,6 +1095,7 @@ static int re_interp_extent(const char *s, int len, int i) {
     }
     else if (s[i] == '$' && isdigit(nx)) { while (j < len && isdigit((unsigned char)s[j])) j++; return j; }
     else if (s[i] == '$' && nx == '&') return j + 1;
+    else if (s[i] == '$' && nx == '^' && j + 1 < len && isupper((unsigned char)s[j+1])) return j + 2;   /* $^O */
     else return 0;
     for (;;) {
         int arrow = (j + 2 < len && s[j] == '-' && s[j+1] == '>' && (s[j+2] == '[' || s[j+2] == '{')) ? 2 : 0;

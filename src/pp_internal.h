@@ -78,6 +78,7 @@ void     pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code);
 pp_val   pp_die_val(pp_interp *I, pp_val msg);
 int      pp_builtin_id(const char *name, int len, int *kind);
 void     pp_core_natives_register(pp_interp *I);   /* builtin:: functions */
+pp_sym  *pp_sym_find(pp_interp *I, const char *name, int len);   /* NULL if not interned */
 pp_obj  *pp_lookup_sub(pp_interp *I, pp_sym *sym);
 /* symbolic reference: the symbol a plain string names when it is used as a reference by node n
    (N_RV2xV / N_CALLREF). NULL after die when n was parsed under strict refs (unless !strict). */

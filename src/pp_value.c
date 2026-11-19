@@ -505,6 +505,14 @@ pp_sym *pp_intern(pp_interp *I, const char *name, int len) {
     return s;
 }
 
+/* like pp_intern, but NULL when the name was never interned (does not create a symbol) */
+pp_sym *pp_sym_find(pp_interp *I, const char *name, int len) {
+    unsigned h = hash_bytes(name, len);
+    for (pp_sym *s = I->syms[h % PP_SYM_BUCKETS]; s; s = s->next)
+        if (s->h == h && strlen(s->name) == (size_t)len && memcmp(s->name, name, len) == 0) return s;
+    return NULL;
+}
+
 pp_env *pp_env_new(pp_env *parent, int nslots) {
     pp_env *e = pp_xmalloc(sizeof(pp_env));
     e->refcnt = 1; e->parent = parent; e->n = nslots; e->cap = nslots; e->is_sub = 0;

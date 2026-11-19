@@ -21,3 +21,9 @@ my @km = ([KC_A, KC_B, MO(1)], [KC_LSFT, KC_C, KC_ENT]);
 print join(",", map { join("/", @$_) } @km), "\n";
 print keycode_value("KC_Z"), " ", keycode_name(0x1D), " ", defined keycode_value("KC_NOPE") ? "def" : "undef", "\n";
 print "done\n";
+# 変数のエクスポート: main が取り込んでいなくても、取り込んだパッケージの中で見える
+{ package VarUser; use strict; use TestVars; use TestVars qw(@list);
+  sub show { "$Table{k} $scalar @list" } sub change { $scalar = "changed"; push @list, 3 } }
+print "var import: ", VarUser::show(), "\n";
+VarUser::change();
+print "var import shares storage: ", VarUser::show(), " / $TestVars::scalar @TestVars::list\n";
