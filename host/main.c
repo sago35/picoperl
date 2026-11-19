@@ -676,6 +676,7 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
     pp_register(I, "chdir", n_chdir);
+    pp_register(I, "Cwd::_chdir", n_chdir);   /* for Cwd::chdir, which replaces the plain name */
     pp_register(I, "chmod", n_chmod); pp_register(I, "chown", n_chown); pp_register(I, "utime", n_utime);
     pp_register(I, "symlink", n_symlink); pp_register(I, "link", n_link); pp_register(I, "readlink", n_readlink);
     pp_register(I, "stat", n_stat); pp_register(I, "lstat", n_lstat);

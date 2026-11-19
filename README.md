@@ -346,7 +346,7 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 
 - `Cwd`: `cwd` `getcwd` `abs_path` `realpath`。ホスト版では OS に問い合わせます (シンボリックリンクも解決)。
   ボードにはカレントディレクトリが無いので `cwd` は常に `/` で、`abs_path` は `.` と `..` を畳むだけです。
-  `chdir` はありません
+  `use Cwd 'chdir'` の `chdir` は組み込みの `chdir` を呼んで `$ENV{PWD}` を合わせます (ボードでは常に失敗)
 
 - `File::Spec` / `File::Spec::Functions`: `catfile` `catdir` `canonpath` `splitpath` `splitdir` `catpath`
   `rel2abs` `abs2rel` `file_name_is_absolute` `no_upwards` `tmpdir` `path` など。本家は OS ごとの実装に

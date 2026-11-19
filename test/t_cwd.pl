@@ -18,3 +18,10 @@ print "missing last part: ", rel(abs_path("test/no_such_file_here")), "\n";
 { package CwdUser; use Cwd; sub where { cwd() } }
 print "in package: ", (CwdUser::where() eq $here ? "same" : "differs"), "\n";
 print "done\n";
+# Cwd::chdir: 移動して $ENV{PWD} を合わせる。失敗したら偽
+{
+    my $start = Cwd::getcwd();
+    print "chdir: ", (Cwd::chdir("test") ? "ok" : "ng"), " ", (Cwd::getcwd() eq "$start/test" ? "moved" : "not moved"), " ", ($ENV{PWD} eq Cwd::getcwd() ? "PWD set" : "PWD stale"), "\n";
+    print "chdir back: ", (Cwd::chdir("..") ? "ok" : "ng"), " ", (Cwd::getcwd() eq $start ? "back" : "lost"), "\n";
+    print "chdir missing: ", (Cwd::chdir("test/no_such_dir") ? "ok" : "ng"), " ", (Cwd::getcwd() eq $start ? "stayed" : "moved"), "\n";
+}

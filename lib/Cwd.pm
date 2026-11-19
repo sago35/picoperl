@@ -6,18 +6,28 @@ package Cwd;
 #
 # ホスト版では OS に問い合わせる。ボードにはカレントディレクトリの概念が無いので、
 # cwd は常に "/" (PICOPERL ドライブの先頭) で、abs_path は "." と ".." を畳むだけになる。
-# 本家との違い: chdir は無い。存在しないパスの abs_path は undef ではなく、畳んだだけのパスを返す。
+# Cwd::chdir は組み込みの chdir を呼んで $ENV{PWD} を更新する (ボードでは常に失敗)。
+# 本家との違い: 存在しないパスの abs_path は undef ではなく、畳んだだけのパスを返す。
 use strict;
 use Exporter 'import';
 our $VERSION = '3.93';
 our @EXPORT    = qw(cwd getcwd fastcwd fastgetcwd);
-our @EXPORT_OK = qw(abs_path fast_abs_path realpath fast_realpath);
+our @EXPORT_OK = qw(chdir abs_path fast_abs_path realpath fast_realpath);
 
 sub getcwd {
     my $d = defined &Cwd::_getcwd ? Cwd::_getcwd() : undef;
     return defined $d ? $d : "/";
 }
 sub cwd        { getcwd() }
+
+# use Cwd 'chdir' で組み込みの chdir を置き換える版。移動できたら $ENV{PWD} を合わせる
+sub chdir {
+    my $dir = @_ ? shift : ($ENV{HOME} // $ENV{LOGDIR});
+    return 0 unless defined $dir && length $dir && defined &Cwd::_chdir;
+    return 0 unless Cwd::_chdir($dir);
+    $ENV{PWD} = getcwd();
+    return 1;
+}
 sub fastcwd    { getcwd() }
 sub fastgetcwd { getcwd() }
 
