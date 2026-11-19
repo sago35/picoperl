@@ -784,11 +784,11 @@ static void run_scripts_forever(void) {
             pp_host_write(2, "picoperl: no main.pl found\n", 26);
             rc = 255;
         } else {
-            n = snprintf(banner, sizeof banner, "picoperl: running %s (heap free %ld bytes)\n", name, heap_free_bytes());
+            n = pp_snprintf(banner, sizeof banner, "picoperl: running %s (heap free %ld bytes)\n", name, heap_free_bytes());
             pp_host_write(1, banner, n);
             rc = pp_run(I, name, src);
             free(src);
-            n = snprintf(banner, sizeof banner, "picoperl: script stopped (heap free %ld bytes)\n", heap_free_bytes());
+            n = pp_snprintf(banner, sizeof banner, "picoperl: script stopped (heap free %ld bytes)\n", heap_free_bytes());
             pp_host_write(1, banner, n);
         }
         current = NULL;
@@ -796,14 +796,14 @@ static void run_scripts_forever(void) {
         board_reset();
 
         if (rc == PP_EXIT_RELOAD) {
-            n = snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
+            n = pp_snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
             pp_host_write(1, banner, n);
             continue;
         }
-        n = snprintf(banner, sizeof banner, "picoperl: script finished (rc=%d); waiting for changes\n", rc);
+        n = pp_snprintf(banner, sizeof banner, "picoperl: script finished (rc=%d); waiting for changes\n", rc);
         pp_host_write(rc ? 2 : 1, banner, n);
         idle_until_reload(rc != 0);
-        n = snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
+        n = pp_snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
         pp_host_write(1, banner, n);
     }
 }
@@ -818,11 +818,11 @@ static void main_on_big_stack(void) {
     while (!tud_cdc_connected() && !time_reached(deadline)) { tud_task(); sleep_us(500); }
 
     char banner[160];
-    int n = snprintf(banner, sizeof banner, "picoperl: drive %s%s\n", fs_ok ? "mounted" : "NOT available (using built-in files)",
+    int n = pp_snprintf(banner, sizeof banner, "picoperl: drive %s%s\n", fs_ok ? "mounted" : "NOT available (using built-in files)",
                      PICOPERL_FS_RESET ? " (recreated from built-in files at every boot)" : "");
     pp_host_write(1, banner, n);
     for (int i = 0; i < pp_embedded_count; i++) {
-        n = snprintf(banner, sizeof banner, "picoperl: built-in file %s (%u bytes)\n", pp_embedded_files[i].name, (unsigned)strlen(pp_embedded_files[i].src));
+        n = pp_snprintf(banner, sizeof banner, "picoperl: built-in file %s (%u bytes)\n", pp_embedded_files[i].name, (unsigned)strlen(pp_embedded_files[i].src));
         pp_host_write(1, banner, n);
     }
 

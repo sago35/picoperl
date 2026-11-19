@@ -71,7 +71,7 @@ static pp_obj *cap_cell(pp_interp *I, int i) {
         if (!I->sym_cap[i]) { char nm[3] = { '$', (char)(i ? '0' + i : '&'), 0 }; I->sym_cap[i] = pp_intern(I, nm, 2); }
         return pp_global(I, I->sym_cap[i]);
     }
-    char nm[16]; int n = snprintf(nm, sizeof nm, "$%d", i);
+    char nm[16]; int n = pp_snprintf(nm, sizeof nm, "$%d", i);
     return pp_global(I, pp_intern(I, nm, n));
 }
 

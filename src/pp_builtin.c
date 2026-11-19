@@ -128,7 +128,7 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
         while (i < flen && strchr("-+ 0#", f[i])) { if (sn < 20) spec[sn++] = f[i]; i++; }
         /* vector flag not supported */
         /* width */
-        if (i < flen && f[i] == '*') { int w = ai < args->n ? (int)pp_to_int(args->v[ai++]) : 0; if (w < 0) { spec[sn++] = '-'; w = -w; } sn += snprintf(spec + sn, sizeof spec - sn, "%d", w); i++; }
+        if (i < flen && f[i] == '*') { int w = ai < args->n ? (int)pp_to_int(args->v[ai++]) : 0; if (w < 0) { spec[sn++] = '-'; w = -w; } sn += pp_snprintf(spec + sn, sizeof spec - sn, "%d", w); i++; }
         else while (i < flen && isdigit((unsigned char)f[i])) { if (sn < 20) spec[sn++] = f[i]; i++; }
         /* precision */
         int has_prec = 0, prec = 0;
@@ -136,7 +136,7 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
             has_prec = 1; i++;
             if (i < flen && f[i] == '*') { prec = ai < args->n ? (int)pp_to_int(args->v[ai++]) : 0; i++; }
             else { while (i < flen && isdigit((unsigned char)f[i])) { prec = prec * 10 + (f[i] - '0'); i++; } }
-            sn += snprintf(spec + sn, sizeof spec - sn, ".%d", prec);
+            sn += pp_snprintf(spec + sn, sizeof spec - sn, ".%d", prec);
         }
         /* length modifiers (ignored) */
         while (i < flen && strchr("hlqLV", f[i])) i++;
@@ -150,19 +150,19 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
         case 'd': case 'i': {
             int64_t v = pp_to_int(arg);
             snprintf(spec + sn, sizeof spec - sn, "lld");
-            bn = snprintf(buf, sizeof buf, spec, (long long)v);
+            bn = pp_snprintf(buf, sizeof buf, spec, (long long)v);
             break;
         }
         case 'u': {
             int64_t v = pp_to_int(arg);
             snprintf(spec + sn, sizeof spec - sn, "llu");
-            bn = snprintf(buf, sizeof buf, spec, (unsigned long long)v);
+            bn = pp_snprintf(buf, sizeof buf, spec, (unsigned long long)v);
             break;
         }
         case 'x': case 'X': case 'o': {
             int64_t v = pp_to_int(arg);
             spec[sn] = 'l'; spec[sn + 1] = 'l'; spec[sn + 2] = conv; spec[sn + 3] = 0;
-            bn = snprintf(buf, sizeof buf, spec, (unsigned long long)v);
+            bn = pp_snprintf(buf, sizeof buf, spec, (unsigned long long)v);
             break;
         }
         case 'b': case 'B': {
@@ -187,7 +187,7 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
         case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': {
             double v = pp_to_num(arg);
             spec[sn] = conv; spec[sn + 1] = 0;
-            bn = snprintf(buf, sizeof buf, spec, v);
+            bn = pp_snprintf(buf, sizeof buf, spec, v);
             break;
         }
         case 'c': {
@@ -199,7 +199,7 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
             else { tmp[tn++] = (char)(0xF0 | (v >> 18)); tmp[tn++] = (char)(0x80 | ((v >> 12) & 0x3F)); tmp[tn++] = (char)(0x80 | ((v >> 6) & 0x3F)); tmp[tn++] = (char)(0x80 | (v & 0x3F)); }
             tmp[tn] = 0;
             spec[sn] = 's'; spec[sn + 1] = 0;
-            bn = snprintf(buf, sizeof buf, spec, tmp);
+            bn = pp_snprintf(buf, sizeof buf, spec, tmp);
             break;
         }
         case 's': {
@@ -217,7 +217,7 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
         }
         default:
             spec[sn] = conv; spec[sn + 1] = 0;
-            bn = snprintf(buf, sizeof buf, "%s", spec);
+            bn = pp_snprintf(buf, sizeof buf, "%s", spec);
             ai--;
             break;
         }
@@ -642,7 +642,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (r->len == 0) { pp_str_decref(r); r = pp_str_new(n->op == B_DIE ? "Died" : "Warning: something's wrong", n->op == B_DIE ? 4 : 26); }
         msg = pp_str_val(r);
         if (n->op == B_DIE) return pp_die_val(I, msg);
-        if (r->d[r->len - 1] != '\n') { char tail[160]; int tn = snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line); str_append(&r, tail, tn); }
+        if (r->d[r->len - 1] != '\n') { char tail[160]; int tn = pp_snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line); str_append(&r, tail, tn); }
         pp_emit_warning(I, r->d, r->len);
         pp_release(msg);
         return ret(ctx, out, pp_int(1));

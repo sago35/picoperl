@@ -242,7 +242,7 @@ static void resolve_var(pp_parser *P, pp_node *node, const char *name, int len) 
         /* a plain global is main's, except when this package already has a variable of that
            name: one imported by `use Module qw($x %h)` (or set as $Pkg::x earlier) */
         char buf[256];
-        int n = snprintf(buf, sizeof buf, "%c%s::%.*s", node->sym->name[0], P->pkg, len, name);
+        int n = pp_snprintf(buf, sizeof buf, "%c%s::%.*s", node->sym->name[0], P->pkg, len, name);
         pp_sym *q = n < (int)sizeof buf ? pp_sym_find(P->I, buf, n) : NULL;
         if (q && q->gcell) node->sym = q;
     }
@@ -816,14 +816,14 @@ static int cur_is_ident(pp_parser *P, const char *id) { return tok_is_ident(&P->
 
 static void tok_desc(pp_tok *t, char *buf, int cap) {
     switch (t->type) {
-    case T_EOF: snprintf(buf, cap, "end of file"); break;
-    case T_NUM: snprintf(buf, cap, "number"); break;
-    case T_STR: case T_ISTR: case T_QW: snprintf(buf, cap, "string"); break;
-    case T_PAT: snprintf(buf, cap, "pattern"); break;
-    case T_READLINE: snprintf(buf, cap, "<$fh>"); break;
-    case T_IDENT: snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
-    case T_VAR: snprintf(buf, cap, "'%c%.*s'", t->sigil == '#' ? '$' : t->sigil, t->len, t->s); break;
-    default: snprintf(buf, cap, "'%s'", t->op); break;
+    case T_EOF: pp_snprintf(buf, cap, "end of file"); break;
+    case T_NUM: pp_snprintf(buf, cap, "number"); break;
+    case T_STR: case T_ISTR: case T_QW: pp_snprintf(buf, cap, "string"); break;
+    case T_PAT: pp_snprintf(buf, cap, "pattern"); break;
+    case T_READLINE: pp_snprintf(buf, cap, "<$fh>"); break;
+    case T_IDENT: pp_snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
+    case T_VAR: pp_snprintf(buf, cap, "'%c%.*s'", t->sigil == '#' ? '$' : t->sigil, t->len, t->s); break;
+    default: pp_snprintf(buf, cap, "'%s'", t->op); break;
     }
 }
 static void expect_op(pp_parser *P, const char *op) {
@@ -857,7 +857,7 @@ static pp_sym *sym_sigil(pp_parser *P, char sigil, const char *name, int len) {
     }
     else if (strcmp(P->pkg, "main") != 0) {
         if (sigil == '&') {
-            int n = snprintf(buf, sizeof buf, "&%s::%.*s", P->pkg, len, name);
+            int n = pp_snprintf(buf, sizeof buf, "&%s::%.*s", P->pkg, len, name);
             return pp_intern(P->I, buf, n);
         }
         for (int i = 0; i < P->nours; i++)
@@ -895,7 +895,7 @@ static pp_node *mkvar_decl(pp_parser *P, char sigil, const char *name, int len) 
 static pp_sym *declare_our(pp_parser *P, char sigil, const char *name, int len) {
     if (strcmp(P->pkg, "main") == 0 || has_pkg_sep(name, len)) { pp_sym *q = sym_sigil(P, sigil, name, len); ours_add(P, q); return q; }
     char buf[256];
-    int n = snprintf(buf, sizeof buf, "%c%s::%.*s", sigil, P->pkg, len, name);
+    int n = pp_snprintf(buf, sizeof buf, "%c%s::%.*s", sigil, P->pkg, len, name);
     pp_sym *q = pp_intern(P->I, buf, n);
     if (P->nours == P->capours) {
         P->capours = P->capours ? P->capours * 2 : 8;
@@ -2048,8 +2048,8 @@ static pp_node *parse_term(pp_parser *P) {
             pp_node *g = node(P, N_GLOB);
             char buf[256]; int bl;
             if (len > 6 && !memcmp(name, "main::", 6)) { name += 6; len -= 6; }
-            if (has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = snprintf(buf, sizeof buf, "%.*s", len, name);
-            else bl = snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
+            if (has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = pp_snprintf(buf, sizeof buf, "%.*s", len, name);
+            else bl = pp_snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
             g->b = NULL;
             g->a = const_str(P, buf, bl);
             return g;
@@ -2251,7 +2251,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         advance(P);
         pp_node *n = node(P, N_ANONSUB);
         if (strcmp(P->pkg, "main") != 0) {   /* its name, for caller: "Pkg::__ANON__" */
-            char an[128]; int al = snprintf(an, sizeof an, "%s::__ANON__", P->pkg);
+            char an[128]; int al = pp_snprintf(an, sizeof an, "%s::__ANON__", P->pkg);
             n->sym = pp_intern(P->I, an, al);
         }
         int save = P->in_sub, save_state = P->state_n;
@@ -2345,7 +2345,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
             advance(P);
             if (part[0] < 5 || (part[0] == 5 && (part[1] < 44 || (part[1] == 44 && part[2] == 0)))) return const_int(P, 1);
             char msg[96];
-            int ml = snprintf(msg, sizeof msg, "Perl v%ld.%ld.%ld required--this is only v5.44.0, stopped", part[0], part[1], part[2]);
+            int ml = pp_snprintf(msg, sizeof msg, "Perl v%ld.%ld.%ld required--this is only v5.44.0, stopped", part[0], part[1], part[2]);
             pp_node *d = node(P, N_BUILTIN); d->op = (uint8_t)pp_builtin_id("die", 3, NULL);
             node_add(d, const_str(P, msg, ml));
             return d;
@@ -2461,7 +2461,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         /* a native registered without a package (chdir) works like a builtin: every package
            calls the one in main, unless it defines a sub of that name itself */
         char buf[128];
-        int bn = snprintf(buf, sizeof buf, "&%.*s", len, id);
+        int bn = pp_snprintf(buf, sizeof buf, "&%.*s", len, id);
         pp_sym *m = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
         int local_decl = 0;
         for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) local_decl = 1;
@@ -2635,7 +2635,7 @@ static pp_node *parse_use(pp_parser *P) {
         if (cur_is_ident(P, "utf8") && !(P->I->compat_warn & 1)) {
             P->I->compat_warn |= 1;
             char msg[200];
-            int mn = snprintf(msg, sizeof msg, "picoperl: use utf8 is ignored, strings stay bytes at %s line %d.\n", P->file, P->cur.line);
+            int mn = pp_snprintf(msg, sizeof msg, "picoperl: use utf8 is ignored, strings stay bytes at %s line %d.\n", P->file, P->cur.line);
             pp_host_write(2, msg, mn);
         }
         if (!ignored) {
@@ -3010,8 +3010,8 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     if (site) { P.sc->arena = pp_arena_new(); P.sc->track = 1; *arena = P.sc->arena; }
     if (setjmp(P.jb)) {
         char buf[512];
-        int n = P.err_has_loc ? snprintf(buf, sizeof buf, "%s\n", P.errmsg)
-                              : snprintf(buf, sizeof buf, "%s at %s line %d.\n", P.errmsg, filename, P.cur.line);
+        int n = P.err_has_loc ? pp_snprintf(buf, sizeof buf, "%s\n", P.errmsg)
+                              : pp_snprintf(buf, sizeof buf, "%s at %s line %d.\n", P.errmsg, filename, P.cur.line);
         if (errbuf) snprintf(errbuf, errcap, "%s", buf);
         else pp_host_write(2, buf, n);
         *err = 1;

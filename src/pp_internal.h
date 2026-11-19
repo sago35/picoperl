@@ -85,6 +85,11 @@ pp_val   pp_die_val(pp_interp *I, pp_val msg);
 int      pp_builtin_id(const char *name, int len, int *kind);
 void     pp_core_natives_register(pp_interp *I);   /* builtin:: functions */
 void     pp_env_grow(pp_env *e, int nslots);        /* make room for at least nslots cells */
+/* snprintf that returns the number of characters actually stored (at most cap - 1), so the
+   result can be used as a length even when the text was cut */
+int      pp_snprintf(char *buf, size_t cap, const char *fmt, ...);
+pp_val   pp_false(void);                            /* "" that is also 0 without a warning */
+int      pp_is_false(pp_val v);
 pp_sym  *pp_sym_find(pp_interp *I, const char *name, int len);   /* NULL if not interned */
 pp_obj  *pp_lookup_sub(pp_interp *I, pp_sym *sym);
 /* symbolic reference: the symbol a plain string names when it is used as a reference by node n

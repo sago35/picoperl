@@ -44,6 +44,26 @@ void pp_arena_free(pp_arena *a) {
     free(a);
 }
 
+int pp_snprintf(char *buf, size_t cap, const char *fmt, ...) {
+    if (!cap) return 0;
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf, cap, fmt, ap);
+    va_end(ap);
+    if (n < 0) { buf[0] = 0; return 0; }
+    return (size_t)n >= cap ? (int)cap - 1 : n;
+}
+
+/* The false value of comparisons, matches and `!`: an empty string that, unlike a written "",
+   is also the number 0 without an "isn't numeric" warning (perl's false is such a value).
+   One shared string that is never freed; copies are recognized by its address. */
+static pp_str pp_false_str = { 1 << 28, 0, 0, { 0 } };
+pp_val pp_false(void) {
+    pp_false_str.refcnt++;
+    pp_val v; v.t = PP_STR; v.u.s = &pp_false_str;
+    return v;
+}
+int pp_is_false(pp_val v) { return v.t == PP_STR && v.u.s == &pp_false_str; }
+
 void pp_arena_absorb(pp_arena *dst, pp_arena *src) {
     if (src->chunks) {
         pp_arena_chunk *tail = src->chunks;
@@ -104,14 +124,14 @@ void pp_release(pp_val v) {
 pp_val pp_ref(pp_obj *o) { pp_val v; v.t = PP_REF; o->refcnt++; v.u.o = o; return v; }
 
 int pp_fmt_num(char *buf, int cap, pp_val v) {
-    if (v.t == PP_INT) return snprintf(buf, cap, "%lld", (long long)v.u.i);
+    if (v.t == PP_INT) return pp_snprintf(buf, cap, "%lld", (long long)v.u.i);
     if (v.t == PP_NUM) {
         double d = v.u.n;
-        if (isnan(d)) return snprintf(buf, cap, "NaN");
-        if (isinf(d)) return snprintf(buf, cap, d < 0 ? "-Inf" : "Inf");
-        if (d == 0) return snprintf(buf, cap, "0");
-        if (d == floor(d) && fabs(d) < 1e15) return snprintf(buf, cap, "%lld", (long long)d);
-        return snprintf(buf, cap, "%.15g", d);
+        if (isnan(d)) return pp_snprintf(buf, cap, "NaN");
+        if (isinf(d)) return pp_snprintf(buf, cap, d < 0 ? "-Inf" : "Inf");
+        if (d == 0) return pp_snprintf(buf, cap, "0");
+        if (d == floor(d) && fabs(d) < 1e15) return pp_snprintf(buf, cap, "%lld", (long long)d);
+        return pp_snprintf(buf, cap, "%.15g", d);
     }
     buf[0] = 0;
     return 0;
@@ -157,10 +177,10 @@ pp_str *pp_to_str(pp_val v) {
         }
         if (v.u.o->class) {   /* a blessed reference: Class=HASH(0x...) */
             char big[192];
-            int n = snprintf(big, sizeof big, "%s=%s(0x%lx)", v.u.o->class->name, ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
+            int n = pp_snprintf(big, sizeof big, "%s=%s(0x%lx)", v.u.o->class->name, ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
             return pp_str_new(big, n >= (int)sizeof big ? (int)sizeof big - 1 : n);
         }
-        int n = snprintf(buf, sizeof buf, "%s(0x%lx)", ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
+        int n = pp_snprintf(buf, sizeof buf, "%s(0x%lx)", ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
         return pp_str_new(buf, n);
     }
     default: return pp_str_new("", 0);

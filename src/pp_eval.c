@@ -35,7 +35,7 @@ pp_val pp_die_val(pp_interp *I, pp_val msg) {
         pp_release(msg);
         if (s->len == 0 || s->d[s->len - 1] != '\n') {
             char tail[160];
-            int n = snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line);
+            int n = pp_snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line);
             s = pp_str_reserve(s, n);
             memcpy(s->d + s->len, tail, n); s->len += n; s->d[s->len] = 0;
         }
@@ -131,7 +131,8 @@ void pp_warn(pp_interp *I, const char *fmt, ...) {
     int n = vsnprintf(buf, sizeof buf - 60, fmt, ap);
     va_end(ap);
     if (n < 0) return;
-    n += snprintf(buf + n, sizeof buf - n, " at %s line %d.\n", I->file ? I->file : "-", I->line);
+    if (n > (int)sizeof buf - 61) n = (int)sizeof buf - 61;      /* the message was cut to fit */
+    n += pp_snprintf(buf + n, sizeof buf - n, " at %s line %d.\n", I->file ? I->file : "-", I->line);
     pp_emit_warning(I, buf, n);
 }
 
@@ -160,7 +161,7 @@ static pp_obj *resolve_depth(pp_interp *I, pp_sym *sym, int depth) {
             if (strcmp(I->lazy[i].dst, pkg) != 0) continue;
             if (strncmp(base, I->lazy[i].prefix, strlen(I->lazy[i].prefix)) != 0) continue;
             char buf[256];
-            int n = snprintf(buf, sizeof buf, "&%s::%s", I->lazy[i].src, base);
+            int n = pp_snprintf(buf, sizeof buf, "&%s::%s", I->lazy[i].src, base);
             pp_obj *code = resolve_depth(I, pp_intern(I, buf, n), depth + 1);
             if (code) { code->refcnt++; pp_define_sub(I, sym, code); return sym->sub; }
         }
@@ -187,8 +188,8 @@ static pp_sym *named_sym(pp_interp *I, char sigil, const char *pkg, const char *
     if (!strncmp(name, "main::", 6)) { name += 6; pkg = NULL; }   /* explicitly main: do not re-qualify */
     else if (!strncmp(name, "::", 2)) { name += 2; pkg = NULL; }
     char buf[256]; int n;
-    if (!pkg || !strcmp(pkg, "main") || strstr(name, "::")) n = snprintf(buf, sizeof buf, "%c%s", sigil, name);
-    else n = snprintf(buf, sizeof buf, "%c%s::%s", sigil, pkg, name);
+    if (!pkg || !strcmp(pkg, "main") || strstr(name, "::")) n = pp_snprintf(buf, sizeof buf, "%c%s", sigil, name);
+    else n = pp_snprintf(buf, sizeof buf, "%c%s::%s", sigil, pkg, name);
     if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
     return pp_intern(I, buf, n);
 }
@@ -302,7 +303,7 @@ static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *o
     if (n->a) {
         const char *name = f->code->u.code.name ? f->code->u.code.name : "__ANON__";
         char buf[200];
-        int len = snprintf(buf, sizeof buf, "%s%s", strstr(name, "::") ? "" : "main::", name);
+        int len = pp_snprintf(buf, sizeof buf, "%s%s", strstr(name, "::") ? "" : "main::", name);
         pp_list_push(out, pp_strn(buf, len >= (int)sizeof buf ? (int)sizeof buf - 1 : len));
         pp_list_push(out, pp_int(1));
         pp_list_push(out, f->ctx == CTX_LIST ? pp_int(1) : f->ctx == CTX_SCALAR ? pp_strn("", 0) : pp_undef());
@@ -318,7 +319,7 @@ static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out
     pp_sym *s = named_sym(I, '*', n->b && n->b->type == N_CONST ? n->b->val.u.s->d : NULL, name->d);
     pp_str_decref(name);
     char buf[264];
-    int len = snprintf(buf, sizeof buf, "*%s%s", strstr(s->name, "::") ? "" : "main::", s->name + 1);
+    int len = pp_snprintf(buf, sizeof buf, "*%s%s", strstr(s->name, "::") ? "" : "main::", s->name + 1);
     return scalar_or_push(ctx, out, pp_strn(buf, len));
 }
 
@@ -1518,8 +1519,8 @@ static NOINLINE pp_val eval_require(pp_interp *I, pp_node *n) {
 /* "&name" in package pkg ("main" -> "&name") */
 static pp_sym *pkg_sym(pp_interp *I, char sigil, const char *pkg, const char *name) {
     char buf[256]; int n;
-    if (strcmp(pkg, "main") == 0 || strstr(name, "::")) n = snprintf(buf, sizeof buf, "%c%s", sigil, name);
-    else n = snprintf(buf, sizeof buf, "%c%s::%s", sigil, pkg, name);
+    if (strcmp(pkg, "main") == 0 || strstr(name, "::")) n = pp_snprintf(buf, sizeof buf, "%c%s", sigil, name);
+    else n = pp_snprintf(buf, sizeof buf, "%c%s::%s", sigil, pkg, name);
     return pp_intern(I, buf, n);
 }
 
@@ -1844,7 +1845,7 @@ static NOINLINE pp_val eval_evalstr(pp_interp *I, pp_node *n, int ctx, pp_list *
     pp_str *src = pp_to_str(sv);
     pp_release(sv);
     char namebuf[32];
-    int nl = snprintf(namebuf, sizeof namebuf, "(eval %d)", ++I->eval_seq);
+    int nl = pp_snprintf(namebuf, sizeof namebuf, "(eval %d)", ++I->eval_seq);
     char *fname = pp_xmalloc(nl + 1); memcpy(fname, namebuf, nl + 1);
     /* like a required file: the code being run keeps its own list of subs to define */
     pp_node **outer_subs = I->subdefs; int outer_nsubs = I->nsubdefs;
@@ -1980,7 +1981,7 @@ static NOINLINE pp_val eval_errno(pp_node *n, pp_val v) {
     const char *m = e ? pp_host_strerror(e) : "";
     if (m) return pp_cstr(m);
     char buf[32];
-    int len = snprintf(buf, sizeof buf, "Unknown error %d", e);
+    int len = pp_snprintf(buf, sizeof buf, "Unknown error %d", e);
     return pp_strn(buf, len);
 }
 static NOINLINE pp_val eval_var(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
@@ -2192,7 +2193,7 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             /* SUPER:: searches the parents of the package the call was written in */
             mname = name + 7;
             pp_str *cur = pp_to_str(n->c->val);
-            char isa[256]; int in = snprintf(isa, sizeof isa, "@%s::ISA", cur->d);
+            char isa[256]; int in = pp_snprintf(isa, sizeof isa, "@%s::ISA", cur->d);
             pp_sym *isas = pp_intern(I, isa, in);
             if (isas->gcell) for (int i = 0; i < isas->gcell->u.arr.n && !code; i++) {
                 pp_str *parent = pp_to_str(isas->gcell->u.arr.v[i]);
