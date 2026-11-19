@@ -27,3 +27,10 @@ print "done\n";
 print "var import: ", VarUser::show(), "\n";
 VarUser::change();
 print "var import shares storage: ", VarUser::show(), " / $TestVars::scalar @TestVars::list\n";
+# require VERSION: 最低バージョンの宣言 (ファイルの読み込みではない)
+require 5.006; require 5.006_001; require v5.10.1; require 5;
+BEGIN { require 5.008; }
+print "require version: ", (require 5.010 ? "true" : "false"), "\n";
+eval { require 7.001 };  print "too new: ", ($@ =~ /^Perl v7\.1\.0 required--this is only v5\.\d+\.\d+, stopped at / ? "dies" : "no: $@"), "\n";
+eval { require v9.2.3 }; print "too new vstring: ", ($@ =~ /^Perl v9\.2\.3 required/ ? "dies" : "no: $@"), "\n";
+print "done modules\n";

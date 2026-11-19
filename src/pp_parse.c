@@ -2263,6 +2263,34 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     if (len == 7 && !memcmp(id, "require", 7)) {
         advance(P);
+        /* require 5.006; / require v5.10.1; -- a minimum perl version, not a file. picoperl
+           follows perl 5.44: anything up to that is fine, a newer one dies like perl does. */
+        int isver = P->cur.type == T_NUM;
+        if (P->cur.type == T_IDENT && P->cur.len >= 2 && P->cur.s[0] == 'v' && isdigit((unsigned char)P->cur.s[1])) {
+            isver = 1;
+            for (int i = 1; i < P->cur.len; i++) if (!isdigit((unsigned char)P->cur.s[i]) && P->cur.s[i] != '.') isver = 0;
+        }
+        if (isver) {
+            long part[3] = {0, 0, 0};
+            if (P->cur.type == T_NUM) {              /* 5.006001 = 5, 6, 1 */
+                double ver = P->cur.num.t == PP_INT ? (double)P->cur.num.u.i : P->cur.num.u.n;
+                long long micro = (long long)(ver * 1000000.0 + 0.5);
+                part[0] = (long)(micro / 1000000); part[1] = (long)(micro / 1000 % 1000); part[2] = (long)(micro % 1000);
+            } else {
+                int k = 0;
+                for (int i = 1; i < P->cur.len && k < 3; i++) {
+                    if (P->cur.s[i] == '.') k++;
+                    else part[k] = part[k] * 10 + (P->cur.s[i] - '0');
+                }
+            }
+            advance(P);
+            if (part[0] < 5 || (part[0] == 5 && (part[1] < 44 || (part[1] == 44 && part[2] == 0)))) return const_int(P, 1);
+            char msg[96];
+            int ml = snprintf(msg, sizeof msg, "Perl v%ld.%ld.%ld required--this is only v5.44.0, stopped", part[0], part[1], part[2]);
+            pp_node *d = node(P, N_BUILTIN); d->op = (uint8_t)pp_builtin_id("die", 3, NULL);
+            node_add(d, const_str(P, msg, ml));
+            return d;
+        }
         pp_node *n = node(P, N_REQUIRE);
         if (P->cur.type == T_IDENT) {   /* require Module::Name; -> "Module/Name.pm" */
             char buf[256]; int bn = 0;
