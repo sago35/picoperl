@@ -28,3 +28,30 @@ my @aa = (1,2,3); $_ *= 10 for @aa; print "@aa\n";
 my $w = 0; while (1) { last if ++$w > 3 } print "$w\n";
 my ($q, $rr) = (10, 20); ($q, $rr) = ($rr, $q); print "$q $rr\n";
 my $lastval = do { 1; 2; 3 }; print "$lastval\n";
+
+# redo
+{
+# redo: 条件を調べ直さずに本体をやり直す
+my @out; my $tries = 0;
+for my $i (1 .. 3) { $tries++; if ($i == 2 && $tries < 4) { push @out, "retry$i"; redo; } push @out, "i$i"; }
+print "@out ($tries)\n";
+my $n = 0; my $c = 0;
+while ($n < 3) { $n++; $c++; redo if $n == 2 && $c < 5 && $n--  > 0; }
+print "while n=$n c=$c\n";
+my @in = ("a\\", "b", "c\\", "d\\", "e", "f"); my @lines;
+while (defined(my $l = shift @in)) { if ($l =~ s/\\$//) { $l .= shift @in; unshift @in, $l; next } push @lines, $l }
+print "@lines\n";
+@in = ("a\\", "b", "c\\", "d\\", "e", "f"); @lines = ();
+for (my $l = shift @in; defined $l; $l = shift @in) { if ($l =~ s/\\$//) { $l .= shift @in; redo } push @lines, $l }
+print "@lines\n";
+# ラベル付き
+my $k = 0; my @t;
+OUTER: for my $x (1, 2) { for my $y (1, 2) { $k++; push @t, "$x$y"; redo OUTER if $k == 2; } }
+print "@t\n";
+# 素のブロック
+{ my $z = 0; { $z++; redo if $z < 3; } print "bare $z\n"; }
+# 後置
+my $m = 0; my @u; do { $m++; push @u, $_ } for 1 .. 2; print "@u $m\n";
+my $q = 0; foreach (1 .. 2) { $q++; $_ == 1 && $q < 3 and redo; } print "q=$q\n";
+{ no warnings "exiting"; eval { for (1) { redo NOPE } } }; print "err: $@";
+}

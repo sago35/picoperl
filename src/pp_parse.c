@@ -2757,15 +2757,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
         n->a = e;
         return n;
     }
-    if (len == 4 && !memcmp(id, "redo", 4)) {
-        advance(P);
-        if (P->cur.type == T_IDENT && !at_list_end(P)) advance(P);
-        pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("die", 3, NULL);
-        node_add(n, const_str(P, "redo is not supported by picoperl\n", 33));
-        return n;
-    }
-    if (len == 4 && (!memcmp(id, "last", 4) || !memcmp(id, "next", 4))) {
-        pp_node *n = node(P, id[0] == 'l' ? N_LAST : N_NEXT);
+    if (len == 4 && (!memcmp(id, "last", 4) || !memcmp(id, "next", 4) || !memcmp(id, "redo", 4))) {
+        pp_node *n = node(P, id[0] == 'l' ? N_LAST : id[0] == 'n' ? N_NEXT : N_REDO);
         advance(P);
         if (P->cur.type == T_IDENT && !at_list_end(P)) { n->sym = pp_intern(P->I, P->cur.s, P->cur.len); advance(P); }
         return n;

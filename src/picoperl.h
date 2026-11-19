@@ -134,7 +134,7 @@ struct pp_env {
 enum { CTX_VOID = 0, CTX_SCALAR, CTX_LIST };
 
 /* control flow */
-enum { CTL_NONE = 0, CTL_RETURN, CTL_LAST, CTL_NEXT, CTL_DIE, CTL_EXIT, CTL_GOTO };
+enum { CTL_NONE = 0, CTL_RETURN, CTL_LAST, CTL_NEXT, CTL_DIE, CTL_EXIT, CTL_GOTO, CTL_REDO };
 
 /* ------------------------------------------------------------------ */
 /* AST                                                                 */
@@ -180,7 +180,7 @@ enum {
     N_FOREACH,      /* a: var (N_VAR or N_MY or NULL for $_), b: list, c: body */
     N_SUBDEF,       /* sym, a: body */
     N_RETURN,       /* a: expr or NULL */
-    N_LAST, N_NEXT,
+    N_LAST, N_NEXT, N_REDO,
     N_NOP,
     N_DOBLOCK,      /* a: block */
     N_EVALBLOCK,    /* a: block */

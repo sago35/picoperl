@@ -1696,7 +1696,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
             if (rv.n) rv.n--;
         }
         pp_list_free(&rv);
-    } else if ((I->ctl == CTL_LAST || I->ctl == CTL_NEXT) && !I->ctl_label) {
+    } else if ((I->ctl == CTL_LAST || I->ctl == CTL_NEXT || I->ctl == CTL_REDO) && !I->ctl_label) {
         I->ctl = CTL_NONE;   /* exiting subroutine via last/next: ignore */
     }
     I->env = saved_env;
@@ -1830,21 +1830,28 @@ static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
     return r;
 }
 
-/* handle last/next after a loop body; returns 1 to break the loop */
+/* handle last/next/redo after a loop body; returns 1 to break the loop, 2 to run the body again */
 static int loop_ctl(pp_interp *I, pp_sym *label) {
-    if (I->ctl == CTL_NEXT || I->ctl == CTL_LAST) {
+    if (I->ctl == CTL_NEXT || I->ctl == CTL_LAST || I->ctl == CTL_REDO) {
         if (I->ctl_label && I->ctl_label != label) return 1;   /* propagate to an outer loop */
-        int brk = I->ctl == CTL_LAST;
+        int r = I->ctl == CTL_LAST ? 1 : I->ctl == CTL_REDO ? 2 : 0;
         I->ctl = CTL_NONE; I->ctl_label = NULL;
-        return brk;
+        if (r == 2 && (++I->stmt_counter & 0xFF) == 0) pp_host_poll();   /* a loop made of redo alone can still be interrupted */
+        return r;
     }
     return I->ctl != CTL_NONE;
 }
-static int loop_body(pp_interp *I, pp_node *body, pp_sym *label) {
-    pp_val v = exec_block(I, body, CTX_VOID, NULL);
-    pp_release(v);
-    return loop_ctl(I, label);
+/* the body of a loop: a block (expr = 0) or the statement in front of a modifier */
+static int loop_body_x(pp_interp *I, pp_node *body, pp_sym *label, int expr) {
+    int r;
+    do {
+        pp_val v = expr ? pp_eval(I, body, CTX_VOID, NULL) : exec_block(I, body, CTX_VOID, NULL);
+        pp_release(v);
+        r = loop_ctl(I, label);
+    } while (r == 2);
+    return r;
 }
+#define loop_body(I, body, label) loop_body_x(I, body, label, 0)
 
 static int cond_true(pp_interp *I, pp_node *c) {
     if (!c) return 1;
@@ -1878,8 +1885,7 @@ static NOINLINE pp_val eval_while(pp_interp *I, pp_node *n) {
             int brk = 0;
             int t = cond_true(I, n->a);
             if (I->ctl || t == until) brk = 1;
-            else if (n->flags & 2) { pp_val v = pp_eval(I, n->b, CTX_VOID, NULL); pp_release(v); brk = loop_ctl(I, n->sym); }
-            else brk = loop_body(I, n->b, n->sym);
+            else brk = loop_body_x(I, n->b, n->sym, n->flags & 2);
             if (!brk && n->c) { pp_val v = exec_block(I, n->c, CTX_VOID, NULL); pp_release(v); if (I->ctl) brk = 1; }
             if (it) { I->env = saved; pp_env_decref(it); }
             if (brk) break;
@@ -1954,9 +1960,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                     cells[k]->u.scalar = i + k < items.n ? pp_copy(items.v[i + k]) : pp_undef();
                 }
             }
-            int brk;
-            if (n->flags & 2) { pp_val v = pp_eval(I, n->c, CTX_VOID, NULL); pp_release(v); brk = loop_ctl(I, n->sym); }
-            else brk = loop_body(I, n->c, n->sym);
+            int brk = loop_body_x(I, n->c, n->sym, n->flags & 2);
             if (nv == 1 && src_arr && i < src_arr->u.arr.n) {
                 pp_val *slot = &src_arr->u.arr.v[i];
                 if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
@@ -3133,13 +3137,13 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return pp_undef();
     }
     case N_LABEL: return n->a ? pp_eval(I, n->a, ctx, out) : pp_undef();
-    case N_LAST: case N_NEXT:
+    case N_LAST: case N_NEXT: case N_REDO:
         if (n->sym) {   /* the label must belong to a loop that is running (here or in a caller) */
             struct pp_looplabel *l = I->loop_labels;
             while (l && l->label != n->sym) l = l->up;
-            if (!l) return pp_die(I, "Label not found for \"%s %s\"", n->type == N_LAST ? "last" : "next", n->sym->name);
+            if (!l) return pp_die(I, "Label not found for \"%s %s\"", n->type == N_LAST ? "last" : n->type == N_NEXT ? "next" : "redo", n->sym->name);
         }
-        I->ctl = n->type == N_LAST ? CTL_LAST : CTL_NEXT; I->ctl_label = n->sym;
+        I->ctl = n->type == N_LAST ? CTL_LAST : n->type == N_NEXT ? CTL_NEXT : CTL_REDO; I->ctl_label = n->sym;
         return pp_undef();
     case N_NOP: return pp_undef();
     case N_DOBLOCK: return exec_block(I, n->a, ctx, out);

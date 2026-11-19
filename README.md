@@ -219,7 +219,7 @@ while (1) { sleep 0.1 }        # イベントが来ると sleep は早く戻る 
 対応: スカラー/配列/ハッシュ、リファレンスと自動生成 (`$h{a}{b}[0] = 1`)、
 オブジェクト (`bless`, `$obj->method`, `Class->new`, `@ISA` / `use parent`, `SUPER::`, `can`, `isa`, `ref`)、
 無名配列/ハッシュ/サブルーチン、クロージャ、`my`/`our`/`local`、
-`if/elsif/unless/while/until/for/foreach` と後置修飾子、ラベル付き `last/next`、
+`if/elsif/unless/while/until/for/foreach` と後置修飾子、ラベル付き `last/next/redo`、
 `sub`、`return`、`wantarray`、`@_`、`shift`、文字列補間 (`"$x $a[0] $h{k} $r->{k}[1] @a @{[ expr ]}"`)、
 `sort`/`map`/`grep`、`split`/`join`/`sprintf`/`substr`/`index` などの組み込み関数、
 `eval {}`/`die`/`$@`、`package`/`use`/`require`/`@EXPORT`、`use constant` (`\%hash` 形式も)、
@@ -568,10 +568,8 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 **`$.`** は最後に読んだハンドルの行番号です (`close` で 0 に戻ります。文字列の中でも展開されます)。
 `${^LAST_FH}` は常に undef です。
 
-非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
-`DESTROY`、`AUTOLOAD`、`redo`、
-
-`system`/バッククォート、`tie`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
+非対応 (今のところ): `sprintf` の位置指定 (`%2$s`)、`AUTOLOAD`、
+`system`/バッククォート、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)、
 ファイルハンドルのメソッド呼び出し (`$fh->print`)、パッケージの名前表 (`%Pkg::`) への書き込み。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
