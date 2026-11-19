@@ -500,22 +500,70 @@ static pp_val read_stdin_line(pp_interp *I) {
     free(line);
     return r;
 }
-static pp_val read_fline(pp_obj *f) {
+/* file I/O that also serves in-memory files (open($fh, MODE, \$buf)): those read from and
+   append to the scalar they were opened on */
+static pp_str *mem_text(pp_obj *f) {
+    pp_val v = f->u.file.mem->u.scalar;
+    return v.t == PP_STR ? v.u.s : NULL;
+}
+static int f_read1(pp_obj *f, char *c) {
+    if (!f->u.file.mem) return (int)pp_host_fread(f->u.file.fp, c, 1) == 1;
+    pp_str *t = mem_text(f);
+    if (!t || f->u.file.mpos >= t->len) return 0;
+    *c = t->d[f->u.file.mpos++];
+    return 1;
+}
+static int f_write(pp_obj *f, const char *d, int len) {
+    if (!f->u.file.mem) return (int)pp_host_fwrite(f->u.file.fp, d, len) == len;
+    pp_obj *cell = f->u.file.mem;
+    pp_str *old = pp_to_str(cell->u.scalar);
+    pp_str *n = pp_str_new(old->d, old->len);
+    pp_str_decref(old);
+    str_append(&n, d, len);
+    pp_release(cell->u.scalar);
+    cell->u.scalar = pp_str_val(n);
+    return 1;
+}
+static int f_eof(pp_obj *f) {
+    if (!f->u.file.fp) return 1;
+    if (!f->u.file.mem) return pp_host_feof(f->u.file.fp);
+    pp_str *t = mem_text(f);
+    return !t || f->u.file.mpos >= t->len;
+}
+static int f_close(pp_obj *f) {
+    if (!f->u.file.fp) return 0;
+    int ok = 1;
+    if (f->u.file.mem) { pp_obj_decref(f->u.file.mem); f->u.file.mem = NULL; }
+    else ok = pp_host_fclose(f->u.file.fp) == 0;
+    f->u.file.fp = NULL;
+    return ok;
+}
+/* one record from a file: up to and including $/ ("\n" unless changed; undef reads the rest
+   of the file, "" reads a paragraph) */
+static pp_val read_fline(pp_interp *I, pp_obj *f) {
     if (!f->u.file.fp) return pp_undef();
+    pp_sym *isym = pp_intern(I, "$/", 2);
+    pp_val irs = isym->gcell ? isym->gcell->u.scalar : pp_undef();
+    const char *sep = "\n"; int seplen = 1, slurp = irs.t == PP_UNDEF;
+    pp_str *sepstr = NULL;
+    if (!slurp && irs.t != PP_STR) { sepstr = pp_to_str(irs); sep = sepstr->d; seplen = sepstr->len; }
+    else if (!slurp) { sep = irs.u.s->d; seplen = irs.u.s->len; }
+    if (!slurp && seplen == 0) { sep = "\n\n"; seplen = 2; }
     pp_str *s = pp_str_new(NULL, 0);
     char c;
-    while (pp_host_fread(f->u.file.fp, &c, 1) == 1) {
+    while (f_read1(f, &c)) {
         s = pp_str_reserve(s, 1);
         s->d[s->len++] = c;
-        if (c == '\n') break;
+        if (!slurp && c == sep[seplen - 1] && s->len >= seplen && !memcmp(s->d + s->len - seplen, sep, (size_t)seplen)) break;
     }
+    if (sepstr) pp_str_decref(sepstr);
     if (s->len == 0) { pp_str_decref(s); return pp_undef(); }
     s->d[s->len] = 0;
     f->u.file.lines++;
     return pp_str_val(s);
 }
 
-/* $/ is not supported: readline always ends lines at \n; say so once */
+/* $/ applies to files only: reading STDIN always ends lines at \n; say so once */
 static void check_irs(pp_interp *I) {
     if (I->compat_warn & 32) return;
     pp_sym *sym = pp_intern(I, "$/", 2);
@@ -523,7 +571,7 @@ static void check_irs(pp_interp *I) {
     pp_val v = sym->gcell->u.scalar;
     if (v.t == PP_UNDEF || (v.t == PP_STR && v.u.s->len == 1 && v.u.s->d[0] == '\n')) return;
     I->compat_warn |= 32;
-    pp_warn(I, "picoperl: $/ is ignored, readline always splits on \"\\n\"");
+    pp_warn(I, "picoperl: $/ is ignored for STDIN, which always splits on \"\\n\"");
 }
 
 static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
@@ -608,6 +656,27 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return pp_undef();
     }
     if (layer && !(I->compat_warn & 16)) { I->compat_warn |= 16; pp_warn(I, "picoperl: IO layers ('%s') are ignored, files are bytes", layer); }
+    if (args.v[1].t == PP_REF && args.v[1].u.o->kind == PP_OSCALAR) {
+        /* open($fh, MODE, \$buf): an in-memory file on that scalar */
+        pp_obj *cell = args.v[1].u.o;
+        pp_obj *o = pp_obj_new(PP_OFILE);
+        o->u.file.mem = cell; cell->refcnt++;
+        o->u.file.fp = cell;                          /* non-NULL: open */
+        o->u.file.writable = (uint8_t)(base[0] != 'r' || base[1] == '+');
+        if (base[0] == 'w') { pp_release(cell->u.scalar); cell->u.scalar = pp_strn("", 0); }
+        pp_str_decref(ms); pp_list_free(&args);
+        if (glob) {
+            if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io);
+            glob->u.glob.io = o;
+            return ret(ctx, out, pp_int(1));
+        }
+        slot = pp_lvalue(I, n->list[0]);
+        if (!slot) { pp_obj_decref(o); return pp_undef(); }
+        pp_release(*slot);
+        *slot = pp_ref(o);
+        pp_obj_decref(o);
+        return ret(ctx, out, pp_int(1));
+    }
     pp_str *path = pp_to_str(args.v[1]);
     void *fp = pp_host_fopen(path->d, base);
     pp_str_decref(ms); pp_str_decref(path); pp_list_free(&args);
@@ -670,7 +739,7 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
     if (id == B_PRINTF) {
         pp_val s = pp_sprintf(I, &args, 0);
         pp_str *t = pp_to_str(s);
-        if (fh) wr_ok = pp_host_fwrite(fh->u.file.fp, t->d, t->len) == t->len;
+        if (fh) wr_ok = f_write(fh, t->d, t->len);
         else pp_host_write(fd, t->d, t->len);
         pp_str_decref(t); pp_release(s);
     } else {
@@ -684,7 +753,7 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
         }
         if (id == B_SAY) str_append(&buf, "\n", 1);
         else if (ors.t == PP_STR) str_append(&buf, ors.u.s->d, ors.u.s->len);
-        if (fh) wr_ok = pp_host_fwrite(fh->u.file.fp, buf->d, buf->len) == buf->len;
+        if (fh) wr_ok = f_write(fh, buf->d, buf->len);
         else pp_host_write(fd, buf->d, buf->len);
         pp_str_decref(buf);
     }
@@ -1231,8 +1300,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return ret(ctx, out, pp_int(prev));
     }
     case B_READLINE: {
-        check_irs(I);
-        if (n->n == 0) return ret(ctx, out, read_stdin_line(I));   /* <STDIN> */
+        if (n->n == 0) { check_irs(I); return ret(ctx, out, read_stdin_line(I)); }   /* <STDIN> */
         pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
         { int done; pp_val r = tied_handle_call(I, hv, "READLINE", NULL, ctx == CTX_LIST && out ? CTX_LIST : CTX_SCALAR, out, &done);
@@ -1240,6 +1308,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         int hfd;
         pp_obj *f = handle_of(I, hv, &hfd);
         if (!f && hfd == 0) {              /* <STDIN> through a glob: readline(*STDIN), <$in> */
+            check_irs(I);
             pp_release(hv);
             if (ctx == CTX_LIST && out) {
                 for (;;) { pp_val l = read_stdin_line(I); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
@@ -1249,12 +1318,12 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         }
         if (!f) { pp_release(hv); return pp_die(I, "readline: not a filehandle (expected a handle from open)"); }
         if (ctx == CTX_LIST && out) {
-            for (;;) { pp_val l = read_fline(f); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
+            for (;;) { pp_val l = read_fline(I, f); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
             set_line_no(I, f, f->u.file.lines);
             pp_release(hv);
             return pp_undef();
         }
-        pp_val r = read_fline(f);
+        pp_val r = read_fline(I, f);
         set_line_no(I, f, f->u.file.lines);
         pp_release(hv);
         return ret(ctx, out, r);
@@ -1267,8 +1336,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         pp_obj *f = handle_of(I, hv, &hfd);
         if (!f && hfd >= 0) { pp_release(hv); return ret(ctx, out, pp_int(1)); }   /* close(STDOUT): stays open here */
         if (!f) { pp_release(hv); return pp_die(I, "close: not a filehandle (expected a handle from open)"); }
-        int r = f->u.file.fp ? pp_host_fclose(f->u.file.fp) == 0 : 0;
-        f->u.file.fp = NULL;
+        int r = f_close(f);
         f->u.file.lines = 0;                       /* close starts the count again */
         if (I->last_read == f) set_line_no(I, f, 0);
         pp_release(hv);
@@ -1280,7 +1348,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         { int done; pp_val r = tied_handle_call(I, hv, "EOF", NULL, CTX_SCALAR, NULL, &done); if (done) return I->ctl ? r : ret(ctx, out, r); }
         pp_obj *f = file_of(I, hv, "eof");
         if (!f) { pp_release(hv); return pp_undef(); }
-        int e = f->u.file.fp ? pp_host_feof(f->u.file.fp) : 1;
+        int e = f_eof(f);
         pp_release(hv);
         return ret(ctx, out, e ? pp_int(1) : pp_strn("", 0));
     }
@@ -1289,7 +1357,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (I->ctl) { pp_release(hv); return pp_undef(); }
         pp_obj *f = file_of(I, hv, "tell");
         if (!f) { pp_release(hv); return pp_undef(); }
-        long pos = f->u.file.fp ? pp_host_ftell(f->u.file.fp) : -1;
+        long pos = !f->u.file.fp ? -1 : f->u.file.mem ? (f->u.file.writable ? (mem_text(f) ? mem_text(f)->len : 0) : f->u.file.mpos) : pp_host_ftell(f->u.file.fp);
         pp_release(hv);
         return ret(ctx, out, pp_int(pos));
     }
@@ -1301,7 +1369,13 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (!f) { pp_list_free(&args); return pp_undef(); }
         long off = (long)pp_to_int(args.v[1]);
         int whence = (int)pp_to_int(args.v[2]);
-        long r = f->u.file.fp ? pp_host_fseek(f->u.file.fp, off, whence) : -1;
+        long r = -1;
+        if (f->u.file.fp && f->u.file.mem) {            /* an in-memory file: only the read position moves */
+            int len = mem_text(f) ? mem_text(f)->len : 0;
+            long np = whence == 0 ? off : whence == 1 ? f->u.file.mpos + off : len + off;
+            if (np >= 0) { f->u.file.mpos = np > len ? len : (int)np; r = 0; }
+        }
+        else if (f->u.file.fp) r = pp_host_fseek(f->u.file.fp, off, whence);
         pp_list_free(&args);
         return ret(ctx, out, r >= 0 ? pp_int(1) : pp_strn("", 0));
     }

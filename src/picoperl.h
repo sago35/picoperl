@@ -83,7 +83,9 @@ struct pp_obj {
             uint8_t    block_proto;   /* declared with a (&...) prototype: `name { ... } LIST` passes the block as a sub */
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
-        struct { void *fp; uint8_t writable; int lines; } file;   /* lines: read so far, for $. */   /* PP_OFILE (open my $fh, ...) */
+        /* mem: an in-memory file, open($fh, '<', \$buf): the scalar it reads / writes (fp is then
+           just a non-NULL "open" mark) and the read position in it */
+        struct { void *fp; uint8_t writable; int lines; pp_obj *mem; int mpos; } file;   /* lines: read so far, for $. */   /* PP_OFILE (open my $fh, ...) */
         /* PP_OGLOB: what \*name points to, one per name. name: the string "*main::name" (the
            value of *name itself stays that string); io: the file opened under this name */
         struct { pp_val name; pp_obj *io; } glob;

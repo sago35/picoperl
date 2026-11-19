@@ -151,3 +151,17 @@ print $x x 3, "\n"; print $x eq 7 ? "eq\n" : "ne\n"; print $x, @p, "\n"; print $
 print $_ @p for $fh; print "\n"; my @fhs = ($fh); print $_ "each\n" for @fhs;
 sub out { my $o = shift; print $o @_ } out($fh, "s", "u", "b", "\n");
 }
+# メモリ上のファイル (open($fh, MODE, \$buf)) と、ファイルに対する $/
+{
+my $buf = 'old'; open(my $fh, '>', \$buf) or die "open: $!"; print "truncated: [$buf]\n"; print $fh "hello ", "world\n"; printf $fh "%03d\n", 7; print {$fh} "x"; print "tell ", tell($fh), "\n"; close $fh; print "buf=[$buf]\n";
+open(my $in, '<', \"line1\nline2\nlast") or die "open in: $!"; my $first = <$in>; print "eof? ", (eof($in) ? 1 : 0), " tell ", tell($in), "\n"; my @l = <$in>; print scalar(@l), " [$l[1]] eof? ", (eof($in) ? 1 : 0), "\n"; close $in;
+my $app = "start:"; open(my $a, '>>', \$app) or die; print $a "more"; close $a; print "$app\n";
+my $src = "a\nb\nc\n"; open(my $r, '<', \$src) or die; my $n = 0; while (my $line = <$r>) { chomp $line; $n++; print "$n:$line " } print "\n"; seek($r, 2, 0); print "after seek: ", scalar(<$r>); close $r;
+my $live = ''; open(my $w, '>', \$live) or die; print $w "one"; print "live: [$live] "; print $w "two"; print "[$live]\n"; close $w;
+open(OUT, '>', \my $named) or die; print OUT "bareword"; close OUT; print "$named\n";
+{ local $/ = undef; my $all = "x\ny\n"; open(my $s, '<', \$all) or die; my $slurp = <$s>; print length($slurp), "\n"; }
+{ my $t = "a,b,,c"; open(my $s, '<', \$t) or die; local $/ = ","; my @p = <$s>; print scalar(@p), " [@p]\n"; }
+{ my $t = "p1 l1\np1 l2\n\np2\n"; open(my $s, '<', \$t) or die; local $/ = ""; my @p = <$s>; print scalar(@p), "\n"; }
+{ open(my $s, '<', $0) or die; my $one = <$s>; local $/; my $rest = <$s>; print length($one) > 0 && length($rest) > 100 ? "file slurp ok" : "file slurp ng", " ", (defined(<$s>) ? "more" : "end"), "\n"; }
+print defined($/) ? "irs default [" . ($/ eq "\n" ? "newline" : $/) . "]\n" : "irs undef\n";
+}

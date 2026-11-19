@@ -393,7 +393,8 @@ static void obj_free(pp_obj *o) {
         pp_re_free(o->u.re);
         break;
     case PP_OFILE:
-        if (o->u.file.fp) pp_host_fclose(o->u.file.fp);
+        if (o->u.file.mem) pp_obj_decref(o->u.file.mem);
+        else if (o->u.file.fp) pp_host_fclose(o->u.file.fp);
         break;
     case PP_OGLOB:
         pp_release(o->u.glob.name);

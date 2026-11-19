@@ -3295,6 +3295,10 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "%INC", 4));
     I->g_ofs = pp_global(I, pp_intern(I, "$,", 2));
     I->g_ors = pp_global(I, pp_intern(I, "$\\", 2));
+    {   /* $/ starts as "\n"; undef means "read the whole file" */
+        pp_obj *irs = pp_global(I, pp_intern(I, "$/", 2));
+        if (irs->u.scalar.t == PP_UNDEF) irs->u.scalar = pp_strn("\n", 1);
+    }
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
     /* ${^NAME} variables scripts commonly read: no taint mode, no -C, and the main program is running */
     pp_global(I, pp_intern(I, "$^TAINT", 7))->u.scalar = pp_int(0);
