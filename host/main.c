@@ -609,6 +609,7 @@ static pp_val stat_result(pp_interp *I, pp_list *a, int ctx, pp_list *out, int f
 }
 static pp_val n_stat(pp_interp *I, pp_list *a, int ctx, pp_list *out) { return stat_result(I, a, ctx, out, 1); }
 static pp_val n_lstat(pp_interp *I, pp_list *a, int ctx, pp_list *out) { return stat_result(I, a, ctx, out, 0); }
+int pp_host_isatty(int fd) { return isatty(fd); }
 int pp_host_utc_offset(int64_t t, int *isdst) {
     time_t tt = (time_t)t;
     struct tm tm;

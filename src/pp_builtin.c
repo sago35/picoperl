@@ -1898,7 +1898,16 @@ static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (f) return f->u.file.fp ? pp_int(3) : pp_undef();
     return fd >= 0 ? pp_int(fd) : pp_undef();
 }
+/* -t HANDLE: the standard handles are a terminal when the host says so; a file never is */
+__attribute__((weak)) int pp_host_isatty(int fd) { (void)fd; return 1; }   /* a board: the USB serial port */
+static pp_val n_isatty(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int fd = -1;
+    if (a->n < 1 || handle_of(I, a->v[0], &fd) || fd < 0) return fd < 0 && !(a->n && a->v[0].t == PP_REF && a->v[0].u.o->kind == PP_OFILE) ? pp_undef() : pp_strn("", 0);
+    return pp_host_isatty(fd) ? pp_int(1) : pp_strn("", 0);
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "__isatty", n_isatty);
     pp_register(I, "fileno", n_fileno);
     pp_register(I, "mkdir", n_mkdir);
     pp_register(I, "rmdir", n_rmdir);

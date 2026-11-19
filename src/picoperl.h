@@ -427,6 +427,7 @@ int         pp_host_listdir(const char *path, void (*add)(void *ctx, const char 
 /* seconds local time is ahead of UTC at time t (and whether that is summer time). Optional:
    the interpreter has a weak default that returns 0. */
 int         pp_host_utc_offset(int64_t t, int *isdst);
+int         pp_host_isatty(int fd);          /* -t on STDIN / STDOUT / STDERR (0 / 1 / 2) */
 /* sleep */
 void        pp_host_sleep_ms(uint32_t ms);
 /* read one line from stdin (<STDIN>); malloc'd, includes newline; NULL at EOF */

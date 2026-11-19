@@ -134,3 +134,11 @@ close BW;
     print "not in a regex: ", ("ab" =~ /a$./ ? "interpolated" : "anchor"), "\n";
 }
 
+# -t ハンドル: ファイルは端末ではない (偽だが定義済み)。標準ハンドルは環境しだいなので定義済みかだけ見る
+{
+    open(my $tfh, '<', $0) or die;
+    my $tdup; open($tdup, '<&', $tfh) or die;
+    print "-t: ", join(" ", (-t $tfh) ? "tty" : "file", defined(-t $tfh) ? "defined" : "undef", (-t $tdup) ? "tty" : "file",
+        defined(-t STDIN) ? "defined" : "undef", defined(-t STDERR) ? "defined" : "undef"), "\n";
+    close $tfh;
+}

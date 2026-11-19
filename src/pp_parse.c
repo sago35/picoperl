@@ -184,6 +184,10 @@ static int lex_filetest_operand(pp_lex *L) {
     char c = L->src[i];
     if (c == '$') return i + 1 < L->len && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$');
     if (c == '_' && !(i + 1 < L->len && (isalnum((unsigned char)L->src[i + 1]) || L->src[i + 1] == '_' || L->src[i + 1] == ':'))) return 1;   /* -d _ */
+    if (L->src[L->pos + 1] == 't' && c >= 'A' && c <= 'Z') {   /* -t STDIN: a handle name (capitals only) */
+        while (i < L->len && (isupper((unsigned char)L->src[i]) || isdigit((unsigned char)L->src[i]) || L->src[i] == '_')) i++;
+        return i >= L->len || !(is_ident_start((unsigned char)L->src[i]) || L->src[i] == ':' || L->src[i] == '(');
+    }
     return c == '"' || c == '\'';
 }
 /* is a '*' here a typeglob sigil rather than multiplication? Yes where a term is expected.
@@ -657,7 +661,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
     }
-    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzl", peekc(L, 1))
+    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzlt", peekc(L, 1))
              && !is_ident_char(peekc(L, 2)) && lex_filetest_operand(L)) {
         /* file test: -e $path, -d "dir" ... (one token "-e"; the letter must not reach the
            lexer on its own, `s $x` would start a substitution) */
@@ -974,6 +978,8 @@ static pp_node *parse_assign(pp_parser *P);
 static pp_node *parse_comma_list(pp_parser *P);
 static pp_node *parse_binary(pp_parser *P, int minprec);
 static pp_node *parse_unary(pp_parser *P);
+static int is_handle_name(const char *id, int len);
+static pp_node *handle_const(pp_parser *P, const char *id, int len);
 static pp_node *parse_term(pp_parser *P);
 static pp_node *parse_statement(pp_parser *P);
 static pp_node *parse_ident_term(pp_parser *P);
@@ -1681,6 +1687,13 @@ static pp_node *parse_unary(pp_parser *P) {
     if (t->type == T_OP) {
         if (!strcmp(t->op, "!")) { advance(P); pp_node *n = node(P, N_NOT); n->a = parse_unary(P); return n; }
         if (t->op[0] == '-' && isalpha((unsigned char)t->op[1]) && !t->op[2]) {   /* file test: a named unary operator */
+            if (t->op[1] == 't') {   /* -t HANDLE: is it a terminal? (a call to the native __isatty) */
+                pp_node *c = node(P, N_CALL); c->sym = pp_intern(P->I, "&__isatty", 9);
+                advance(P);
+                if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len)) { node_add(c, handle_const(P, P->cur.s, P->cur.len)); advance(P); }
+                else node_add(c, parse_binary(P, PREC_NAMED_UNARY));
+                return c;
+            }
             pp_node *n = node(P, N_FILETEST); n->op = (uint8_t)t->op[1];
             advance(P);
             n->a = parse_binary(P, PREC_NAMED_UNARY);
