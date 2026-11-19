@@ -110,3 +110,27 @@ print "properties: ", join("", map { $_ ? 1 : 0 } "a1 b" =~ /^\pL/, "a1 b" =~ /\
 my $pcount = () = "ab cd" =~ /\PM/g; my @pwords = "one two3" =~ /(\p{Alpha}+)/g;
 print "property counts: $pcount @pwords\n";
 my $punknown = "\\p{NoSuchProperty}"; eval { my $r = "x" =~ /$punknown/ }; print "unknown property: ", ($@ ? "dies" : "ok"), "\n";
+# (?>...) アトミックグループ: 中に戻ってやり直さない。中で取ったグループは、外で後戻りしたら取り消される
+for my $t ('aaab', 'aaa', '"x\"y" z', 'foobar', 'abcabc') {
+    my @r;
+    push @r, ($t =~ /^(?>a+)ab/ ? 1 : 0), ($t =~ /^(?>a*)b/ ? 1 : 0);
+    push @r, ($t =~ /^"((?>[^\\"]*(?:\\.[^\\"]*)*))"/ ? "<$1>" : '-');
+    push @r, ($t =~ /(?>foo|foob)ar/ ? 1 : 0), ($t =~ /^(?>(a)bc|x)+$/ ? "<$1>" : '-');
+    push @r, ($t =~ /(?:(?>(a))x|a(b))/ ? (defined $1 ? "d" : "u") . ($2 // '') : '-');
+    print "atomic $t: @r\n";
+}
+# /x のコメントの中は変数として読まない (strict でもエラーにならない)。[#] と \# はコメントではない
+{
+    use strict;
+    my $xs = "ab # x"; my $xd = "b";
+    print "x comments: ", join("", map { $_ ? 1 : 0 }
+        scalar($xs =~ /^ a   # $nosuch @nosuch
+                        b \ \# [ #] x # $more
+                      /x),
+        scalar($xs =~ / a (?-x:$xd)  # $nope
+                      /x),
+        scalar("a#b" =~ /a [#] b/x), scalar("a]#b" =~ /a []#]+ b # $no
+                      /x)), "\n";
+}
+# (?^aa:...) などの文字セット系フラグ (a u l d) と p は受け付けて無視する
+print "charset flags: ", join("", map { $_ ? 1 : 0 } "xAy" =~ /(?^aa:A)/, "xay" =~ /(?^aai:A)/, "xay" =~ /(?^u:A)/, "xAy" =~ /(?a)A/, "xAy" =~ /(?^lp:A)/), "\n";

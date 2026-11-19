@@ -286,6 +286,7 @@ static rnode *parse_atom(rparser *P, int depth) {
             if (k == ':') ;
             else if (k == '=') look = 1;
             else if (k == '!') { look = 1; neg = 1; }
+            else if (k == '>') { look = 1; neg = 2; }   /* (?>...): atomic, no backtracking into it */
             else if (k == '#') { while (P->p < P->end && *P->p != ')') P->p++; if (P->p < P->end) P->p++; return rnew(P, R_EMPTY); }
             else if (k == '<' && P->p < P->end && (*P->p == '=' || *P->p == '!')) { rfail(P, "lookbehind is not supported"); return NULL; }
             else if ((k == '<' || k == '\'') && P->p < P->end && (isalpha((unsigned char)*P->p) || *P->p == '_')) {
@@ -309,7 +310,7 @@ static rnode *parse_atom(rparser *P, int depth) {
                 if (*P->p == '^') { fl = 0; P->p++; }
                 while (P->p < P->end && *P->p != ')' && *P->p != ':') {
                     int f = *P->p++;
-                    int bit = f == 'i' ? PP_RE_I : f == 'm' ? PP_RE_M : f == 's' ? PP_RE_S : f == 'x' ? PP_RE_X : f == '-' ? 0 : -1;
+                    int bit = f == 'i' ? PP_RE_I : f == 'm' ? PP_RE_M : f == 's' ? PP_RE_S : f == 'x' ? PP_RE_X : (f == '-' || f == 'a' || f == 'u' || f == 'l' || f == 'd' || f == 'p') ? 0 : -1;   /* charset flags and /p change nothing here */
                     if (bit < 0) { rfail(P, "unknown flag in (?...)"); return NULL; }
                     if (f == '-') on = 0; else if (on) fl |= bit; else fl &= ~bit;
                 }
@@ -378,7 +379,7 @@ static rnode *parse_cat(rparser *P, int depth) {
                 } else ok = 0;     /* a literal '{' */
             }
             if (ok) {
-                if (a->type == R_BOL || a->type == R_EOL || a->type == R_BOS || a->type == R_EOS || a->type == R_WORDB || a->type == R_NWORDB || a->type == R_LOOK) { rfail(P, "Quantifier on an anchor or lookahead"); return NULL; }
+                if (a->type == R_BOL || a->type == R_EOL || a->type == R_BOS || a->type == R_EOS || a->type == R_WORDB || a->type == R_NWORDB || (a->type == R_LOOK && a->neg != 2)) { rfail(P, "Quantifier on an anchor or lookahead"); return NULL; }
                 if (min > 1000 || max > 1000) { rfail(P, "Quantifier in {,} bigger than 1000 in regex"); return NULL; }
                 if (max >= 0 && max < min) { rfail(P, "Can't do {n,m} with n > m in regex"); return NULL; }
                 P->p = q;
@@ -708,6 +709,21 @@ static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int
             }
             case I_LOOK: {
                 if (depth > 20) { result = -1; goto done; }
+                if (prog[pc + 1] == 2) {
+                    /* atomic group: take the first way the body matches (the sub-run left its end
+                       in caps[1]) and go on from there; the choices inside it are gone. Groups it
+                       captured are undone if the match later backtracks past this point. */
+                    int ns = pp_re_nslots(re);
+                    int old[ns];
+                    memcpy(old, caps, sizeof old);
+                    int r = run(re, s, len, pc + 3, sp, start, -1, caps, depth + 1, steps);
+                    if (r < 0) { result = -1; goto done; }
+                    if (!r) { fail = 1; break; }
+                    for (int i = 2; i < ns; i++)
+                        if (caps[i] != old[i] && !bt_push(&st, K_RESTORE, i, old[i], 0)) { result = -1; goto done; }
+                    sp = caps[1]; pc = prog[pc + 2];
+                    break;
+                }
                 int r = run(re, s, len, pc + 3, sp, start, -1, caps, depth + 1, steps);
                 if (r < 0) { result = -1; goto done; }
                 if (r != prog[pc + 1]) pc = prog[pc + 2]; else fail = 1;
@@ -715,7 +731,8 @@ static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int
             }
             case I_MATCH:
                 if (notempty_at >= 0 && sp == notempty_at && start == notempty_at && depth == 0) { fail = 1; break; }
-                if (depth == 0) { caps[0] = start; caps[1] = sp; }
+                if (depth == 0) caps[0] = start;
+                caps[1] = sp;   /* at depth 0 the end of the match; below, where the sub-program stopped */
                 result = 1;
                 goto done;
             default:

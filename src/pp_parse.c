@@ -1259,10 +1259,20 @@ static pp_node *builtin_call1(pp_parser *P, const char *name, pp_node *arg) {
 static pp_node *pattern_node(pp_parser *P, const char *s, int len, int delim, int cflags) {
     pp_node *r = node_tmp(P, N_INTERP);
     char *buf = NULL; int n = 0, cap = 0;
-    int quoting = 0, dyn = 0;
+    int quoting = 0, dyn = 0, incls = 0;
     int line = P->cur.line;
     for (int i = 0; i < len; ) {
         int c = (unsigned char)s[i];
+        if ((cflags & PP_RE_X) && !quoting) {
+            /* under /x a comment runs to the end of the line and nothing in it interpolates
+               ("# $quote" names no variable); a '#' inside [...] is an ordinary character */
+            if (c == '[' && !incls) { incls = 1; append_char(&buf, &n, &cap, c); i++; if (i < len && s[i] == '^') append_char(&buf, &n, &cap, s[i++]); if (i < len && s[i] == ']') append_char(&buf, &n, &cap, s[i++]); continue; }
+            if (c == ']') incls = 0;
+            if (c == '#' && !incls) {
+                while (i < len && s[i] != '\n') append_char(&buf, &n, &cap, s[i++]);
+                continue;
+            }
+        }
         if (c == '\\' && i + 1 < len) {
             int d = (unsigned char)s[i+1];
             if (delim != '\'' && d == 'Q') { quoting = 1; i += 2; continue; }
