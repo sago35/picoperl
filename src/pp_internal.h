@@ -52,6 +52,9 @@ extern int pp_tie_count;                           /* how many ties exist (0: no
 /* call METHOD on a tie object (or a class name) with args; must: die when there is no such method */
 pp_val  pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must);
 
+/* the text after __DATA__ (or the main script's __END__) becomes the handle DATA of package pkg */
+void    pp_set_data_handle(pp_interp *I, const char *pkg, const char *text, int len);
+
 /* DESTROY. Once some class defines a DESTROY (pp_destroy_on), a blessed object whose last
    reference goes away is kept and queued instead of freed; pp_destroy_run() calls the methods
    at the next safe point (the end of a statement) and then lets the objects go. */

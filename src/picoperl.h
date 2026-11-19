@@ -340,6 +340,7 @@ struct pp_interp {
     struct pp_stmts *stmts;      /* statement lists being run, innermost first (for goto LABEL) */
     pp_node *main_unit;          /* the program given to pp_run: INIT blocks run when it starts */
     pp_env  *main_env;            /* the main script's file scope (held for the DESTROYs at exit) */
+    uint8_t  main_seen;           /* the main script has started to be parsed (its __END__ text is DATA) */
     uint8_t  init_ran;           /* ... and after that it is too late for more of them */
     int      eval_seq;           /* number of eval STRINGs so far: their "file" is "(eval N)" */
     pp_env  *pending_env;        /* file scope of the file being parsed, made early when a BEGIN block

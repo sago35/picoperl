@@ -398,6 +398,20 @@ static int is_sub_stub(const pp_obj *o) {
     return o->kind == PP_OCODE && !o->u.code.body && !o->u.code.native && !o->u.code.is_const;
 }
 static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
+void pp_set_data_handle(pp_interp *I, const char *pkg, const char *text, int len) {
+    char name[256];
+    if (!strcmp(pkg, "main")) pp_snprintf(name, sizeof name, "DATA"); else pp_snprintf(name, sizeof name, "%s::DATA", pkg);
+    pp_sym *gs = pp_glob_named(I, name);
+    if (!gs) return;
+    pp_obj *glob = pp_glob_obj(I, gs);
+    pp_obj *cell = pp_obj_new(PP_OSCALAR);
+    cell->u.scalar = pp_strn(text, len);
+    pp_obj *f = pp_obj_new(PP_OFILE);        /* an in-memory file on that text */
+    f->u.file.mem = cell;                    /* (takes the reference to the cell) */
+    f->u.file.fp = cell;
+    if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io);
+    glob->u.glob.io = f;
+}
 /* run the DESTROY methods that are waiting; called between statements */
 void pp_destroy_run(pp_interp *I) {
     /* A DESTROY that is running may drop more objects: those are destroyed right away (the

@@ -70,6 +70,7 @@ struct pp_parser {
     pp_interp *I;
     int state_n;                          /* `state` variables numbered so far in the enclosing sub */
     pp_lex L;
+    uint8_t is_main;             /* this is the main script (not a required file, not an eval) */
     pp_tok cur, nxt;
     int has_nxt;
     pscopes *sc;                          /* shared with sub-parsers (string interpolation) */
@@ -563,8 +564,17 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             }
             L->pos = save; L->line = saveline;
         }
-        if (len == 7 && memcmp(id, "__END__", 7) == 0) { L->pos = L->len; t->type = T_EOF; return; }
-        if (len == 8 && memcmp(id, "__DATA__", 8) == 0) { L->pos = L->len; t->type = T_EOF; return; }
+        if ((len == 7 && memcmp(id, "__END__", 7) == 0) || (len == 8 && memcmp(id, "__DATA__", 8) == 0)) {
+            /* the end of the code. What follows is read through <DATA>: after __DATA__ in any
+               file (the DATA of its package), after __END__ in the main script only. */
+            if (len == 8 || P->is_main) {
+                int i = L->pos;
+                while (i < L->len && L->src[i] != '\n') i++;
+                if (i < L->len) i++;
+                pp_set_data_handle(P->I, len == 8 ? P->pkg : "main", L->src + i, L->len - i);
+            }
+            L->pos = L->len; t->type = T_EOF; return;
+        }
         t->type = T_IDENT; t->s = id; t->len = len;
         term = 0;
         if ((len == 8 && memcmp(id, "__LINE__", 8) == 0) || (len == 8 && memcmp(id, "__FILE__", 8) == 0)) term = 1;
@@ -2789,7 +2799,10 @@ static pp_node *parse_ident_term(pp_parser *P) {
         }
         if (kind == BK_UNARY) {
             if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); return parse_postfix(P, n); }
-            if (starts_term(P) && !(cur_is_op(P, "<") && !tok_is_ident(peek(P), "STDIN"))) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
+            /* a '<' is the start of an argument only as <STDIN> / <FH> (scalar <DATA>), else it is "less than" */
+            int lt_read = 0;
+            if (cur_is_op(P, "<")) { pp_tok *nx2 = peek(P); lt_read = nx2->type == T_IDENT && is_handle_name(nx2->s, nx2->len) && P->L.pos < P->L.len && P->L.src[P->L.pos] == '>'; }
+            if (starts_term(P) && !(cur_is_op(P, "<") && !lt_read)) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
             return n->n ? n : parse_postfix(P, n);   /* shift->[0], shift->method(...) */
         }
         parse_call_args(P, n);
@@ -3369,9 +3382,15 @@ static void shrink_ast(pp_arena *arena, pp_node *n) {
    package, pragmas and `my` variables of the place it is evaluated at, its nodes go into an
    arena of their own (*arena, freed by the caller once the code has run), and a syntax error
    goes to errbuf instead of stderr. */
+/* the first file parsed (not an eval string) is the main script: its __END__ text is DATA */
+static __attribute__((noinline)) void note_main_script(pp_parser *P, int is_file) {
+    P->is_main = (uint8_t)(is_file && !P->I->main_seen);
+    if (is_file) P->I->main_seen = 1;
+}
 static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, int *err, pp_node *site, char *errbuf, int errcap, pp_arena **arena) {
     pp_parser P;
     parser_init(&P, I, filename, src, (int)strlen(src), 1, NULL);
+    note_main_script(&P, site == NULL);
     *err = 0;
     int subs_before = I->nall_subdefs;
     if (site) { P.sc->arena = pp_arena_new(); P.sc->track = 1; *arena = P.sc->arena; }
