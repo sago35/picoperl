@@ -292,8 +292,32 @@ static NOINLINE pp_val eval_filetest(pp_interp *I, pp_node *n, int ctx, pp_list 
             case 'd': t = m & PP_FT_DIR; break;
             case 'r': t = m & PP_FT_READ; break;
             case 'w': t = m & PP_FT_WRITE; break;
-            case 'x': t = m & PP_FT_EXEC; break;
+            case 'x': case 'X': t = m & PP_FT_EXEC; break;
             case 'l': t = m & PP_FT_LINK; break;
+            case 'R': t = m & PP_FT_READ; break;
+            case 'W': t = m & PP_FT_WRITE; break;
+            case 'o': case 'O': t = 1; break;                 /* there is one user here: the owner */
+            case 'p': case 'S': case 'b': case 'c': case 'u': case 'g': case 'k': t = 0; break;   /* no pipes, sockets, devices, set-id bits */
+            case 'T': case 'B': {
+                /* text or binary, guessed from the first block like perl: a NUL byte or many
+                   odd bytes make it binary; an empty file is both */
+                t = 0;
+                if (m & PP_FT_DIR) { t = n->op == 'B'; break; }   /* perl calls a directory binary */
+                pp_str *path = pp_to_str(pp_global(I, pp_intern(I, "$\002stat", 6))->u.scalar);
+                void *fp = pp_host_fopen(path->d, "r");
+                pp_str_decref(path);
+                if (!fp) break;
+                unsigned char blk[512];
+                int got = (int)pp_host_fread(fp, (char *)blk, sizeof blk), odd = 0, nul = 0;
+                pp_host_fclose(fp);
+                for (int k = 0; k < got; k++) {
+                    if (!blk[k]) nul = 1;
+                    else if (blk[k] < 32 && !strchr("\n\r\t\f\b\033", blk[k])) odd++;
+                }
+                int binary = got > 0 && (nul || odd * 3 > got);
+                t = got == 0 ? 1 : n->op == 'B' ? binary : !binary;
+                break;
+            }
             case 'z': t = size == 0; break;
             default:  t = size > 0; break;   /* 's' */
             }

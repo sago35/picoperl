@@ -2139,6 +2139,38 @@ static pp_val n_re_pattern(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_list_push(out, pp_strn(re->source, re->srclen));
     return pp_strn(fl, n);                 /* the caller appends the last element */
 }
+/* read(FH, $buf, LEN, OFFSET): the parser passes \$buf. Returns the number of bytes read (0 at
+   the end of the file), undef for something that is no open file. getc(FH): one byte or undef. */
+static pp_val n_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 3 || a->v[1].t != PP_REF || a->v[1].u.o->kind != PP_OSCALAR) return pp_die(I, "Can't modify non-lvalue expression in read");
+    int fd;
+    pp_obj *f = handle_of(I, a->v[0], &fd);
+    if (!f || !f->u.file.fp) return pp_undef();
+    int64_t want = pp_to_int(a->v[2]), off = a->n > 3 ? pp_to_int(a->v[3]) : 0;
+    if (want < 0) return pp_die(I, "Negative length");
+    pp_obj *cell = a->v[1].u.o;
+    pp_str *old = a->n > 3 ? pp_to_str(cell->u.scalar) : pp_str_new("", 0);
+    if (off < 0) off += old->len;
+    if (off < 0) { pp_str_decref(old); return pp_die(I, "Offset outside string"); }
+    pp_str *s = pp_str_new(old->d, off < old->len ? (int)off : old->len);
+    pp_str_decref(old);
+    while (s->len < off) str_append(&s, "\0", 1);       /* an offset past the end pads with NULs */
+    int64_t got = 0;
+    char c;
+    while (got < want && f_read1(f, &c)) { str_append(&s, &c, 1); got++; }
+    pp_release(cell->u.scalar);
+    cell->u.scalar = pp_str_val(s);
+    return pp_int(got);
+}
+static pp_val n_getc(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int fd;
+    pp_obj *f = a->n ? handle_of(I, a->v[0], &fd) : NULL;
+    char c;
+    if (!f || !f->u.file.fp || !f_read1(f, &c)) return pp_undef();
+    return pp_strn(&c, 1);
+}
 /* pos($s) = N and $#a = N: the parser passes \$s / \@a and the new value, which is returned */
 static pp_val n_pos_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)ctx; (void)out;
@@ -2160,6 +2192,8 @@ static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_copy(a->v[1]);
 }
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "__read", n_read);
+    pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);
     pp_register(I, "__lastidx_set", n_lastidx_set);
     pp_register(I, "re::is_regexp", n_re_is_regexp);

@@ -674,7 +674,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
     }
-    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzlt", peekc(L, 1))
+    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzltTBoORWXpSbcugk", peekc(L, 1))
              && !is_ident_char(peekc(L, 2)) && lex_filetest_operand(L)) {
         /* file test: -e $path, -d "dir" ... (one token "-e"; the letter must not reach the
            lexer on its own, `s $x` would start a substitution) */
@@ -2641,6 +2641,28 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *r = node(P, N_REF); r->a = c->list[0]; r->line = line;
         c->list[0] = r;
         return len == 3 ? c : parse_postfix(P, c);
+    }
+    if (((len == 4 && !memcmp(id, "read", 4)) || (len == 7 && !memcmp(id, "sysread", 7)) || (len == 4 && !memcmp(id, "getc", 4)))
+        && !(nx->type == T_OP && (!strcmp(nx->op, "=>") || !strcmp(nx->op, "->") || !strcmp(nx->op, "::"))) && !is_declared(P, sym_sigil(P, '&', id, len))) {
+        /* read(FH, $buf, LEN, OFFSET) is __read(FH, \$buf, LEN, OFFSET); getc(FH) is __getc(FH) */
+        int is_getc = id[0] == 'g';
+        advance(P);
+        int parens = accept_op(P, "(");
+        pp_node *c = node(P, N_CALL); c->line = line;
+        c->sym = is_getc ? pp_intern(P->I, "&__getc", 7) : pp_intern(P->I, "&__read", 7);
+        if (is_getc && (parens ? cur_is_op(P, ")") : !starts_term(P))) node_add(c, handle_const(P, "STDIN", 5));
+        else if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len) && (is_getc || is_op(peek(P), ","))) { node_add(c, handle_const(P, P->cur.s, P->cur.len)); advance(P); }
+        else node_add(c, parse_assign(P));
+        if (!is_getc) {
+            expect_op(P, ",");
+            pp_node *r = node(P, N_REF); r->a = parse_assign(P); r->line = line;
+            node_add(c, r);
+            expect_op(P, ",");
+            node_add(c, parse_assign(P));
+            if (accept_op(P, ",")) node_add(c, parse_assign(P));
+        }
+        if (parens) expect_op(P, ")");
+        return c;
     }
     if (len == 7 && !memcmp(id, "opendir", 7) && !is_declared(P, sym_sigil(P, '&', id, len))) {
         /* opendir(my $dh, $path) is $dh = __opendir($path) (the handle, or undef);

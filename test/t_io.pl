@@ -165,3 +165,26 @@ open(OUT, '>', \my $named) or die; print OUT "bareword"; close OUT; print "$name
 { open(my $s, '<', $0) or die; my $one = <$s>; local $/; my $rest = <$s>; print length($one) > 0 && length($rest) > 100 ? "file slurp ok" : "file slurp ng", " ", (defined(<$s>) ? "more" : "end"), "\n"; }
 print defined($/) ? "irs default [" . ($/ eq "\n" ? "newline" : $/) . "]\n" : "irs undef\n";
 }
+# read / sysread / getc
+{
+open(my $fh, '<', $0) or die; my $buf;
+my $n = read($fh, $buf, 10); print "$n [$buf]\n";
+$n = read($fh, $buf, 5, length $buf); print "$n [$buf]\n";
+$n = read $fh, $buf, 3; print "$n [$buf] ", getc($fh), getc $fh, "\n";
+my $small = "ab"; $n = read($fh, $small, 2, 5); print "$n ", length($small), " ", join(",", map { ord } split //, $small), "\n";
+{ open(my $s, "<", $0) or die; my $sb = "xyz"; my $sn = sysread($s, $sb, 4, -2); print "$sn [$sb]\n"; }
+seek($fh, 0, 2); $n = read($fh, $buf, 10); print "at eof: $n [", length($buf), "] ", (defined getc($fh) ? "c" : "undef"), "\n";
+close $fh;
+my $text = "hello world"; open(my $m, '<', \$text) or die; read($m, my $w, 5); print "$w|", getc($m), "|"; print "\n";
+open(FH, '<', $0) or die; read(FH, $buf, 3); print "$buf\n"; close FH;
+my %h = (read => 1, getc => 2); print "$h{read}$h{getc}\n";
+}
+# ファイルテスト -T -B (テキストかバイナリか) と、常に決まった答えになるもの
+{
+    open(my $tb, ">", "test/io_tmp.txt") or die; print $tb "a\0b\1\2\3"; close $tb;
+    for my $f ($0, "test/io_tmp.txt", "test", "test/no_such_file") {
+        my @r = map { defined $_ ? ($_ ? 1 : 0) : "u" } (-T $f, -B $f, -p $f, -S $f, -b $f, -c $f, -o $f, -O $f, -R $f, -W $f, -u $f, -g $f, -k $f);
+        stat($f); push @r, (-T _ ? 1 : 0), (-B _ ? 1 : 0); print "file tests: @r\n";
+    }
+    unlink "test/io_tmp.txt";
+}
