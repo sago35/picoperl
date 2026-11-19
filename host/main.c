@@ -432,6 +432,24 @@ static pp_val n_heap_free(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static pp_val n_sim_exit_after(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
 
+/* Cwd::_getcwd() / Cwd::_realpath($path): what lib/Cwd.pm asks the OS (the board has neither) */
+static pp_val n_cwd_getcwd(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)a; (void)ctx; (void)out;
+    char buf[4096];
+    return getcwd(buf, sizeof buf) ? pp_cstr(buf) : pp_undef();
+}
+static pp_val n_cwd_realpath(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    pp_str *path = pp_to_str(a->v[0]);
+    char *r = realpath(path->d, NULL);       /* NULL: let it allocate, no PATH_MAX guessing */
+    pp_str_decref(path);
+    if (!r) return pp_undef();
+    pp_val v = pp_cstr(r);
+    free(r);
+    return v;
+}
+
 void pp_host_register(pp_interp *I) {
     pp_register(I, "Gpio::_init", n_gpio_init);
     pp_register(I, "Gpio::_set_dir", n_gpio_set_dir);
@@ -463,6 +481,8 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_led", n_board_led);
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
+    pp_register(I, "Cwd::_getcwd", n_cwd_getcwd);
+    pp_register(I, "Cwd::_realpath", n_cwd_realpath);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
     pp_register(I, "Adc::_configure", n_adc_configure);
     pp_register(I, "I2c::_init", n_ssd_noop);
