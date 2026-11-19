@@ -11,7 +11,6 @@
   body { margin: 0 auto; max-width: 64rem; padding: 1rem; font-family: system-ui, sans-serif;
          display: flex; flex-direction: column; gap: .6rem; min-height: 100vh; }
   h1 { font-size: 1.1rem; margin: 0; }
-  h1 small { font-weight: normal; opacity: .7; }
   .bar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
   button, select { font: inherit; padding: .3rem .9rem; }
   #run { font-weight: bold; }
@@ -29,7 +28,7 @@
   .pane h2 { font-size: .68rem; margin: 0 0 .35rem; opacity: .55; font-weight: normal; letter-spacing: .05em; }
   #oled { image-rendering: pixelated; background: #000; border-radius: 3px; display: block; }
   #leds { display: flex; gap: 7px; padding: .3rem 0; }
-  #leds span { width: 18px; height: 18px; border-radius: 50%; background: #1a1a1a; border: 1px solid #0006; }
+  #leds span { width: 18px; height: 18px; border-radius: 50%; background: #ccc; border: 1px solid #0003; }
   /* panel25: 10x10, each LED placed by its column / row (see panel25Pos) */
   #leds.panel25 { display: grid; grid-template-columns: repeat(10, 18px); grid-template-rows: repeat(10, 18px); gap: 6px; }
   #leds.panel25 span { border-radius: 4px; }
@@ -46,7 +45,7 @@
 </style>
 </head>
 <body>
-<h1>picoperl playground <small>— RP2040 向け Perl サブセットをブラウザで試す (wasm 版)</small></h1>
+<h1>picoperl playground</h1>
 <div class="bar">
   <select id="sample"></select>
   <button id="run">実行 (Ctrl+Enter)</button>
@@ -500,7 +499,8 @@ function drawLeds(m) {
   for (let i = 0; i < n; i++) {
     const r = m.data[i * 3], g = m.data[i * 3 + 1], b = m.data[i * 3 + 2];
     const el = box.children[i];
-    el.style.background = `rgb(${boost(r)},${boost(g)},${boost(b)})`;
+    /* an LED that is off falls back to the light gray in the stylesheet */
+    el.style.background = (r || g || b) ? `rgb(${boost(r)},${boost(g)},${boost(b)})` : '';
     el.style.boxShadow = (r || g || b) ? `0 0 8px rgba(${boost(r)},${boost(g)},${boost(b)},.8)` : 'none';
     el.title = `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
   }
