@@ -216,3 +216,41 @@ print sg_imp("Class", 1, 2), " ", sg_mid(1, 2, 3), " ", sg_last(7, 8), " ", sg_t
 print eval { sg_mid(1, 2); 1 } ? "no error" : "too few: " . ($@ =~ /Too few arguments/ ? "ok" : $@), "\n";
 print eval { sg_last(1, 2, 3); 1 } ? "no error" : "too many: " . ($@ =~ /Too many arguments/ ? "ok" : $@), "\n";
 }
+
+# @_ 経由で呼び出し元の変数を書き換える (戻ったあとで書き戻す)
+{
+sub inc { $_[0]++ }
+sub strip { $_[1] =~ s/\.pm\z//; return }
+sub setall { $_ *= 2 for @_ }
+sub upper { my $self = shift; $_[0] = uc $_[0]; $_[1] .= "!" if @_ > 1; 1 }
+sub swap2 { ($_[0], $_[1]) = ($_[1], $_[0]) }
+sub trim { for (@_) { s/^\s+//; s/\s+$// } }
+sub chomper { chomp($_[0]); chop $_[1] }
+sub noop { my ($x) = @_; $x++; $_[0] }
+my $x = 1; inc($x); inc($x); print "x=$x\n";
+my $n = "A.pm"; main->strip($n); print "n=$n\n";
+my @a = (1, 2, 3); setall(@a); print "a=@a\n";
+my %h = (k => 1, s => "str"); inc($h{k}); print "h=$h{k}\n";
+my $r = { list => [5, 6], name => " pad " }; inc($r->{list}[1]); trim($r->{name}); print "r=$r->{list}[1] [$r->{name}]\n";
+my ($p, $q) = ("p", "q"); main->upper($p, $q); print "$p $q\n";
+swap2($p, $q); print "$p $q\n";
+my ($s1, $s2) = ("  a  ", "\tb\n"); trim($s1, $s2); print "[$s1][$s2]\n";
+my ($l1, $l2) = ("line\n", "word"); chomper($l1, $l2); print "[$l1][$l2]\n";
+my $code = \&inc; $code->($x); &$code($x); &inc($x); print "x=$x\n";
+my $y = 10; noop($y); print "y=$y\n";
+# 配列の途中と、定数との混在
+my @b = (1, 2); my $z = 7; my $lit = 5; setall($lit, @b, $z); print "b=@b z=$z\n";
+my $i = 1; inc($b[$i]); inc($b[0]); print "b=@b\n";
+# die で抜けても、その前の書き換えは残る
+sub half { $_[0] = "changed"; die "stop\n" } my $d = "orig"; eval { half($d) }; print "d=$d err=$@";
+# 再帰と入れ子
+sub down { return if $_[0] <= 0; $_[0]--; $_[1] .= "x"; down($_[0], $_[1]) } my ($c, $t) = (3, ""); down($c, $t); print "c=$c t=$t\n";
+
+# メソッド
+{ package Obj; sub new { bless {}, shift } sub fill { my $self = shift; $_[0] = "filled"; $self } sub repl { $_[0] = "newobj" } }
+my $obj = Obj->new; my $buf; $obj->fill($buf); print "buf=$buf\n";
+my $anon = sub { $_[0] .= "+" }; my $w = "w"; $anon->($w) for 1 .. 3; print "w=$w\n";
+# 書き換えないサブは今までどおり
+sub plain { my @c = @_; $c[0] = 99; scalar @c } my $k = 1; plain($k); print "k=$k\n";
+my @e = (); setall(@e, $k); print "k=$k\n";
+}

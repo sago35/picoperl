@@ -1638,6 +1638,73 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
 
 static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out);
 
+/* A sub that writes to its arguments ($_[0] = ..., s/// on $_[1], for (@_) ...) changes the
+   caller's variables in perl, where @_ holds aliases. Here @_ holds copies, so the changes are
+   copied back after the call: the sub leaves what it changed in I->wb (args_changed), and the
+   calling expression writes those values to the variables its arguments came from
+   (args_writeback). Only subs the parser marked (PP_BLOCK_WARGS) take part.
+   Not covered: changes after unshift / splice / pop / an assignment to @_, a sub that hands
+   @_ on to the one that writes, and argument expressions other than the ones below. */
+static NOINLINE void args_changed(pp_interp *I, pp_obj *code, pp_obj *argv, pp_list *orig, int nshift) {
+    pp_list_free(&I->wb); I->wb_code = NULL;
+    if (nshift + argv->u.arr.n == orig->n) {         /* only shifted: element i was argument i + nshift */
+        for (int i = 0; i < argv->u.arr.n; i++) {
+            if (pp_val_same(argv->u.arr.v[i], orig->v[i + nshift])) continue;
+            pp_list_push(&I->wb, pp_int(i + nshift));
+            pp_list_push(&I->wb, pp_copy(argv->u.arr.v[i]));
+        }
+        if (I->wb.n) I->wb_code = code;
+    }
+    pp_list_free(orig);
+}
+/* can this argument be evaluated again as an lvalue without doing anything else? */
+static int arg_pure_lv(pp_node *n) {
+    switch (n->type) {
+    case N_VAR: return 1;
+    case N_AELEM: case N_HELEM: return arg_pure_lv(n->a) && (n->b->type == N_CONST || n->b->type == N_VAR);
+    case N_RV2AV: case N_RV2HV: case N_RV2SV: return arg_pure_lv(n->a);
+    default: return 0;
+    }
+}
+static void arg_store(pp_interp *I, pp_node *n, int k, pp_val v) {
+    if (n->type == N_VAR && n->sym->name[0] == '@') {
+        pp_obj *arr = pp_get_array(I, n, 0, NULL);
+        if (!arr) return;
+        if (k < arr->u.arr.n) { pp_release(arr->u.arr.v[k]); arr->u.arr.v[k] = pp_copy(v); if (arr->tied) pp_tie_writeback(I, arr); }
+        pp_obj_decref(arr);
+        return;
+    }
+    pp_val *slot = pp_lvalue(I, n);
+    if (slot && !I->ctl) { pp_release(*slot); *slot = pp_copy(v); }
+}
+/* nodes[0..nn): the argument expressions; first: the invocant of a method call (argument 0) */
+static NOINLINE void args_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn) {
+    pp_list wb = I->wb;                              /* detach: storing may call subs (tie) */
+    memset(&I->wb, 0, sizeof I->wb); I->wb_code = NULL;
+    int saved_ctl = I->ctl; pp_sym *saved_label = I->ctl_label;   /* also after die: perl's aliases were written before it */
+    I->ctl = CTL_NONE;
+    int pos = 0, w = 0;                              /* pos: index of the first value of the current expression */
+    for (int i = first ? -1 : 0; i < nn && w < wb.n && !I->ctl; i++) {
+        pp_node *a = i < 0 ? first : nodes[i];
+        int cnt;
+        if (i < 0) cnt = 1;                          /* the invocant is one value, whatever it is */
+        else if (a->type == N_VAR && a->sym->name[0] == '@') {
+            pp_obj *arr = pp_get_array(I, a, 0, NULL);
+            if (!arr) break;
+            cnt = arr->u.arr.n; pp_obj_decref(arr);
+        } else if ((a->type == N_VAR && a->sym->name[0] == '$') || a->type == N_AELEM || a->type == N_HELEM || a->type == N_RV2SV
+                   || a->type == N_CONST || a->type == N_INTERP || a->type == N_REF || a->type == N_ANONARRAY || a->type == N_ANONHASH || a->type == N_ANONSUB) cnt = 1;
+        else break;                                  /* a call, a hash, a list ...: the count is unknown from here on */
+        for (; w < wb.n && wb.v[w].u.i < pos + cnt; w += 2) {
+            if (wb.v[w].u.i < pos || !arg_pure_lv(a)) continue;
+            arg_store(I, a, (int)(wb.v[w].u.i - pos), wb.v[w + 1]);
+        }
+        pos += cnt;
+    }
+    if (!I->ctl) { I->ctl = saved_ctl; I->ctl_label = saved_label; }
+    pp_list_free(&wb);
+}
+
 pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out) {
     /* args: owned by caller; contents are moved into @_ */
     if (code->u.code.is_const) {
@@ -1662,6 +1729,9 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     pp_env *env = pp_env_new(code->u.code.env, 1);
     env->is_sub = 1;
     pp_obj *argv = pp_env_cell(env, 0, '@');
+    int wargs = code->u.code.body->flags & PP_BLOCK_WARGS;
+    pp_list orig = {0};                  /* a sub that writes to $_[N]: what it was given, to tell what it changed */
+    if (wargs) for (int i = 0; i < args->n; i++) pp_list_push(&orig, pp_copy(args->v[i]));
     for (int i = 0; i < args->n; i++) pp_array_push(argv, args->v[i]);
     args->n = 0;
     pp_env *saved_env = I->env;
@@ -1672,7 +1742,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->cur_code = code;                  /* for `state` variables */
     I->depth++;
     code->refcnt++;
-    struct pp_frame fr = { I->frame, saved_code, I->file_pkg, I->file, code, saved_line, ctx };
+    struct pp_frame fr = { I->frame, saved_code, I->file_pkg, I->file, code, saved_line, ctx, argv, 0 };
     I->frame = &fr;
     const char *saved_file = I->file;
     if (code->u.code.body->type == N_BLOCK && code->u.code.body->sym) I->file = code->u.code.body->sym->name + 1;
@@ -1703,6 +1773,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->call_ctx = saved_ctx;
     I->line = saved_line;
     I->warn_on = saved_warn;
+    if (wargs) args_changed(I, code, argv, &orig, fr.nshift);
     pp_env_decref(env);
     pp_obj_decref(code);
     return r;
@@ -1739,6 +1810,7 @@ static NOINLINE pp_val call_named(pp_interp *I, pp_node *n, int ctx, pp_list *ou
     }
     I->line = n->line;
     pp_val r = pp_call(I, code, &args, ctx, out);
+    if (I->wb_code == code && !(n->flags & 2)) args_writeback(I, NULL, n->list, n->n);
     pp_list_free(&args);
     return r;
 }
@@ -1762,6 +1834,7 @@ static NOINLINE pp_val eval_callref(pp_interp *I, pp_node *n, int ctx, pp_list *
     }
     I->line = n->line;
     pp_val r = pp_call(I, cv.u.o, &args, ctx, out);
+    if (I->wb_code == cv.u.o && !(n->flags & 2)) args_writeback(I, NULL, n->list, n->n);
     pp_list_free(&args);
     pp_release(cv);
     return r;
@@ -2203,7 +2276,7 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
     I->file = fname;
     /* the file runs as if called from the require: caller() at its top level names the
        requiring code (so `unless (caller) { self-test }` stays quiet), like perl */
-    struct pp_frame fr = { I->frame, I->cur_code, I->file_pkg, saved_file, NULL, saved_line, CTX_SCALAR };
+    struct pp_frame fr = { I->frame, I->cur_code, I->file_pkg, saved_file, NULL, saved_line, CTX_SCALAR, NULL, 0 };
     I->frame = &fr;
     pp_val r = pp_exec_unit(I, unit, CTX_SCALAR, NULL);
     I->frame = fr.up;
@@ -3062,6 +3135,7 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
     }
     I->line = n->line;
     r = pp_call(I, code, &args, ctx, out);
+    if (I->wb_code == code) args_writeback(I, n->a, n->list, n->n);
     pp_list_free(&args);
     pp_obj_decref(code);
     if (dyn) pp_str_decref(dyn);
@@ -3468,6 +3542,7 @@ void pp_free(pp_interp *I) {
     hold(I, NULL);
     local_unwind(I, 0);
     free(I->locals);
+    pp_list_free(&I->wb);
     pp_list_free(&I->ret);
     pp_release(I->err);
     pp_release(I->try_err);

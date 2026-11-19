@@ -808,6 +808,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (!arr) return pp_undef();
         if (arr->kind != PP_OARRAY) { pp_obj_decref(arr); return pp_die(I, "Not an ARRAY reference"); }
         if (arr->tied) pp_tie_sync(I, arr);
+        if (n->op == B_SHIFT && I->frame && I->frame->argv == arr && arr->u.arr.n) I->frame->nshift++;
         pp_val v = n->op == B_POP ? pp_array_pop(arr) : pp_array_shift(arr);
         if (arr->tied) pp_tie_writeback(I, arr);
         pp_obj_decref(arr);

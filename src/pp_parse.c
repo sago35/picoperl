@@ -86,6 +86,7 @@ struct pp_parser {
     int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
+    int argw;                                    /* the sub being parsed writes to $_[N] (or loops over @_) */
 };
 
 static char *lex_strdup(pp_lex *L, const char *s, int len) {
@@ -996,6 +997,7 @@ static void parse_block_stmts(pp_parser *P, pp_node *b);
 static int  parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs);
 static pp_node *parse_expr(pp_parser *P);
 static pp_node *parse_assign(pp_parser *P);
+static void note_argw(pp_parser *P, pp_node *t);
 static pp_node *parse_comma_list(pp_parser *P);
 static pp_node *parse_binary(pp_parser *P, int minprec);
 static pp_node *parse_unary(pp_parser *P);
@@ -1558,7 +1560,7 @@ static pp_node *parse_binary(pp_parser *P, int minprec) {
         else rhs = parse_binary(P, rassoc ? prec : prec + 1);
         pp_node *n;
         if (op == OP_MATCH || op == OP_NMATCH) {
-            if ((rhs->type == N_MATCH || rhs->type == N_SUBST || rhs->type == N_TRANS) && !rhs->a && !(rhs->type == N_MATCH && (rhs->op & PP_M_QR))) { rhs->a = lhs; n = rhs; }
+            if ((rhs->type == N_MATCH || rhs->type == N_SUBST || rhs->type == N_TRANS) && !rhs->a && !(rhs->type == N_MATCH && (rhs->op & PP_M_QR))) { rhs->a = lhs; n = rhs; if (n->type != N_MATCH && lhs->type == N_AELEM) note_argw(P, lhs); }
             else { n = node(P, N_MATCH); n->a = lhs; n->b = rhs; }
             if (op == OP_NMATCH) {
                 if (n->type == N_TRANS || (n->type == N_SUBST && (n->op & PP_M_R))) perr(P, "Using !~ with %s doesn't make sense", n->type == N_TRANS ? "tr///" : "s///r");
@@ -1635,6 +1637,14 @@ static int assign_op_of(pp_parser *P) {
     return -1;
 }
 
+/* note a write to an argument: $_[N] = ..., $_[N] =~ s///, $_[N]++, chomp($_[N]), for (@_).
+   picoperl passes copies; the caller of such a sub copies the changed values back. */
+static void note_argw(pp_parser *P, pp_node *t) {
+    if (!t) return;
+    if (t->type == N_LIST) { for (int i = 0; i < t->n; i++) note_argw(P, t->list[i]); return; }
+    if (t->type == N_AELEM) t = t->a;
+    if (t->type == N_VAR && t->sym == P->I->sym_args) P->argw = 1;
+}
 static pp_node *parse_assign(pp_parser *P) {
     pp_node *lhs = parse_ternary(P);
     int op = assign_op_of(P);
@@ -1683,6 +1693,7 @@ static pp_node *parse_assign(pp_parser *P) {
         pp_node *n = node(P, N_ASSIGN);
         n->op = (uint8_t)op;
         n->a = lhs;
+        if (lhs->type == N_AELEM || lhs->type == N_LIST) note_argw(P, lhs);
         n->b = parse_assign(P);
         return n;
     }
@@ -1789,8 +1800,8 @@ static pp_node *parse_unary(pp_parser *P) {
         if (!strcmp(t->op, "+")) { advance(P); return parse_unary(P); }
         if (!strcmp(t->op, "~")) { advance(P); pp_node *n = node(P, N_BINOP); n->op = OP_BXOR; n->a = const_int(P, -1); n->b = parse_unary(P); return n; }
         if (!strcmp(t->op, "\\")) { advance(P); pp_node *n = node(P, N_REF); n->a = parse_unary(P); return n; }
-        if (!strcmp(t->op, "++")) { advance(P); pp_node *n = node(P, N_PREINC); n->a = parse_unary(P); return n; }
-        if (!strcmp(t->op, "--")) { advance(P); pp_node *n = node(P, N_PREDEC); n->a = parse_unary(P); return n; }
+        if (!strcmp(t->op, "++")) { advance(P); pp_node *n = node(P, N_PREINC); n->a = parse_unary(P); if (n->a->type == N_AELEM) note_argw(P, n->a); return n; }
+        if (!strcmp(t->op, "--")) { advance(P); pp_node *n = node(P, N_PREDEC); n->a = parse_unary(P); if (n->a->type == N_AELEM) note_argw(P, n->a); return n; }
     }
     pp_node *n = parse_term(P);
     if (cur_is_op(P, "**")) {
@@ -1799,8 +1810,8 @@ static pp_node *parse_unary(pp_parser *P) {
         pp_node *m = node(P, N_BINOP); m->op = OP_POW; m->a = n; m->b = parse_unary(P);
         n = m;
     }
-    if (cur_is_op(P, "++")) { advance(P); pp_node *m = node(P, N_POSTINC); m->a = n; return m; }
-    if (cur_is_op(P, "--")) { advance(P); pp_node *m = node(P, N_POSTDEC); m->a = n; return m; }
+    if (cur_is_op(P, "++")) { advance(P); pp_node *m = node(P, N_POSTINC); m->a = n; if (n->type == N_AELEM) note_argw(P, n); return m; }
+    if (cur_is_op(P, "--")) { advance(P); pp_node *m = node(P, N_POSTDEC); m->a = n; if (n->type == N_AELEM) note_argw(P, n); return m; }
     return n;
 }
 
@@ -2550,8 +2561,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
             char an[128]; int al = pp_snprintf(an, sizeof an, "%s::__ANON__", P->pkg);
             n->sym = pp_intern(P->I, an, al);
         }
-        int save = P->in_sub, save_state = P->state_n;
-        P->in_sub = 1; P->state_n = 0;
+        int save = P->in_sub, save_state = P->state_n, save_argw = P->argw;
+        P->in_sub = 1; P->state_n = 0; P->argw = 0;
         scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
@@ -2564,7 +2575,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
         n->a = b;
         scope_pop(P);
-        P->in_sub = save; P->state_n = save_state;
+        if (P->argw) b->flags |= PP_BLOCK_WARGS;
+        P->in_sub = save; P->state_n = save_state; P->argw = save_argw;
         return parse_postfix(P, n);
     }
     if (len == 2 && !memcmp(id, "do", 2)) {
@@ -2847,11 +2859,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
             return parse_postfix(P, n);
         }
         if (kind == BK_UNARY) {
-            if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); return parse_postfix(P, n); }
+            int chomps = (len == 5 && !memcmp(id, "chomp", 5)) || (len == 4 && !memcmp(id, "chop", 4));
+            if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); if (chomps && n->n) note_argw(P, n->list[0]); return parse_postfix(P, n); }
             /* a '<' is the start of an argument only as <STDIN> / <FH> (scalar <DATA>), else it is "less than" */
             int lt_read = 0;
             if (cur_is_op(P, "<")) { pp_tok *nx2 = peek(P); lt_read = nx2->type == T_IDENT && is_handle_name(nx2->s, nx2->len) && P->L.pos < P->L.len && P->L.src[P->L.pos] == '>'; }
             if (starts_term(P) && !(cur_is_op(P, "<") && !lt_read)) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
+            if (chomps && n->n) note_argw(P, n->list[0]);
             return n->n ? n : parse_postfix(P, n);   /* shift->[0], shift->method(...) */
         }
         parse_call_args(P, n);
@@ -3122,8 +3136,8 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *n = node(P, N_SUBDEF);
             n->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
             advance(P);
-            int save = P->in_sub, save_state = P->state_n;
-            P->in_sub = 1; P->state_n = 0;
+            int save = P->in_sub, save_state = P->state_n, save_argw = P->argw;
+            P->in_sub = 1; P->state_n = 0; P->argw = 0;
             int first_rec = P->sc->nrecs;
             scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
             int sub_scope = scope_top(P)->id;
@@ -3141,7 +3155,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
                 advance(P);
                 scope_pop(P); scope_pop(P);
-                P->in_sub = save; P->state_n = save_state;
+                P->in_sub = save; P->state_n = save_state; P->argw = save_argw;
                 return NULL;
             }
             parse_block_stmts(P, b);
@@ -3150,7 +3164,8 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             if (nv) { b->flags |= 1; b->aux = (uint8_t)nv; }
             n->a = b;
             scope_pop(P);
-            P->in_sub = save; P->state_n = save_state;
+            if (P->argw) b->flags |= PP_BLOCK_WARGS;
+            P->in_sub = save; P->state_n = save_state; P->argw = save_argw;
             pp_interp *I = P->I;
             /* Named subs are normally defined before the file runs, closing over the file scope.
                One that uses `my` variables of an enclosing block ({ my $n; sub next_id { ++$n } })
@@ -3230,6 +3245,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                     expect_op(P, "(");
                     pp_node *n = node(P, N_FOREACH); n->sym = label;
                     n->b = cur_is_op(P, ")") ? node(P, N_LIST) : parse_expr(P);
+                    note_argw(P, n->b);
                     expect_op(P, ")");
                     scope_push(P, SCOPE_LOOPVAR);
                     pp_node *var = node(P, N_MY); var->op = 'm'; var->flags |= 1;
@@ -3264,7 +3280,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                     return n;
                 }
                 expect_op(P, ")");
-                pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); n->c = parse_block(P);
+                pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); note_argw(P, n->b); n->c = parse_block(P);
                 int nv = scope_pop(P);
                 if (nv) perr(P, "internal: unexpected declaration in foreach list");
                 return n;
@@ -3272,6 +3288,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *n = node(P, N_FOREACH); n->sym = label;
             /* the list is parsed before the loop variable comes into scope */
             n->b = cur_is_op(P, ")") ? node(P, N_LIST) : parse_expr(P);
+            note_argw(P, n->b);
             expect_op(P, ")");
             if (is_my) {
                 scope_push(P, SCOPE_LOOPVAR);
@@ -3374,7 +3391,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
         }
         if (cur_is_ident(P, "for") || cur_is_ident(P, "foreach")) {
             advance(P);
-            pp_node *n = node(P, N_FOREACH); n->a = NULL; n->b = parse_expr(P); n->c = e; n->flags |= 2;
+            pp_node *n = node(P, N_FOREACH); n->a = NULL; n->b = parse_expr(P); n->c = e; n->flags |= 2; note_argw(P, n->b);
             e = n; continue;
         }
         break;
