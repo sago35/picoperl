@@ -85,6 +85,11 @@ pp_obj *pp_global(pp_interp *I, pp_sym *s);        /* find/create global; borrow
 void    pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell);   /* make s refer to an existing cell */
 
 /* conversions */
+/* Bit operations work on unsigned 64-bit values, like perl. Integers here are signed, so a
+   result keeps its exact bits as a (possibly negative) integer, except all ones: ~0, the
+   largest unsigned integer, is the number 18446744073709551615 (a double, shown exactly). */
+uint64_t pp_to_bits(pp_val v);
+pp_val   pp_bits_val(uint64_t r);
 int     pp_fmt_num(char *buf, int cap, pp_val v);  /* int/num -> string, returns len */
 pp_val  pp_str_to_num(const char *s, int len);     /* returns INT or NUM */
 int     pp_looks_like_number(const char *s, int len);

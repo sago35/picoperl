@@ -186,3 +186,20 @@ pos($s) = 3; my @rest = $s =~ /(\w)/g; print "@rest\n"; pos($s) = -1; $s =~ /\G(
 $_ = "xyz"; pos = 1; /\G(.)/g; print "$1 ", pos, "\n"; my $v = (pos($s) = 2); print "$v\n";
 while ($s =~ /X/g) { print "at ", pos($s), "\n"; pos($s) = length $s if pos($s) < 3 }
 }
+# ビット演算は符号なし (~0 は最大値) と、use integer
+{
+my @r = (~0 >> 1, ~0 & 0xFF, ~5 & 0xFF, (~0 >> 60), 1 << 62, (~0 == ~0 ? 1 : 0), (~0 > 0 ? "pos" : "neg"), ~0 % 10, 0xFF & ~0x0F, (~0 ^ ~0), (5 | ~0) == ~0 ? 1 : 0, ~~5, int(log(~0) / log(2) + 0.5), ~0 >> 63, (~0 << 1) & 0xFF, -1 & 0xFF, -1 >> 60, 6 ^ 3);
+print "@r\n"; my $z = 0; print ~$z > 0 ? "pos" : "neg", " ", (~$z == ~0 ? "same" : "diff"), "\n";
+printf "%d %u %x %s\n", ~0 >> 1, ~0 >> 1, ~0, ~0 > 1e19 ? "big" : "small";
+my ($a, $b) = (7, 2);
+print 7 / 2, " ", -7 / 2, " ", 10 % 3, " ", -7 % 3, "\n";
+{
+    use integer;
+    print 7 / 2, " ", -7 / 2, " ", 10 % 3, " ", -7 % 3, " ", 7.9 + 1.9, " ", $a / $b, " ", ~0, " ", ~0 >> 1, " ", -8 >> 1, " ", (~0 > 0 ? "pos" : "neg"), " ", 2.5 * 2.5, " ", (1.5 < 1.7 ? "lt" : "not lt"), "\n";
+    my $x = 17; $x /= 5; my $y = 17; $y %= 5; my $z = 9.7; $z += 0.5; print "$x $y $z\n";
+    { no integer; print 7 / 2, "\n"; }
+    print 7 / 2, " ", "abc" . 1.5, " ", sqrt(16) + 0.5, " ", 2 ** 0.5 > 1.4 ? "pow float" : "pow int", "\n";
+}
+print 7 / 2, " ", ~0 > 0 ? "pos" : "neg", "\n";
+sub idiv { use integer; return $_[0] / $_[1] } print idiv(9, 2), " ", 9 / 2, "\n";
+}

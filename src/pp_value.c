@@ -123,10 +123,24 @@ void pp_release(pp_val v) {
 }
 pp_val pp_ref(pp_obj *o) { pp_val v; v.t = PP_REF; o->refcnt++; v.u.o = o; return v; }
 
+uint64_t pp_to_bits(pp_val v) {
+    v = pp_numify(v);
+    if (v.t == PP_INT) return (uint64_t)v.u.i;
+    double d = v.u.n;
+    if (isnan(d)) return 0;
+    if (d >= 18446744073709551615.0) return UINT64_MAX;
+    if (d >= 9223372036854775808.0) return (uint64_t)d;
+    if (d <= -9223372036854775808.0) return (uint64_t)INT64_MIN;
+    return (uint64_t)(int64_t)d;
+}
+pp_val pp_bits_val(uint64_t r) {
+    return r == UINT64_MAX ? pp_num(18446744073709551615.0) : pp_int((int64_t)r);
+}
 int pp_fmt_num(char *buf, int cap, pp_val v) {
     if (v.t == PP_INT) return pp_snprintf(buf, cap, "%lld", (long long)v.u.i);
     if (v.t == PP_NUM) {
         double d = v.u.n;
+        if (d == 18446744073709551615.0) return pp_snprintf(buf, cap, "18446744073709551615");   /* ~0 */
         if (isnan(d)) return pp_snprintf(buf, cap, "NaN");
         if (isinf(d)) return pp_snprintf(buf, cap, d < 0 ? "-Inf" : "Inf");
         if (d == 0) return pp_snprintf(buf, cap, "0");

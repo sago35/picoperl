@@ -173,19 +173,19 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
             break;
         }
         case 'u': {
-            int64_t v = pp_to_int(arg);
+            uint64_t v = pp_to_bits(arg);
             snprintf(spec + sn, sizeof spec - sn, "llu");
             bn = pp_snprintf(buf, sizeof buf, spec, (unsigned long long)v);
             break;
         }
         case 'x': case 'X': case 'o': {
-            int64_t v = pp_to_int(arg);
+            uint64_t v = pp_to_bits(arg);
             spec[sn] = 'l'; spec[sn + 1] = 'l'; spec[sn + 2] = conv; spec[sn + 3] = 0;
             bn = pp_snprintf(buf, sizeof buf, spec, (unsigned long long)v);
             break;
         }
         case 'b': case 'B': {
-            uint64_t v = (uint64_t)pp_to_int(arg);
+            uint64_t v = pp_to_bits(arg);
             char bits[70]; int k = 0;
             if (v == 0) bits[k++] = '0';
             while (v) { bits[k++] = '0' + (v & 1); v >>= 1; }
@@ -816,7 +816,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         for (int i = 0; i < cnt; i++) pp_list_push(&removed, arr->u.arr.v[off + i]);
         int newlen = len - cnt + nins;
         pp_array_reserve(arr, newlen);
-        memmove(arr->u.arr.v + off + nins, arr->u.arr.v + off + cnt, (len - off - cnt) * sizeof(pp_val));
+        if (len - off - cnt > 0) memmove(arr->u.arr.v + off + nins, arr->u.arr.v + off + cnt, (len - off - cnt) * sizeof(pp_val));   /* an empty array has no storage yet */
         for (int i = 0; i < nins; i++) arr->u.arr.v[off + i] = pp_copy(vals.v[2 + i]);
         arr->u.arr.n = newlen;
         if (arr->tied) pp_tie_writeback(I, arr);

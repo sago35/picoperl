@@ -645,6 +645,43 @@ static const char *binop_name(int op) {
     default: return "operation";
     }
 }
+static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b);
+/* a binary operator under `use integer`: the operands are truncated to (signed) integers and
+   the result is an integer; / drops the fraction, % has the sign of the left side (as in C),
+   >> keeps the sign, ~0 is -1. Anything else (strings, objects) goes the normal way. */
+static NOINLINE pp_val int_binop(pp_interp *I, int op, pp_val a, pp_val b) {
+    if (a.t == PP_REF || b.t == PP_REF) return do_binop(I, op, a, b);
+    switch (op) {
+    case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD: case OP_SHL: case OP_SHR: case OP_BAND: case OP_BOR: case OP_BXOR:
+    case OP_NUM_EQ: case OP_NUM_NE: case OP_NUM_LT: case OP_NUM_GT: case OP_NUM_LE: case OP_NUM_GE: case OP_NUM_CMP: break;
+    default: return do_binop(I, op, a, b);
+    }
+    int64_t x = pp_to_int(a), y = pp_to_int(b);
+    uint64_t ux = (uint64_t)x, uy = (uint64_t)y;
+    switch (op) {
+    case OP_ADD: return pp_int((int64_t)(ux + uy));
+    case OP_SUB: return pp_int((int64_t)(ux - uy));
+    case OP_MUL: return pp_int((int64_t)(ux * uy));
+    case OP_DIV:
+        if (y == 0) return pp_die(I, "Illegal division by zero");
+        return pp_int(y == -1 ? (int64_t)(0 - ux) : x / y);
+    case OP_MOD:
+        if (y == 0) return pp_die(I, "Illegal modulus zero");
+        return pp_int(y == -1 ? 0 : x % y);
+    case OP_SHL: return pp_int((int64_t)(ux << (y & 63)));
+    case OP_SHR: return pp_int(x < 0 ? (int64_t)~(~ux >> (y & 63)) : (int64_t)(ux >> (y & 63)));
+    case OP_BAND: return pp_int((int64_t)(ux & uy));
+    case OP_BOR: return pp_int((int64_t)(ux | uy));
+    case OP_BXOR: return pp_int((int64_t)(ux ^ uy));
+    case OP_NUM_EQ: return truth_val(x == y);
+    case OP_NUM_NE: return truth_val(x != y);
+    case OP_NUM_LT: return truth_val(x < y);
+    case OP_NUM_GT: return truth_val(x > y);
+    case OP_NUM_LE: return truth_val(x <= y);
+    case OP_NUM_GE: return truth_val(x >= y);
+    default: return pp_int(x < y ? -1 : x > y ? 1 : 0);
+    }
+}
 /* "$x" for a plain scalar variable node, else NULL (used in warning messages like perl's) */
 static const char *var_name_of(pp_node *n) {
     if (n && n->type == N_VAR && n->sym->name[0] == '$') return n->sym->name;
@@ -812,6 +849,11 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
         if (both_int && nb.u.i != 0 && na.u.i % nb.u.i == 0 && !(na.u.i == INT64_MIN && nb.u.i == -1)) return pp_int(na.u.i / nb.u.i);
         return pp_num(da / db);
     case OP_MOD: {
+        if (!both_int && da >= 9223372036854775808.0 && db >= 1 && da < 3.7e19) {
+            /* a value beyond the signed range (~0 % 10): the remainder of the unsigned integer */
+            uint64_t ub = pp_to_bits(nb);
+            if (ub) return pp_bits_val(pp_to_bits(na) % ub);
+        }
         int64_t ia = both_int ? na.u.i : (int64_t)da, ib = both_int ? nb.u.i : (int64_t)db;
         if (ib == 0) return pp_die(I, "Illegal modulus zero");
         if (ib == -1) return pp_int(0);
@@ -822,11 +864,11 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
     case OP_POW:
         /* like perl: pow() is computed in floating point (integral results still print as integers) */
         return pp_num(pow(da, db));
-    case OP_SHL: return pp_int((int64_t)((uint64_t)pp_to_int(na) << (pp_to_int(nb) & 63)));
-    case OP_SHR: return pp_int((int64_t)((uint64_t)pp_to_int(na) >> (pp_to_int(nb) & 63)));
-    case OP_BAND: return pp_int((int64_t)((uint64_t)pp_to_int(na) & (uint64_t)pp_to_int(nb)));
-    case OP_BOR: return pp_int((int64_t)((uint64_t)pp_to_int(na) | (uint64_t)pp_to_int(nb)));
-    case OP_BXOR: return pp_int((int64_t)((uint64_t)pp_to_int(na) ^ (uint64_t)pp_to_int(nb)));
+    case OP_SHL: return pp_bits_val(pp_to_bits(na) << (pp_to_int(nb) & 63));
+    case OP_SHR: return pp_bits_val(pp_to_bits(na) >> (pp_to_int(nb) & 63));
+    case OP_BAND: return pp_bits_val(pp_to_bits(na) & pp_to_bits(nb));
+    case OP_BOR: return pp_bits_val(pp_to_bits(na) | pp_to_bits(nb));
+    case OP_BXOR: return pp_bits_val(pp_to_bits(na) ^ pp_to_bits(nb));
     case OP_NUM_EQ: return truth_val(both_int ? na.u.i == nb.u.i : da == db);
     case OP_NUM_NE: return truth_val(both_int ? na.u.i != nb.u.i : da != db);
     case OP_NUM_LT: return truth_val(both_int ? na.u.i < nb.u.i : da < db);
@@ -1531,7 +1573,7 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
             warn_operand(I, n->op, v, var_name_of(b));
         }
         if (slot->t == PP_REF) ovl_assign = pp_ovl_hook != NULL;   /* ovl_binop takes the note and clears it */
-        pp_val r = do_binop(I, n->op, *slot, v);
+        pp_val r = n->aux ? int_binop(I, n->op, *slot, v) : do_binop(I, n->op, *slot, v);
         pp_release(v);
         if (I->ctl) { pp_release(r); return pp_undef(); }
         v = r;
@@ -2742,7 +2784,7 @@ static NOINLINE pp_val eval_binop_node(pp_interp *I, pp_node *n, int ctx, pp_lis
         if (n->op == OP_REPEAT) { warn_operand(I, n->op, a, var_name_of(n->a)); if (b.t == PP_UNDEF) warn_uninit(I, "repeat (x)", var_name_of(n->b)); }
         else { warn_operand(I, n->op, a, var_name_of(n->a)); warn_operand(I, n->op, b, var_name_of(n->b)); }
     }
-    pp_val r = do_binop(I, n->op, a, b);
+    pp_val r = n->aux ? int_binop(I, n->op, a, b) : do_binop(I, n->op, a, b);
     pp_release(a); pp_release(b);
     if (I->ctl) { pp_release(r); return pp_undef(); }
     return scalar_or_push(ctx, out, r);

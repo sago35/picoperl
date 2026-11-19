@@ -52,6 +52,7 @@ typedef struct {
     int id, kind, n, cap;
     pp_sym **vars;
     unsigned char strict_vars, strict_subs, strict_refs, warnings;
+    unsigned char integer;       /* use integer: arithmetic in this scope is on integers */
 } pscope;
 typedef struct {
     pp_arena *arena;                             /* AST storage of the file being parsed */
@@ -119,6 +120,7 @@ static int scope_push(pp_parser *P, int kind) {
     sc.strict_subs = top ? top->strict_subs : 0;
     sc.strict_refs = top ? top->strict_refs : 0;
     sc.warnings = top ? top->warnings : 0;
+    sc.integer = top ? top->integer : 0;
     S->parent_of[S->nids] = top ? top->id : -1;
     S->collapsed[S->nids] = 0;
     S->nids++;
@@ -714,6 +716,7 @@ static pp_node *node(pp_parser *P, int type) {
     pp_stat_nodes++;
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
+    if (type == N_BINOP || type == N_ASSIGN) { pscope *top = scope_top(P); if (top && top->integer) n->aux = 1; }   /* use integer */
     if (type == N_RV2AV || type == N_RV2HV || type == N_RV2SV || type == N_CALLREF || type == N_GLOB) {
         /* a string used as a reference (symbolic reference): dies under strict refs, otherwise
            the name is looked up in the current package (kept in b; main needs none) */
@@ -2878,7 +2881,7 @@ static pp_node *parse_cond_block(pp_parser *P, int is_unless) {
 }
 
 static const char *ignored_modules[] = {
-    "utf8", "feature", "Exporter", "integer", "bytes",
+    "utf8", "feature", "Exporter", "bytes",
     "diagnostics", "experimental", "FindBin", "English", NULL
 };
 
@@ -2910,6 +2913,12 @@ static pp_node *parse_use(pp_parser *P) {
         pscope *top = scope_top(P);
         if (minor >= 11) top->strict_vars = top->strict_subs = top->strict_refs = 1;
         if (minor >= 35) top->warnings = 1;
+        expect_op(P, ";");
+        return NULL;
+    }
+    if (cur_is_ident(P, "integer")) {   /* use integer / no integer: for the rest of the enclosing block */
+        advance(P);
+        scope_top(P)->integer = !is_no;
         expect_op(P, ";");
         return NULL;
     }
