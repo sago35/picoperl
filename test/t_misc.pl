@@ -88,4 +88,7 @@ print "local slice: ", l_slice(), "\n";
 print "local bare: ", l_bare(), "\n";
 eval { l_die() };
 print "local after: ", lh_show(), "\n";
+# utf8:: の関数 (use utf8 なしで呼べる)
+my $u8 = "abc"; my $u8r = utf8::encode($u8);
+print "utf8 functions: ", chr(utf8::unicode_to_native(65)), utf8::native_to_unicode(66), " ", (utf8::is_utf8("abc") ? "flagged" : "bytes"), " ", (utf8::valid("abc") ? "valid" : "invalid"), " $u8\n";
 print "done\n";

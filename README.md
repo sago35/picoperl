@@ -332,6 +332,9 @@ bless したリファレンスを文字列にすると、perl と同じ `Class=H
 実行開始時です。perl と同じく、プログラムの実行が始まった後に `require` したファイルの INIT は実行されません。
 ブロックの中や `eval STRING` の中に書いた INIT / CHECK も実行されません。
 
+`utf8::unicode_to_native` / `native_to_unicode` (そのまま返す)、`utf8::is_utf8` (常に偽)、
+`utf8::encode` / `decode` / `upgrade` / `downgrade` / `valid` (何もせず真) を `use utf8` なしで呼べます。
+
 **`END { ... }`** はプログラムの終了時 (`die` や `exit` の後も) に、登録の逆順で実行されます。
 ブロックの中では終了コードが **`$?`** に入っていて、書き換えると終了コードが変わります。
 perl と違い、登録されるのは `END` の文に実行が到達したときです (コンパイル時ではありません)。

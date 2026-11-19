@@ -1158,6 +1158,10 @@ static pp_val n_bi_refaddr(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_int((int64_t)(uintptr_t)a->v[0].u.o);
 }
 
+static pp_val n_utf8_identity(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return a->n ? pp_copy(a->v[0]) : pp_undef(); }
+static pp_val n_utf8_true(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_utf8_false(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_strn("", 0); }
+
 /* Scalar::Util::looks_like_number($x): would perl treat the value as a number without a warning? */
 static pp_val n_looks_like_number(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
@@ -1174,4 +1178,14 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "builtin::reftype", n_bi_reftype);
     pp_register(I, "builtin::refaddr", n_bi_refaddr);
     pp_register(I, "Scalar::Util::looks_like_number", n_looks_like_number);
+    /* utf8:: functions that need no `use utf8`. Strings are bytes here, so the code point
+       conversions are the identity and the encoding ones leave the string alone. */
+    pp_register(I, "utf8::unicode_to_native", n_utf8_identity);
+    pp_register(I, "utf8::native_to_unicode", n_utf8_identity);
+    pp_register(I, "utf8::is_utf8", n_utf8_false);
+    pp_register(I, "utf8::valid", n_utf8_true);
+    pp_register(I, "utf8::upgrade", n_utf8_true);
+    pp_register(I, "utf8::downgrade", n_utf8_true);
+    pp_register(I, "utf8::encode", n_utf8_true);
+    pp_register(I, "utf8::decode", n_utf8_true);
 }
