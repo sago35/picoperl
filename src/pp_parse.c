@@ -2724,7 +2724,9 @@ static pp_node *parse_ident_term(pp_parser *P) {
             return d;
         }
         pp_node *n = node(P, N_REQUIRE);
-        if (P->cur.type == T_IDENT) {   /* require Module::Name; -> "Module/Name.pm" */
+        pp_tok *rnx = P->cur.type == T_IDENT ? peek(P) : NULL;
+        /* require Class->method(...): the file name comes from a call (an expression, as below) */
+        if (rnx && !(rnx->type == T_OP && !strcmp(rnx->op, "->"))) {   /* require Module::Name; -> "Module/Name.pm" */
             char buf[256]; int bn = 0;
             for (int i = 0; i < P->cur.len && bn < 240; i++) {
                 if (P->cur.s[i] == ':' && i + 1 < P->cur.len && P->cur.s[i+1] == ':') { buf[bn++] = '/'; i++; }
@@ -2735,7 +2737,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
             advance(P);
             return n;
         }
-        n->a = parse_unary(P);
+        n->a = parse_binary(P, PREC_NAMED_UNARY);   /* require $dir . "/x.pl": binds like a named unary operator */
         return n;
     }
     if (len == 6 && !memcmp(id, "return", 6)) {

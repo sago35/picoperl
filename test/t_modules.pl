@@ -96,3 +96,11 @@ print "caller in a required file: $TestCaller::top / $TestCaller::modulino / $Te
     print "use in eval: ", (eval "package $epkg; use TestExpOnly ':all'; sub own { 1 } 1" ? "ok" : "failed: $@"), " ", ($epkg->can('eo_one') ? 1 : 0), ($epkg->can('eo_two') ? 1 : 0), ($epkg->can('own') ? 1 : 0), (main->can('eo_two') ? 1 : 0), "\n";
     print "import on a class without one: ", (eval { ExpA->import; ExpA->unimport; 1 } ? "quiet" : "died"), "\n";
 }
+
+# require の後ろが式 (Class->method(...) や連結)
+{
+    require File::Spec;
+    my $r1 = require File::Spec->catfile("TestMod.pm");
+    my $r2 = require "Test" . "Mod.pm";
+    print "require expr: $r1 $r2\n";
+}
