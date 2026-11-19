@@ -2374,7 +2374,7 @@ static pp_node *parse_cond_block(pp_parser *P, int is_unless) {
 
 static const char *ignored_modules[] = {
     "utf8", "feature", "lib", "Exporter", "integer", "bytes",
-    "overload", "diagnostics", "experimental", "Carp", "FindBin", "English", NULL
+    "overload", "diagnostics", "experimental", "FindBin", "English", NULL
 };
 
 static pp_node *parse_use(pp_parser *P) {

@@ -297,6 +297,10 @@ reftype refaddr indexed)`、
   `path_sep` `ivsize` などスクリプトがよく調べるキーだけを持ちます。C コンパイラ、動的ロード、fork、
   スレッドのキー (`d_fork`、`useithreads` など) は入れていないので、本家の「無い」と同じ undef になります
 
+- `Carp`: `croak` `carp` `confess` `cluck` `shortmess` `longmess`。`croak` / `carp` は本家と同じく、
+  呼んだパッケージの外で最初の呼び出し元の位置を付けます。`confess` などの呼び出し履歴に引数は出ません
+  (`main::f() called at ...`)。`@CARP_NOT` は見ません
+
 `main` 以外のパッケージで `use Module qw($x %h);` と変数を取り込んだ場合、そのパッケージの中の `$x` / `%h` は
 取り込んだ変数を指します (それ以外の、宣言していないグローバルは従来どおり `main` のものです)。
 
