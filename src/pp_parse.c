@@ -846,9 +846,16 @@ static void declare_sub(pp_parser *P, pp_sym *s, int noargs) {
     P->declnoargs[P->ndecl] = (unsigned char)noargs;
     P->decl[P->ndecl++] = s;
 }
+/* was the sub declared with a (&...) prototype? Known from this file's declarations (bit 4 of
+   declnoargs) or from the sub itself when it is already defined (imported by `use`). */
+static int is_block_proto(pp_parser *P, pp_sym *s) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return (P->declnoargs[i] & 4) != 0;
+    pp_obj *c = pp_lookup_sub(P->I, s);
+    return c && c->u.code.block_proto;
+}
 /* 0: unknown, 1: declared (list operator), 2: declared with no args */
 static int is_declared(pp_parser *P, pp_sym *s) {
-    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return P->declnoargs[i] ? 2 : 1;
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return (P->declnoargs[i] & 1) ? 2 : 1;
     pp_obj *c = pp_lookup_sub(P->I, s);
     if (!c) return 0;
     return (c->u.code.is_const || (c->u.code.native == NULL && c->u.code.body == NULL)) ? 2 : 1;
@@ -1743,8 +1750,10 @@ static int skip_prototype(pp_parser *P) {
         i++;
     }
     if (i >= L->len || !seen) return 0;
+    int first = L->pos;
+    while (L->src[first] == ' ' || L->src[first] == '\t') first++;
     L->pos = i;
-    return 1;
+    return L->src[first] == '&' ? 2 : 1;   /* 2: the first argument is a block */
 }
 static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs) {
     if (noargs) *noargs = cur_is_op(P, ")");
@@ -2115,7 +2124,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
-        if (cur_is_op(P, "(")) { skip_prototype(P); advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
         parse_block_stmts(P, b);
         if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
         int nv = scope_pop(P);
@@ -2258,6 +2267,16 @@ static pp_node *parse_ident_term(pp_parser *P) {
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = line;
     if (cur_is_op(P, "(")) { parse_call_args(P, n); return parse_postfix(P, n); }
+    if (cur_is_op(P, "{") && !P->has_nxt && is_block_proto(P, s)) {
+        /* name { ... } LIST for a sub with a (&...) prototype: the block is `sub { ... }`.
+           Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
+        P->nxt = P->cur; P->has_nxt = 1;
+        P->cur.type = T_IDENT; P->cur.s = "sub"; P->cur.len = 3;
+        node_add(n, parse_ident_term(P));
+        accept_op(P, ",");
+        if (starts_term(P)) take_children(n, parse_comma_list(P));
+        return n;
+    }
     int decl = is_declared(P, s);
     if (decl) {
         if (decl == 2) return parse_postfix(P, n);
@@ -2475,6 +2494,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 int proto = skip_prototype(P);
                 advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs);
                 if (proto) noargs = 0;   /* a non-empty prototype takes arguments */
+                if (proto == 2) { n->op = 1; noargs |= 4; }
             }
             declare_sub(P, n->sym, noargs);
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */

@@ -78,7 +78,8 @@ struct pp_obj {
             const char *name;
             pp_native  native;
             pp_val     constval;   /* for `use constant` */
-            int        is_const;
+            uint8_t    is_const;
+            uint8_t    block_proto;   /* declared with a (&...) prototype: `name { ... } LIST` passes the block as a sub */
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
         struct { void *fp; uint8_t writable; } file;   /* PP_OFILE (open my $fh, ...) */
