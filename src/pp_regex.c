@@ -219,6 +219,9 @@ static int parse_escape(rparser *P, int *cls) {
     case 'f': return '\f';
     case 'e': return 27;
     case 'a': return 7;
+    case 'c':                                  /* \cA = 1 ... \c? = 127: a control character */
+        if (P->p >= P->end) { rfail(P, "missing control character name in regex"); return 0; }
+        return toupper((unsigned char)*P->p++) ^ 64;
     case '0': { int v = 0, k = 0; while (k < 2 && P->p < P->end && *P->p >= '0' && *P->p <= '7') { v = v * 8 + (*P->p - '0'); P->p++; k++; } return v; }
     case 'x': {
         int v = 0;

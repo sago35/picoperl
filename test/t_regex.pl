@@ -179,3 +179,11 @@ sub mk { my $t = "bjorn-text"; $t =~ /o/g; return } mk() for 1 .. 3; sub chk { m
 my %h = (k => "p9q8"); my @q; while ($h{k} =~ /(\d)/g) { push @q, $1; last if @q > 9 } print "@q\n";
 my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos($copy) ? "copy has pos" : "copy fresh"), "\n";
 }
+
+# \cX: 制御文字 (\cA = 1、\c? = 127)。文字クラスの中でも使える
+{
+    my $all = join '', map chr, 0 .. 127;
+    my @m = map ord, grep { /[\cA-\cC\c?]/ } split //, $all; print "ctrl class: @m\n";
+    print "ctrl atom: ", ("a\tb" =~ /a\cIb/ ? "ok" : "ng"), " ", ("\x1b[" =~ /^\c[\[/ ? "ok" : "ng"), "\n";
+    (my $s = "x\x01y\x7f") =~ s/([^\n\t\c?[:^cntrl:][:^ascii:]])/sprintf '\\u%04x', ord $1/eg; print length($s), " ", substr($s, 0, 8), "\n";
+}
