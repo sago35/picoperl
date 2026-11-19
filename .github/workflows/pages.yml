@@ -1,0 +1,56 @@
+# プレイグラウンド (wasm 版) をビルドして GitHub Pages に公開する。
+# リポジトリの Settings > Pages > Source を "GitHub Actions" にしておくこと。
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  EMSDK_VERSION: 7.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: emscripten を用意
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+
+      - name: wasm 版をビルド
+        run: |
+          . "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          make wasm
+
+      - name: 公開するファイルをまとめる
+        run: |
+          mkdir _site
+          cp wasm/index.html wasm/worker.js wasm/picoperl.js wasm/picoperl.wasm _site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

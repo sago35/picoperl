@@ -135,7 +135,10 @@ make sim PRESSED=5:9,6:10  # scripts/main.pl を GPIO シミュレーション�
 
 ### ブラウザ (WebAssembly) 版
 
-emscripten (emcc) が PATH にあれば、ブラウザで動くプレイグラウンドをビルドできます
+ビルドせずに試すなら <https://sago35.github.io/picoperl/> を開いてください
+(main に push するたびに `.github/workflows/pages.yml` がビルドして公開します)。
+
+emscripten (emcc) が PATH にあれば、手元でもプレイグラウンドをビルドできます
 (`wasm/index.html`):
 
 ```sh
