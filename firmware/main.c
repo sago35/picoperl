@@ -728,6 +728,20 @@ static void idle_until_reload(int blink) {
     set_led(0);
 }
 
+/* Between script runs: release board resources held in C-side statics, so a
+ * reloaded script can claim them again (frame buffers, SSD1306 slots), and
+ * stop activity the old script left behind (edge IRQs, sounding PWM). */
+static void board_reset(void) {
+    pp_gfx_reset();
+    for (int i = 0; i < 2; i++) disps[i].used = false;
+    for (uint p = 0; p < NUM_BANK0_GPIOS; p++)
+        gpio_set_irq_enabled(p, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+    enc_pin_a = enc_pin_b = 0xFF;
+    enc_watch_on = 0;
+    gpio_ev_t = gpio_ev_h;                       /* drop stale edges */
+    for (uint s = 0; s < NUM_PWM_SLICES; s++) pwm_set_enabled(s, false);
+}
+
 static void run_scripts_forever(void) {
     char banner[240];
     int n;
@@ -755,6 +769,7 @@ static void run_scripts_forever(void) {
         }
         current = NULL;
         pp_free(I);
+        board_reset();
 
         if (rc == PP_EXIT_RELOAD) {
             n = snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());

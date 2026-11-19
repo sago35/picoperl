@@ -49,5 +49,6 @@ int     pp_gfx_text_width(const pp_font *f, const char *s, int scale);
 /* Gfx::_* natives (frame buffers by handle) */
 void    pp_gfx_register(pp_interp *I);
 pp_gfx *pp_gfx_handle(int h);            /* NULL if not allocated */
+void    pp_gfx_reset(void);              /* free every handle (between script runs) */
 
 #endif

@@ -205,6 +205,10 @@ static pp_gfx *gfxs[MAX_GFX];
 
 pp_gfx *pp_gfx_handle(int h) { return (h >= 0 && h < MAX_GFX) ? gfxs[h] : NULL; }
 
+void pp_gfx_reset(void) {
+    for (int i = 0; i < MAX_GFX; i++) { pp_gfx_free(gfxs[i]); gfxs[i] = NULL; }
+}
+
 #define ARG(i) ((int)pp_list_arg_int(a, i, 0))
 #define NATIVE(name) static pp_val name(pp_interp *I, pp_list *a, int ctx, pp_list *out)
 #define UNUSED (void)ctx; (void)out
