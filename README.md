@@ -410,6 +410,10 @@ bless したリファレンスを文字列にすると、perl と同じ `Class=H
 `do { ... }->()`)。`Class::->method` のように末尾に `::` を付けたクラス名 (文字列 `"Class"` と同じ) と、
 `::name()` / `&::name` (`main::name` と同じ) も書けます。
 
+**`localtime`** / **`gmtime`** が使えます (リストコンテキストで 9 要素、スカラーコンテキストで
+`"Thu Nov 19 12:34:56 2026"` の形)。ボードにはタイムゾーンが無いので `localtime` は `gmtime` と同じ結果です。
+ボードには時計も無いので、引数なしの値は `time` と同じく起動からの秒数を 1970 年からの秒数として読んだものになります。
+
 **`$$`** はホスト版ではプロセス番号、ボードでは 1 です。`last LABEL` / `next LABEL` で、実行中のループに
 無いラベルを指定すると `Label not found for "last LABEL"` で die します (これまでは黙ってプログラムが終わっていました)。
 `getpwnam` `getpwuid` `getgrnam` `getgrgid` はホスト版だけにあります。
@@ -484,12 +488,12 @@ perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `p
 perl と同じく `$_` に読み込む)、`print/printf/say $fh ...` と `print {$fh} ...`、`close`、`eof`、
 `seek($fh, $off, 0/1/2)`、`tell`。失敗時は `$!` にメッセージが入ります。ボードではパスは
 PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシュ消去を伴うので低頻度の用途向きです。
-未対応: 2 引数 `open`・バレワードハンドル (`open FH, ...`)・IO レイヤー (`:utf8` など)・`$/` の変更・
+未対応: 2 引数 `open` (ハンドルの複製 `>&1` を除く)・IO レイヤー (`:utf8` など)・`$/` の変更・
 `$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
 
 非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
 `DESTROY`、`AUTOLOAD`、`redo`、
-`localtime`/`gmtime`、
+
 `system`/バッククォート、`tie`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)、
 ファイルハンドルのメソッド呼び出し (`$fh->print`)、パッケージの名前表 (`%Pkg::`)。

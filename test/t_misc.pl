@@ -118,4 +118,14 @@ eval { la_die() };
 print "restored: ", join(",", sort keys %lah), " [@laa]\n";
 sub la_argv { local @ARGV = (7, 8); shift(@ARGV) . scalar(@ARGV) }
 print "local \@ARGV: ", la_argv(), " ", scalar(@ARGV), "\n";
+# localtime / gmtime (時刻を固定して比べる。localtime はテスト実行時の TZ に従う)
+{
+    my $t = 1795000000;
+    my @g = gmtime($t); my @l = localtime($t);
+    print "gmtime: @g | ", scalar(gmtime($t)), " | ", scalar(gmtime 86400 * 5), " | ", (gmtime(0))[5], " ", scalar(gmtime(-1)), " ", scalar(gmtime(4102444800)), "\n";
+    print "localtime: @l | ", scalar(localtime($t)), " | ", join(" ", (localtime $t)[3, 4, 5]), "\n";
+    my @now = localtime; my $s = localtime; my @n2 = localtime();
+    print "now: ", scalar(@now), " ", length($s), " ", scalar(@n2), " ", ((localtime(time))[5] == (localtime)[5] ? "same year" : "differs"), "\n";
+    printf "date: %04d-%02d-%02d\n", 1900 + $g[5], 1 + $g[4], $g[3];
+}
 print "done\n";

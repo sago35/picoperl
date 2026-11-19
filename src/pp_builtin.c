@@ -1289,6 +1289,42 @@ static pp_val n_looks_like_number(pp_interp *I, pp_list *a, int ctx, pp_list *ou
     return pp_looks_like_number(a->v[0].u.s->d, a->v[0].u.s->len) ? pp_int(1) : pp_strn("", 0);
 }
 
+/* localtime / gmtime (optional argument: seconds since the epoch, default now).
+   List context: (sec, min, hour, mday, mon, year - 1900, wday, yday, isdst); scalar context:
+   "Thu Nov 19 12:34:56 2026". The host says how far local time is from UTC
+   (pp_host_utc_offset; a host without one, like the boards, gets UTC). */
+__attribute__((weak)) int pp_host_utc_offset(int64_t t, int *isdst) { (void)t; *isdst = 0; return 0; }
+static pp_val time_parts(pp_list *a, int ctx, pp_list *out, int local) {
+    int64_t t = a->n > 0 && a->v[0].t != PP_UNDEF ? pp_to_int(a->v[0]) : pp_host_time();
+    int isdst = 0;
+    if (local) t += pp_host_utc_offset(t, &isdst);
+    /* the date is worked out here (days -> civil date), not by the C library: its time zone
+       code alone would add 40 KB to the firmware */
+    int64_t days = t / 86400, rem = t % 86400;
+    if (rem < 0) { rem += 86400; days--; }
+    int wday = (int)(((days % 7) + 11) % 7);                     /* 1970-01-01 was a Thursday */
+    int64_t z = days + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
+    int64_t doe = z - era * 146097, yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;   /* year from March */
+    int mday = (int)(doy - (153 * mp + 2) / 5 + 1), mon = (int)(mp < 10 ? mp + 2 : mp - 10);
+    int64_t year = yoe + era * 400 + (mon <= 1);
+    int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    static const short before[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+    int yday = before[mon] + mday - 1 + (leap && mon > 1);
+    int hour = (int)(rem / 3600), min = (int)(rem / 60 % 60), sec = (int)(rem % 60);
+    if (ctx == CTX_LIST && out) {
+        int64_t v[8] = { sec, min, hour, mday, mon, year - 1900, wday, yday };
+        for (int i = 0; i < 8; i++) pp_list_push(out, pp_int(v[i]));
+        return pp_int(isdst);                      /* the caller appends the last element */
+    }
+    static const char dnames[] = "SunMonTueWedThuFriSat", mnames[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char buf[64];
+    int n = pp_snprintf(buf, sizeof buf, "%.3s %.3s %2d %02d:%02d:%02d %lld", dnames + 3 * wday, mnames + 3 * mon,
+                        mday, hour, min, sec, (long long)year);
+    return pp_strn(buf, n);
+}
+static pp_val n_localtime(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; return time_parts(a, ctx, out, 1); }
+static pp_val n_gmtime(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; return time_parts(a, ctx, out, 0); }
 /* fileno(HANDLE): 0 / 1 / 2 for the standard handles, 3 for any other open file, undef otherwise */
 static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)ctx; (void)out;
@@ -1300,6 +1336,8 @@ static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "fileno", n_fileno);
+    pp_register(I, "localtime", n_localtime);
+    pp_register(I, "gmtime", n_gmtime);
     pp_register(I, "builtin::ceil", n_bi_ceil);
     pp_register(I, "builtin::floor", n_bi_floor);
     pp_register(I, "builtin::blessed", n_bi_blessed);

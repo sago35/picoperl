@@ -495,6 +495,13 @@ static pp_val n_getgrgid(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
     return gr_result(getgrgid((gid_t)pp_to_int(a->v[0])), ctx, out, 0);
 }
+int pp_host_utc_offset(int64_t t, int *isdst) {
+    time_t tt = (time_t)t;
+    struct tm tm;
+    if (!localtime_r(&tt, &tm)) { *isdst = 0; return 0; }
+    *isdst = tm.tm_isdst > 0;
+    return (int)tm.tm_gmtoff;
+}
 /* chdir($dir): true on success */
 static pp_val n_chdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;

@@ -415,6 +415,9 @@ void        pp_host_poll(void);
 uint32_t    pp_host_millis(void);
 /* seconds since epoch (0 if unknown) */
 int64_t     pp_host_time(void);
+/* seconds local time is ahead of UTC at time t (and whether that is summer time). Optional:
+   the interpreter has a weak default that returns 0. */
+int         pp_host_utc_offset(int64_t t, int *isdst);
 /* sleep */
 void        pp_host_sleep_ms(uint32_t ms);
 /* read one line from stdin (<STDIN>); malloc'd, includes newline; NULL at EOF */
