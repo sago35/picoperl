@@ -289,6 +289,13 @@ reftype refaddr indexed)`、
   `dualvar` は die します
 - `mro`: `get_linear_isa` など。メソッド探索は常に深さ優先で、`use mro 'c3'` は受け付けるだけです
 
+- `Config`: 本家は tie したハッシュですが、picoperl 版は普通のハッシュです。`osname` `archname` `version`
+  `path_sep` `ivsize` などスクリプトがよく調べるキーだけを持ちます。C コンパイラ、動的ロード、fork、
+  スレッドのキー (`d_fork`、`useithreads` など) は入れていないので、本家の「無い」と同じ undef になります
+
+`main` 以外のパッケージで `use Module qw($x %h);` と変数を取り込んだ場合、そのパッケージの中の `$x` / `%h` は
+取り込んだ変数を指します (それ以外の、宣言していないグローバルは従来どおり `main` のものです)。
+
 **`(&...)` で始まるプロトタイプ**を持つサブには、`first { $_ > 1 } @list` のようにブロックを渡せます
 (`sub apply(&@) { my $f = shift; ... }`)。ブロックは無名サブとして渡されます。
 
