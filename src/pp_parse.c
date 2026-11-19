@@ -406,7 +406,11 @@ static void lex_heredoc(pp_parser *P, pp_tok *t) {
     char q = 0;
     if (peekc(L, 0) == '"' || peekc(L, 0) == '\'') { q = (char)peekc(L, 0); L->pos++; if (q == '\'') interp = 0; }
     int ds = L->pos;
-    int dlen = lex_name(L);
+    int dlen;
+    if (q) {   /* a quoted delimiter is any text up to the closing quote (<<"    EOT", <<'-- end --') */
+        while (L->pos < L->len && L->src[L->pos] != q && L->src[L->pos] != '\n') L->pos++;
+        dlen = L->pos - ds;
+    } else dlen = lex_name(L);
     if (!dlen) perr(P, "syntax error in heredoc delimiter");
     const char *delim = L->src + ds;
     if (q) { if (peekc(L, 0) != q) perr(P, "unterminated heredoc delimiter"); L->pos++; }
