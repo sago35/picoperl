@@ -180,6 +180,90 @@ static void add_lazy_export(pp_interp *I, const char *dst, const char *src, cons
 }
 pp_obj *pp_lookup_sub(pp_interp *I, pp_sym *sym) { return pp_resolve_sub(I, sym); }
 
+/* the symbol for `sigil` + a name written the way scripts spell it: "x", "main::x", "::x",
+   "Pkg::x" or "*main::x" (a stringified glob). Unqualified names belong to `pkg` (NULL = main). */
+static pp_sym *named_sym(pp_interp *I, char sigil, const char *pkg, const char *name) {
+    if (*name == '*') name++;
+    if (!strncmp(name, "main::", 6)) { name += 6; pkg = NULL; }   /* explicitly main: do not re-qualify */
+    else if (!strncmp(name, "::", 2)) { name += 2; pkg = NULL; }
+    char buf[256]; int n;
+    if (!pkg || !strcmp(pkg, "main") || strstr(name, "::")) n = snprintf(buf, sizeof buf, "%c%s", sigil, name);
+    else n = snprintf(buf, sizeof buf, "%c%s::%s", sigil, pkg, name);
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+    return pp_intern(I, buf, n);
+}
+static int is_symname(pp_val v) { return v.t == PP_STR || v.t == PP_INT || v.t == PP_NUM; }
+
+pp_sym *pp_symref(pp_interp *I, pp_node *n, pp_val v, char sigil, int strict) {
+    pp_str *s = pp_to_str(v);
+    pp_sym *sym = NULL;
+    if (strict && (n->flags & PP_NODE_STRICTREFS)) {
+        const char *what = sigil == '@' ? "an ARRAY" : sigil == '%' ? "a HASH" : sigil == '&' ? "a subroutine" : "a SCALAR";
+        pp_die(I, "Can't use string (\"%.32s\"%s) as %s ref while \"strict refs\" in use", s->d, s->len > 32 ? "..." : "", what);
+    }
+    else sym = named_sym(I, sigil, n->b && n->b->type == N_CONST && n->b->val.t == PP_STR ? n->b->val.u.s->d : NULL, s->d);
+    pp_str_decref(s);
+    return sym;
+}
+/* the sub a string names (&{"name"}, \&$name); dies if there is none */
+static pp_val *lvalue_or_null(pp_interp *I, pp_node *n);
+static pp_obj *symref_code(pp_interp *I, pp_node *n, pp_val v) {
+    pp_sym *sym = pp_symref(I, n, v, '&', 1);
+    if (!sym) return NULL;
+    pp_obj *code = pp_resolve_sub(I, sym);
+    if (!code) pp_die(I, "Undefined subroutine &%s%s called", strstr(sym->name, "::") ? "" : "main::", sym->name + 1);
+    return code;
+}
+
+static pp_val scalar_or_push(int ctx, pp_list *out, pp_val v);
+/* *name = VALUE: a typeglob has no value of its own here. Assigning a reference replaces the
+   slot of that kind (&name, $name, @name, %name); assigning another glob (or its name)
+   aliases all four. */
+static NOINLINE pp_val eval_glob_assign(pp_interp *I, pp_node *n) {
+    pp_node *g = n->a;
+    pp_val nv = pp_eval(I, g->a, CTX_SCALAR, NULL);
+    if (I->ctl) { pp_release(nv); return pp_undef(); }
+    if (!is_symname(nv)) { pp_release(nv); return pp_die(I, "Not a GLOB reference"); }
+    pp_str *name = pp_to_str(nv); pp_release(nv);
+    const char *pkg = g->b && g->b->type == N_CONST ? g->b->val.u.s->d : NULL;
+    pp_val v = pp_eval(I, n->b, CTX_SCALAR, NULL);
+    if (I->ctl) { pp_str_decref(name); pp_release(v); return pp_undef(); }
+    if (v.t == PP_REF) {
+        pp_obj *o = v.u.o;
+        if (o->kind == PP_OCODE) { o->refcnt++; pp_define_sub(I, named_sym(I, '&', pkg, name->d), o); }
+        else if (o->kind == PP_OSCALAR || o->kind == PP_OARRAY || o->kind == PP_OHASH) {
+            pp_sym *dst = named_sym(I, o->kind == PP_OARRAY ? '@' : o->kind == PP_OHASH ? '%' : '$', pkg, name->d);
+            if (dst->gcell != o) pp_global_alias(I, dst, o);
+        }
+    }
+    else if (is_symname(v)) {   /* *a = *b */
+        pp_str *src = pp_to_str(v);
+        static const char sigils[] = "$@%";
+        for (int i = 0; sigils[i]; i++) {
+            pp_sym *d = named_sym(I, sigils[i], pkg, name->d), *s = named_sym(I, sigils[i], pkg, src->d);
+            if (d != s && d->gcell != pp_global(I, s)) pp_global_alias(I, d, pp_global(I, s));
+        }
+        pp_sym *d = named_sym(I, '&', pkg, name->d), *s = named_sym(I, '&', pkg, src->d);
+        pp_obj *code = d != s ? pp_resolve_sub(I, s) : NULL;
+        if (code) { code->refcnt++; pp_define_sub(I, d, code); }
+        pp_str_decref(src);
+    }
+    pp_str_decref(name);
+    return v;
+}
+/* a glob used as a value is its name: "*main::name" (enough for *a = *b and for printing) */
+static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    pp_val nv = pp_eval(I, n->a, CTX_SCALAR, NULL);
+    if (I->ctl) { pp_release(nv); return pp_undef(); }
+    if (!is_symname(nv)) { pp_release(nv); return pp_die(I, "Not a GLOB reference"); }
+    pp_str *name = pp_to_str(nv); pp_release(nv);
+    pp_sym *s = named_sym(I, '*', n->b && n->b->type == N_CONST ? n->b->val.u.s->d : NULL, name->d);
+    pp_str_decref(name);
+    char buf[264];
+    int len = snprintf(buf, sizeof buf, "*%s%s", strstr(s->name, "::") ? "" : "main::", s->name + 1);
+    return scalar_or_push(ctx, out, pp_strn(buf, len));
+}
+
 void pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code) {
     /* takes ownership of code */
     pp_obj *cell = pp_global(I, sym);   /* SCALAR cell holding a CODE ref keeps it alive */
@@ -409,11 +493,12 @@ pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
     }
     case N_RV2AV: {
         if (vivify) {
-            pp_val *slot = pp_lvalue(I, n->a);
+            pp_val *slot = lvalue_or_null(I, n->a);
             if (I->ctl) return NULL;
             if (slot) {
                 if (slot->t == PP_UNDEF) { pp_obj *a = pp_obj_new(PP_OARRAY); *slot = pp_ref(a); return a; }
                 if (slot->t == PP_REF && slot->u.o->kind == PP_OARRAY) { slot->u.o->refcnt++; return slot->u.o; }
+                if (is_symname(*slot)) { pp_sym *s = pp_symref(I, n, *slot, '@', 1); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
                 pp_die(I, "Not an ARRAY reference");
                 return NULL;
             }
@@ -422,6 +507,7 @@ pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
         if (I->ctl) { pp_release(v); return NULL; }
         if (v.t == PP_REF && v.u.o->kind == PP_OARRAY) return v.u.o;
         if (v.t == PP_UNDEF) { pp_release(v); return pp_obj_new(PP_OARRAY); }   /* rvalue deref of undef: empty */
+        if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '@', 1); pp_release(v); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
         pp_release(v);
         pp_die(I, "Not an ARRAY reference");
         return NULL;
@@ -454,11 +540,12 @@ pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
     }
     case N_RV2HV: {
         if (vivify) {
-            pp_val *slot = pp_lvalue(I, n->a);
+            pp_val *slot = lvalue_or_null(I, n->a);
             if (I->ctl) return NULL;
             if (slot) {
                 if (slot->t == PP_UNDEF) { pp_obj *h = pp_obj_new(PP_OHASH); *slot = pp_ref(h); return h; }
                 if (slot->t == PP_REF && slot->u.o->kind == PP_OHASH) { slot->u.o->refcnt++; return slot->u.o; }
+                if (is_symname(*slot)) { pp_sym *s = pp_symref(I, n, *slot, '%', 1); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
                 pp_die(I, "Not a HASH reference");
                 return NULL;
             }
@@ -467,6 +554,7 @@ pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
         if (I->ctl) { pp_release(v); return NULL; }
         if (v.t == PP_REF && v.u.o->kind == PP_OHASH) return v.u.o;
         if (v.t == PP_UNDEF) { pp_release(v); return pp_obj_new(PP_OHASH); }
+        if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '%', 1); pp_release(v); if (!s) return NULL; pp_obj *c = pp_global(I, s); c->refcnt++; return c; }
         pp_release(v);
         pp_die(I, "Not a HASH reference");
         return NULL;
@@ -486,6 +574,16 @@ static pp_str *eval_key(pp_interp *I, pp_node *n) {
 }
 
 /* Returns a pointer to a scalar slot, or NULL (with ctl set on error). */
+/* the slot of a reference-holding expression, or NULL when the expression cannot be assigned to
+   (@{"name"}, @{ $pkg . "::ISA" }, @{ f() }): those are evaluated as plain values instead */
+static pp_val *lvalue_or_null(pp_interp *I, pp_node *n) {
+    switch (n->type) {
+    case N_VAR: case N_MY: case N_AELEM: case N_HELEM: case N_RV2SV: case N_TERNARY: case N_ASSIGN:
+    case N_LOGOR: case N_LOGAND: case N_DEFOR: case N_PREINC: case N_PREDEC:
+        return pp_lvalue(I, n);
+    default: return NULL;
+    }
+}
 pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
     switch (n->type) {
     case N_VAR:
@@ -520,17 +618,19 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
         return slot;
     }
     case N_RV2SV: {
-        pp_val *inner = pp_lvalue(I, n->a);
+        pp_val *inner = lvalue_or_null(I, n->a);
         if (I->ctl) return NULL;
         if (inner) {
             if (inner->t == PP_UNDEF) { pp_obj *s = pp_obj_new(PP_OSCALAR); *inner = pp_ref(s); pp_obj_decref(s); return &s->u.scalar; }
             if (inner->t == PP_REF && inner->u.o->kind == PP_OSCALAR) return &inner->u.o->u.scalar;
+            if (is_symname(*inner)) { pp_sym *s = pp_symref(I, n, *inner, '$', 1); return s ? &pp_global(I, s)->u.scalar : NULL; }
             pp_die(I, "Not a SCALAR reference");
             return NULL;
         }
         pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(v); return NULL; }
         if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { hold(I, v.u.o); pp_release(v); return &I->lv_hold->u.scalar; }
+        if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v); return s ? &pp_global(I, s)->u.scalar : NULL; }
         pp_release(v);
         pp_die(I, "Not a SCALAR reference");
         return NULL;
@@ -685,6 +785,7 @@ static void assign_list(pp_interp *I, pp_node *a, pp_list *src) {
 
 static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_node *a = n->a, *b = n->b;
+    if (a->type == N_GLOB && n->op == OP_NONE) return eval_glob_assign(I, n);
     if (a->type == N_MY && a->op == 's' && n->op == OP_NONE && declare_my(I, a)) {
         /* state vars already initialized on an earlier call: skip the initializer */
         if (ctx == CTX_LIST && out) { pp_eval(I, a, CTX_LIST, out); return pp_undef(); }
@@ -846,6 +947,12 @@ static NOINLINE pp_val call_named(pp_interp *I, pp_node *n, int ctx, pp_list *ou
 static NOINLINE pp_val eval_callref(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val cv = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
+    if (is_symname(cv)) {   /* &{"name"}(...) / &$name */
+        pp_obj *code = symref_code(I, n, cv);
+        pp_release(cv);
+        if (!code) return pp_undef();
+        cv = pp_ref(code);
+    }
     if (cv.t != PP_REF || cv.u.o->kind != PP_OCODE) { pp_release(cv); return pp_die(I, "Not a CODE reference"); }
     pp_list args = {0};
     if (n->flags & 2) {
@@ -1006,6 +1113,14 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
         for (int i = 0; i < items.n; i += nv) {
             if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
             if (!I->in_dispatch && (I->ev_head != I->ev_tail || I->alarm_at)) pp_events_poll(I);
+            if (env && env->refcnt > 1) {
+                /* a closure made in the previous iteration captured `my $var`: it keeps that
+                   scope, and this iteration gets a fresh one (each closure sees its own value) */
+                I->env = saved; pp_env_decref(env);
+                env = pp_env_new(I->env, nv); I->env = env;
+                for (int k = 0; k < nv; k++) cells[k] = pp_env_cell(env, k, '$');
+                cell = cells[0];
+            }
             if (nv == 1) {
                 pp_release(cell->u.scalar);
                 cell->u.scalar = pp_copy(items.v[i]);
@@ -1028,6 +1143,13 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                 pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating one array");
             }
             if (brk) break;
+            if (env && env->refcnt > 1 && i + nv < items.n) {
+                /* a closure captured this iteration's variables: the next iteration gets fresh ones */
+                I->env = saved; pp_env_decref(env);
+                env = pp_env_new(I->env, nv); I->env = env;
+                for (int k = 0; k < nv; k++) cells[k] = pp_env_cell(env, k, '$');
+                cell = cells[0];
+            }
         }
     }
     pp_list_free(&items);
@@ -1078,6 +1200,17 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
         }
         break;
     case N_ANONSUB: return pp_eval(I, a, CTX_SCALAR, NULL);
+    case N_CALLREF:
+        if (a->flags & 2) {   /* \&$code / \&{"name"}: the sub itself, not a call */
+            pp_val cv = pp_eval(I, a->a, CTX_SCALAR, NULL);
+            if (I->ctl) { pp_release(cv); return pp_undef(); }
+            if (cv.t == PP_REF && cv.u.o->kind == PP_OCODE) return cv;
+            if (!is_symname(cv)) { pp_release(cv); return pp_die(I, "Not a CODE reference"); }
+            pp_obj *code = symref_code(I, a, cv);
+            pp_release(cv);
+            return code ? pp_ref(code) : pp_undef();
+        }
+        break;
     case N_LIST:
         if (a->n == 1) return make_ref(I, a->list[0], ctx, out);
         if (ctx == CTX_LIST && out) {
@@ -1633,6 +1766,11 @@ static NOINLINE pp_val eval_rv2(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
     if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { pp_val r = pp_copy(v.u.o->u.scalar); pp_release(v); return scalar_or_push(ctx, out, r); }
+    if (is_symname(v)) {
+        pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v);
+        if (!s) return pp_undef();
+        return scalar_or_push(ctx, out, pp_copy(pp_global(I, s)->u.scalar));
+    }
     pp_release(v);
     return pp_die(I, "Not a SCALAR reference");
 }
@@ -1876,6 +2014,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_WANTARRAY:
         return scalar_or_push(ctx, out, I->call_ctx == CTX_LIST ? pp_int(1) : I->call_ctx == CTX_SCALAR ? pp_int(0) : pp_undef());
     case N_FILEHANDLE: return scalar_or_push(ctx, out, pp_int(n->op));
+    case N_GLOB: return eval_glob(I, n, ctx, out);
     case N_NAMEDBIND: {
         pp_obj *args = current_args(I);
         int got = args ? args->u.arr.n : 0;

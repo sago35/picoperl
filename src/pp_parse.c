@@ -50,7 +50,7 @@ enum { SCOPE_BLOCK = 0, SCOPE_SUB, SCOPE_UNIT, SCOPE_LOOPVAR };
 typedef struct {
     int id, kind, n, cap;
     pp_sym **vars;
-    unsigned char strict_vars, strict_subs, warnings;
+    unsigned char strict_vars, strict_subs, strict_refs, warnings;
 } pscope;
 typedef struct {
     pp_arena *arena;                             /* AST storage of the file being parsed */
@@ -113,6 +113,7 @@ static int scope_push(pp_parser *P, int kind) {
     sc.id = S->nids; sc.kind = kind; sc.n = 0; sc.cap = 0; sc.vars = NULL;
     sc.strict_vars = top ? top->strict_vars : 0;
     sc.strict_subs = top ? top->strict_subs : 0;
+    sc.strict_refs = top ? top->strict_refs : 0;
     sc.warnings = top ? top->warnings : 0;
     S->parent_of[S->nids] = top ? top->id : -1;
     S->collapsed[S->nids] = 0;
@@ -156,6 +157,17 @@ static void scope_finalize(pp_parser *P, int from, int min_target) {
         node->aux = (uint8_t)depth;
     }
     S->nrecs = from;
+}
+/* is a '*' here a typeglob sigil rather than multiplication? Yes where a term is expected.
+   After '}' the previous token may have ended a block or a subscript ($h{a} *$x), so there it
+   only counts when the '*' starts its line (a statement after a block). */
+static int lex_glob_position(pp_lex *L) {
+    if (L->pos > 0 && strchr("@$%#*", L->src[L->pos - 1])) return 0;   /* $r->@*  $r->$#*  ** */
+    if (!L->prev_term) return 1;
+    if (!L->prev_brace) return 0;
+    int i = L->pos - 1;
+    while (i >= 0 && (L->src[i] == ' ' || L->src[i] == '\t')) i--;
+    return i < 0 || L->src[i] == '\n';
 }
 static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
@@ -566,6 +578,14 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
     }
+    else if (c == '*' && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')
+             && lex_glob_position(L)) {
+        /* typeglob: *name / *Pkg::name (a T_VAR with sigil '*'), *{expr} / *$name (a cast) */
+        if (is_ident_start(peekc(L, 1))) {
+            L->pos++; int start = L->pos; int len = lex_name(L);
+            t->type = T_VAR; t->sigil = '*'; t->s = L->src + start; t->len = len; term = 1;
+        } else { L->pos++; t->type = T_CAST; strcpy(t->op, "*"); term = 0; }
+    }
     else {
         t->type = T_OP;
         for (int i = 0; three_char_ops[i]; i++)
@@ -587,6 +607,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
 /* Parser helpers                                                      */
 /* ------------------------------------------------------------------ */
 
+static pp_node *const_str(pp_parser *P, const char *s, int len);
 static pp_node *node(pp_parser *P, int type) {
     pp_node *n;
     if (P->sc->heap_depth) { n = pp_xmalloc(sizeof(pp_node)); memset(n, 0, sizeof *n); n->flags = PP_NODE_HEAP; }
@@ -594,6 +615,13 @@ static pp_node *node(pp_parser *P, int type) {
     pp_stat_nodes++;
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
+    if (type == N_RV2AV || type == N_RV2HV || type == N_RV2SV || type == N_CALLREF || type == N_GLOB) {
+        /* a string used as a reference (symbolic reference): dies under strict refs, otherwise
+           the name is looked up in the current package (kept in b; main needs none) */
+        pscope *top = scope_top(P);
+        if (type != N_GLOB && top && top->strict_refs) n->flags |= PP_NODE_STRICTREFS;
+        else if (strcmp(P->pkg, "main") != 0) n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+    }
     return n;
 }
 /* temporary node (list shells etc.): always malloc'd so it can be dropped */
@@ -1816,6 +1844,16 @@ static pp_node *parse_term(pp_parser *P) {
     case T_VAR: {
         char sigil = t->sigil; const char *name = t->s; int len = t->len;
         advance(P);
+        if (sigil == '*') {   /* *name: the name is qualified now, so the node needs no package */
+            pp_node *g = node(P, N_GLOB);
+            char buf[256]; int bl;
+            if (len > 6 && !memcmp(name, "main::", 6)) { name += 6; len -= 6; }
+            if (has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = snprintf(buf, sizeof buf, "%.*s", len, name);
+            else bl = snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
+            g->b = NULL;
+            g->a = const_str(P, buf, bl);
+            return g;
+        }
         if (sigil == '$') return parse_scalar_var_subscript(P, name, len);
         if (sigil == '@') {
             if (cur_is_op(P, "{")) { advance(P); pp_node *hv = mkvar(P, '%', name, len);
@@ -1852,6 +1890,7 @@ static pp_node *parse_term(pp_parser *P) {
             return av;
         }
         if (!strcmp(op, "%")) { pp_node *inner = parse_cast_target(P); pp_node *hv = node(P, N_RV2HV); hv->a = inner; return hv; }
+        if (!strcmp(op, "*")) { pp_node *inner = parse_cast_target(P); pp_node *g = node(P, N_GLOB); g->a = inner; return g; }
         if (!strcmp(op, "$#")) { pp_node *inner = parse_cast_target(P); pp_node *av = node(P, N_RV2AV); av->a = inner; pp_node *n = node(P, N_LASTIDX); n->a = av; return n; }
         if (!strcmp(op, "&")) {
             pp_node *inner = parse_cast_target(P);
@@ -2142,12 +2181,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
 /* ------------------------------------------------------------------ */
 
 static void parse_block_stmts(pp_parser *P, pp_node *b) {
+    char saved_pkg[sizeof P->pkg]; strcpy(saved_pkg, P->pkg);   /* `package X;` lasts to the end of its block */
     expect_op(P, "{");
     while (!cur_is_op(P, "}")) {
         if (P->cur.type == T_EOF) perr(P, "Missing right curly bracket");
         pp_node *s = parse_statement(P);
         if (s) node_add(b, s);
     }
+    strcpy(P->pkg, saved_pkg);
     expect_op(P, "}");
 }
 static pp_node *parse_block(pp_parser *P) {
@@ -2205,7 +2246,7 @@ static pp_node *parse_use(pp_parser *P) {
         }
         advance(P);
         pscope *top = scope_top(P);
-        if (minor >= 11) top->strict_vars = top->strict_subs = 1;
+        if (minor >= 11) top->strict_vars = top->strict_subs = top->strict_refs = 1;
         if (minor >= 35) top->warnings = 1;
         expect_op(P, ";");
         return NULL;
@@ -2213,25 +2254,27 @@ static pp_node *parse_use(pp_parser *P) {
     if (cur_is_ident(P, "strict") || cur_is_ident(P, "warnings")) {
         int is_strict = cur_is_ident(P, "strict");
         pscope *top = scope_top(P);
-        int vars = 1, subs = 1;
+        int vars = 1, subs = 1, refs = 1;
         advance(P);
         if (!cur_is_op(P, ";")) {   /* use strict 'vars'; use strict qw(subs refs); */
-            vars = subs = 0;
+            vars = subs = refs = 0;
             pp_node *l = wrap_list(P, parse_expr(P));
             for (int i = 0; i < l->n; i++) {
                 if (l->list[i]->type == N_CONST && l->list[i]->val.t == PP_STR) {
                     const char *w = l->list[i]->val.u.s->d;
                     if (!strcmp(w, "vars")) vars = 1;
                     if (!strcmp(w, "subs")) subs = 1;
-                    if (!strcmp(w, "all")) vars = subs = 1;
+                    if (!strcmp(w, "refs")) refs = 1;
+                    if (!strcmp(w, "all")) vars = subs = refs = 1;
                 }
             }
             pp_free_ast(l);
-            if (!is_strict) vars = subs = 1;
+            if (!is_strict) vars = subs = refs = 1;
         }
         if (is_strict) {
             if (vars) top->strict_vars = !is_no;
             if (subs) top->strict_subs = !is_no;
+            if (refs) top->strict_refs = !is_no;
         } else top->warnings = !is_no;
         expect_op(P, ";");
         return NULL;
@@ -2582,6 +2625,7 @@ pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err)
     pp_node *unit = node(&P, N_BLOCK);
     scope_push(&P, SCOPE_UNIT);
     while (P.cur.type != T_EOF) {
+        if (cur_is_op(&P, "}")) perr(&P, "Unmatched right curly bracket");   /* would loop forever: nothing consumes it */
         pp_node *s = parse_statement(&P);
         if (s) node_add(unit, s);
     }

@@ -170,6 +170,8 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_GLOB,         /* typeglob *name / *{expr}: a: name expr (static names are a const, already
+                       package-qualified), b: current package (const) for a dynamic name outside main */
     N_TRY,          /* a: try block, b: catch block (starts with `my $e = <caught>`), c: finally block or NULL */
     N_TRYERR,       /* leaf: the error caught by the enclosing try (copied into the catch variable) */
     N_NAMEDBIND,    /* named signature params (5.44): op: first pair index, a: sub name (const str),
@@ -207,6 +209,7 @@ struct pp_node {
     };
 };
 #define PP_NODE_HEAP 0x80
+#define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
 
 /* bump allocator for the AST of one file */
 typedef struct pp_arena_chunk { struct pp_arena_chunk *next; size_t used, cap; } pp_arena_chunk;

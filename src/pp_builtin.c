@@ -797,6 +797,14 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         pp_node *a = n->list[0];
         int d;
         if (a->type == N_CALL && a->n == 0) d = pp_resolve_sub(I, a->sym) != NULL;
+        else if (a->type == N_CALLREF && (a->flags & 2)) {   /* defined &$code / defined &{"name"}: no call */
+            pp_val cv = pp_eval(I, a->a, CTX_SCALAR, NULL);
+            if (I->ctl) { pp_release(cv); return pp_undef(); }
+            if (cv.t == PP_REF) d = cv.u.o->kind == PP_OCODE;
+            else if (cv.t == PP_UNDEF) d = 0;
+            else { pp_sym *s = pp_symref(I, a, cv, '&', 0); d = s && pp_resolve_sub(I, s) != NULL; }
+            pp_release(cv);
+        }
         else if (a->type == N_VAR && a->sym->name[0] == '@') { pp_obj *c = pp_get_array(I, a, 0, NULL); d = c && c->u.arr.n > 0; if (c) pp_obj_decref(c); }
         else if (a->type == N_VAR && a->sym->name[0] == '%') { pp_obj *c = pp_get_hash(I, a, 0, NULL); d = c && c->u.hash.live > 0; if (c) pp_obj_decref(c); }
         else {
