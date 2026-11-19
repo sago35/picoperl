@@ -8,6 +8,14 @@ https://github.com/tinygo-keeb/workshop の各例を、同じディレクトリ�
 make uf2 SCRIPT=workshop/01_blinky1/main.pl NAME=01_blinky1   # -> dist/picoperl-01_blinky1.uf2
 ```
 
+`WORKSHOP=1` を付けると全例がドライブの `/workshop` にも入るので、ボード上で
+`/workshop/NN_name/main.pl` を `/main.pl` にコピーするだけで例を切り替えられます
+(保存するとリロードされます。起動ごとにドライブは初期化されます):
+
+```sh
+make uf2 SCRIPT=workshop/20_rotary_gopher/main.pl NAME=20_rotary_gopher WORKSHOP=1
+```
+
 | 例 | 内容 | 使う API |
 |---|---|---|
 | `01_blinky1` | RP2040-Zero の RGB LED (GPIO16) を点滅 | `Ws2812->new(16)`, `put_color` |

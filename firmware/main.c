@@ -105,8 +105,11 @@ static char *embedded_file(const char *name) {
     const char *base = strrchr(name, '/');
     base = base ? base + 1 : name;
     for (int i = 0; i < pp_embedded_count; i++) {
-        const char *n = pp_embedded_files[i].name;
-        if (strcmp(n, name) == 0 || strcmp(n, base) == 0) {
+        const char *n = pp_embedded_files[i].name;          /* drive path: main.pl, lib/..., workshop/... */
+        const char *nl = strncmp(n, "lib/", 4) == 0 ? n + 4 : n;   /* `use Mod` asks for Mod.pm without lib/ */
+        const char *nb = strrchr(n, '/');
+        nb = nb ? nb + 1 : n;
+        if (strcmp(n, name) == 0 || strcmp(nl, name) == 0 || strcmp(nb, base) == 0) {
             size_t len = strlen(pp_embedded_files[i].src);
             char *copy = malloc(len + 1);
             if (!copy) return NULL;
@@ -798,7 +801,7 @@ static void main_on_big_stack(void) {
                      PICOPERL_FS_RESET ? " (recreated from built-in files at every boot)" : "");
     pp_host_write(1, banner, n);
     for (int i = 0; i < pp_embedded_count; i++) {
-        n = snprintf(banner, sizeof banner, "picoperl: built-in file %s%s (%u bytes)\n", i == 0 ? "" : "lib/", pp_embedded_files[i].name, (unsigned)strlen(pp_embedded_files[i].src));
+        n = snprintf(banner, sizeof banner, "picoperl: built-in file %s (%u bytes)\n", pp_embedded_files[i].name, (unsigned)strlen(pp_embedded_files[i].src));
         pp_host_write(1, banner, n);
     }
 

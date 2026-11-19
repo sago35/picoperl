@@ -11,6 +11,9 @@ set(PICOPERL_FS_SIZE "1048576" CACHE STRING "Flash filesystem size in bytes")
 set(PICO_BOARD pico CACHE STRING "Board type")
 # ON: format the drive and rewrite the built-in files on every boot (reproducible test setups)
 option(PICOPERL_FS_RESET "Recreate the drive from the built-in files on every boot" OFF)
+# ON: also embed workshop/*/main.pl; they appear as /workshop/... on the drive,
+# so an example can be tried by copying it over /main.pl on the device
+option(PICOPERL_EMBED_WORKSHOP "Embed the workshop examples into the drive" OFF)
 
 include(pico_sdk_import.cmake)
 
@@ -38,9 +41,13 @@ set(PP_SRC
 file(GLOB_RECURSE PP_LIB_FILES ${PP_ROOT}/lib/*.pm ${PP_ROOT}/lib/*.pl)
 set(PP_SCRIPTS_C ${CMAKE_CURRENT_BINARY_DIR}/pp_scripts.c)
 set(PP_EMBED_FILES ${PICOPERL_SCRIPT} ${PP_LIB_FILES} ${PICOPERL_EXTRA_SCRIPTS})
+if (PICOPERL_EMBED_WORKSHOP)
+    file(GLOB PP_WORKSHOP_FILES ${PP_ROOT}/workshop/*/main.pl)
+    list(APPEND PP_EMBED_FILES ${PP_WORKSHOP_FILES})
+endif()
 add_custom_command(
     OUTPUT ${PP_SCRIPTS_C}
-    COMMAND perl ${PP_ROOT}/tools/embed.pl -o ${PP_SCRIPTS_C} -b ${PP_ROOT}/lib ${PP_EMBED_FILES}
+    COMMAND perl ${PP_ROOT}/tools/embed.pl -o ${PP_SCRIPTS_C} -b ${PP_ROOT}/lib -r ${PP_ROOT} ${PP_EMBED_FILES}
     DEPENDS ${PP_EMBED_FILES} ${PP_ROOT}/tools/embed.pl
     COMMENT "Embedding Perl scripts"
     VERBATIM

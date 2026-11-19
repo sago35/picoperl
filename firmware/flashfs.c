@@ -248,7 +248,7 @@ static void populate_defaults(void) {
         char path[160];
         const char *name = pp_embedded_files[i].name;
         if (i == 0) snprintf(path, sizeof path, "/main.pl");
-        else snprintf(path, sizeof path, "/lib/%s", name);
+        else snprintf(path, sizeof path, "/%s", name);   /* name is the drive path (lib/..., workshop/...) */
         flashfs_write_file(path, pp_embedded_files[i].src, (unsigned)strlen(pp_embedded_files[i].src));
     }
     flashfs_write_file("/README.TXT", readme_txt, (unsigned)strlen(readme_txt));
