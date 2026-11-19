@@ -2517,6 +2517,50 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
 /* interpreter lifecycle                                               */
 /* ------------------------------------------------------------------ */
 
+/* UNIVERSAL::isa($thing, TYPE) and UNIVERSAL::can($thing, METHOD) called as functions.
+   $thing may be an object, a class name, or (for isa) a plain reference whose type is asked. */
+static const char *univ_reftype(pp_obj *o) {
+    switch (o->kind) {
+    case PP_OARRAY: return "ARRAY";
+    case PP_OHASH:  return "HASH";
+    case PP_OCODE:  return "CODE";
+    case PP_OREGEX: return "Regexp";
+    case PP_OFILE:  return "GLOB";
+    default:        return o->u.scalar.t == PP_REF ? "REF" : "SCALAR";
+    }
+}
+static pp_val n_univ_isa(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2 || a->v[0].t == PP_UNDEF) return pp_strn("", 0);
+    pp_str *want = pp_to_str(a->v[1]);
+    int yes = 0;
+    if (a->v[0].t == PP_REF) {
+        pp_obj *o = a->v[0].u.o;
+        if (o->class && class_isa(I, o->class->name, want->d, 0)) yes = 1;
+        else yes = !strcmp(univ_reftype(o), want->d);
+    } else {
+        pp_str *cls = pp_to_str(a->v[0]);
+        yes = cls->len > 0 && class_isa(I, cls->d, want->d, 0);
+        pp_str_decref(cls);
+    }
+    pp_str_decref(want);
+    return yes ? pp_int(1) : pp_strn("", 0);
+}
+static pp_val n_univ_can(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2 || a->v[0].t == PP_UNDEF) return pp_undef();
+    pp_str *name = pp_to_str(a->v[1]);
+    pp_obj *code = NULL;
+    if (a->v[0].t == PP_REF) { if (a->v[0].u.o->class) code = find_method(I, a->v[0].u.o->class->name, name->d, 0); }
+    else {
+        pp_str *cls = pp_to_str(a->v[0]);
+        if (cls->len > 0) code = find_method(I, cls->d, name->d, 0);
+        pp_str_decref(cls);
+    }
+    pp_str_decref(name);
+    return code ? pp_ref(code) : pp_undef();
+}
+
 pp_interp *pp_new(void) {
     pp_interp *I = pp_xmalloc(sizeof *I);
     memset(I, 0, sizeof *I);
@@ -2547,6 +2591,8 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "$]", 2))->u.scalar = pp_strn("5.044000", 8);
     pp_global(I, pp_intern(I, "$^O", 3))->u.scalar = pp_strn(PP_OSNAME, (int)strlen(PP_OSNAME));
     pp_core_natives_register(I);
+    pp_register(I, "UNIVERSAL::isa", n_univ_isa);
+    pp_register(I, "UNIVERSAL::can", n_univ_can);
     pp_host_register(I);
     return I;
 }

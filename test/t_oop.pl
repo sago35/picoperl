@@ -67,4 +67,13 @@ print "qualified method: ", $fq->who, " / ", $fq->FqBase::who, " / ", $fq->via, 
 print "unrelated package: ", $fq->FqOther::helper(), " / ", FqKid->FqBase::only_base(), "\n";
 eval { $fq->FqBase::no_such_method() };
 print "missing qualified method: ", ($@ =~ /^Can't locate object method "no_such_method" via package "FqBase"/ ? "dies" : "no: $@"), "\n";
+# UNIVERSAL::isa / UNIVERSAL::can を関数として呼ぶ
+{ package UvBase; sub new { bless [], shift } sub hello { "hello" } }
+{ package UvKid; our @ISA = ('UvBase'); }
+my $uv = UvKid->new;
+print "UNIVERSAL::isa: ", join("", map { $_ ? 1 : 0 } UNIVERSAL::isa($uv, 'UvKid'), UNIVERSAL::isa($uv, 'UvBase'), UNIVERSAL::isa($uv, 'ARRAY'), UNIVERSAL::isa($uv, 'HASH'), UNIVERSAL::isa($uv, 'Other')), "\n";
+print "isa on plain refs: ", join("", map { $_ ? 1 : 0 } UNIVERSAL::isa([], 'ARRAY'), UNIVERSAL::isa({}, 'HASH'), UNIVERSAL::isa({}, 'ARRAY'), UNIVERSAL::isa(sub {}, 'CODE'), UNIVERSAL::isa(\1, 'SCALAR'), UNIVERSAL::isa(\\1, 'REF'), UNIVERSAL::isa(qr/x/, 'Regexp')), "\n";
+print "isa on names and non-refs: ", join("", map { $_ ? 1 : 0 } UNIVERSAL::isa('UvKid', 'UvBase'), UNIVERSAL::isa('UvBase', 'UvKid'), UNIVERSAL::isa('NoSuchClass', 'UvBase'), UNIVERSAL::isa(undef, 'ARRAY'), UNIVERSAL::isa("string", 'ARRAY'), UNIVERSAL::isa(42, 'SCALAR')), "\n";
+my $uv_can = UNIVERSAL::can($uv, 'hello');
+print "UNIVERSAL::can: ", ref($uv_can), " ", $uv_can->($uv), " ", (UNIVERSAL::can('UvKid', 'new') ? "class" : "no"), " ", (defined UNIVERSAL::can($uv, 'nope') ? "found" : "undef"), " ", (defined UNIVERSAL::can([], 'hello') ? "found" : "undef"), " ", (defined UNIVERSAL::can(undef, 'hello') ? "found" : "undef"), "\n";
 

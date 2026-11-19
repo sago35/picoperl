@@ -325,6 +325,8 @@ reftype refaddr indexed)`、
 (`use Test::Simple tests => 5;` は親クラス `Test::Builder::Module` の `import` を実行します)。
 継承元が `Exporter` の場合は、組み込みのエクスポート処理を使います。
 `$obj->Pkg::method(...)` のように、探し始めるパッケージを指定したメソッド呼び出しも書けます。
+`UNIVERSAL::isa($x, 'ARRAY')` と `UNIVERSAL::can($x, 'method')` を関数として呼べます
+(オブジェクト、クラス名、bless していないリファレンスのどれにも使えます)。
 
 - `Exporter`: `use Module;` のエクスポートはインタプリタが直接行うので、普段は読み込まれません。
   `require Exporter; our @ISA = ('Exporter');` という昔ながらの書き方や、`Module->import(...)` /
