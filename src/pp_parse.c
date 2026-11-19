@@ -59,6 +59,7 @@ typedef struct {
     pscope *st; int n, cap;                      /* open scopes (stack) */
     unsigned char *collapsed; int *parent_of; int nids, capids;
     struct { pp_node *node; int own, target; } *recs; int nrecs, caprecs;   /* lexical references to finalize */
+    int has_goto;                                /* the file uses goto LABEL */
     pp_node **made; int nmade, capmade; int track;   /* eval STRING: every arena node, to clean up after a syntax error */
     pp_sym **ours; int nours, capours;           /* `our` names allowed under strict vars */
 } pscopes;
@@ -2317,7 +2318,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
            current @_. Done as `return &sub;`, so the caller's context is passed on but the
            frame of this sub stays on the stack until the other one returns. */
         advance(P);
-        if (P->cur.type == T_IDENT) perr(P, "goto LABEL is not supported (only goto &sub)");
+        if (P->cur.type == T_IDENT && !has_pkg_sep(P->cur.s, P->cur.len)) {   /* goto LABEL */
+            pp_node *g = node(P, N_GOTO);
+            g->sym = pp_intern(P->I, P->cur.s, P->cur.len);
+            advance(P);
+            P->sc->has_goto = 1;
+            return g;
+        }
         pp_node *e = adopt(P, parse_assign(P));
         if (!((e->type == N_CALL || e->type == N_CALLREF) && (e->flags & 2))) {   /* an expression giving a code ref */
             pp_node *c = node(P, N_CALLREF); c->a = e; c->flags |= 2; e = c;
@@ -2597,11 +2604,16 @@ static pp_node *parse_statement_inner(pp_parser *P) {
     }
     if (t->type == T_IDENT) {
         pp_tok *nx = peek(P);
-        if (nx->type == T_OP && !strcmp(nx->op, ":") && t->len > 0 && isupper((unsigned char)t->s[0])) {
+        if (nx->type == T_OP && !strcmp(nx->op, ":") && t->len > 0 && !has_pkg_sep(t->s, t->len)) {
             pp_sym *lab = pp_intern(P->I, t->s, t->len);
             advance(P); advance(P);
             P->pending_label = lab;
-            return parse_statement(P);
+            pp_node *st = cur_is_op(P, "}") || P->cur.type == T_EOF ? NULL : parse_statement(P);
+            P->pending_label = NULL;
+            if (st && (st->type == N_WHILE || st->type == N_FOR || st->type == N_FOREACH) && st->sym == lab) return st;
+            pp_node *w = node(P, N_LABEL);       /* a label on a plain statement: a goto target */
+            w->sym = lab; w->a = st;
+            return w;
         }
 
         if (tok_is_ident(t, "sub") && nx->type == T_IDENT) {
@@ -2977,6 +2989,7 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     }
     int nv = scope_pop(&P);
     unit->flags |= 1;
+    if (P.sc->has_goto) unit->flags |= PP_UNIT_GOTO;
     unit->aux = (uint8_t)nv;
     scope_finalize(&P, 0, -1);
     shrink_ast(P.sc->arena, unit);

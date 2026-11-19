@@ -87,6 +87,9 @@ struct pp_obj {
 };
 
 /* symbols: interned, sigil included in name ("$x", "@x", "%x", "&x") */
+/* a statement list that is being run; the chain lives on the C stack of exec_stmts */
+struct pp_stmts { struct pp_stmts *up; pp_node *blk; };
+
 /* one sub call, for caller(): who called (code + line), and what was called */
 struct pp_frame {
     struct pp_frame *up;
@@ -121,7 +124,7 @@ struct pp_env {
 enum { CTX_VOID = 0, CTX_SCALAR, CTX_LIST };
 
 /* control flow */
-enum { CTL_NONE = 0, CTL_RETURN, CTL_LAST, CTL_NEXT, CTL_DIE, CTL_EXIT };
+enum { CTL_NONE = 0, CTL_RETURN, CTL_LAST, CTL_NEXT, CTL_DIE, CTL_EXIT, CTL_GOTO };
 
 /* ------------------------------------------------------------------ */
 /* AST                                                                 */
@@ -188,6 +191,9 @@ enum {
     N_SUBCLOSE,     /* a named sub that uses `my` variables of an enclosing block: define it here, when
                        the block runs (sym: the sub; its N_SUBDEF is flagged PP_SUB_INPLACE) */
     N_LOCALELEM,    /* local $h{k} / local $a[i] / local @h{...} / local @a[...]: a: the element or slice */
+    N_LABEL,        /* LABEL: statement (not a loop, which keeps its label in sym). sym: label, a: statement or NULL */
+    N_GOTO,         /* goto LABEL: sym = label. Unwinds (ctl = CTL_GOTO) to the nearest enclosing
+                       statement list that has the label, which resumes there */
     N_INIT,         /* UNITCHECK { ... }: a: N_ANONSUB; runs when its file starts to run (pp_exec_unit).
                        INIT and CHECK blocks are queued by the parser and leave no node. */
     N_END,          /* END { ... }: a: N_ANONSUB; evaluating it queues the block to run at exit */
@@ -236,6 +242,7 @@ struct pp_node {
 #define PP_NODE_HEAP 0x80
 #define PP_SUB_EARLY 0x08          /* N_SUBDEF: already defined while parsing (a BEGIN block or `use` needed it) */
 #define PP_SUB_INPLACE 0x10        /* N_SUBDEF: not defined up front, see N_SUBCLOSE */
+#define PP_UNIT_GOTO 0x08          /* file-level N_BLOCK: the file uses goto, keep its statements after they ran */
 #define PP_BLOCK_PKG 0x10          /* N_BLOCK: contains a `package` statement, restore the package on exit */
 #define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
 
@@ -312,6 +319,7 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    struct pp_stmts *stmts;      /* statement lists being run, innermost first (for goto LABEL) */
     pp_node *main_unit;          /* the program given to pp_run: INIT blocks run when it starts */
     uint8_t  init_ran;           /* ... and after that it is too late for more of them */
     int      eval_seq;           /* number of eval STRINGs so far: their "file" is "(eval N)" */

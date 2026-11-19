@@ -1096,8 +1096,19 @@ static NOINLINE pp_val eval_callref(pp_interp *I, pp_node *n, int ctx, pp_list *
 /* blocks & statements                                                 */
 /* ------------------------------------------------------------------ */
 
+/* goto LABEL reached this statement list: the index of the statement carrying the label, or -1 */
+static int find_label(pp_node *blk, pp_sym *label) {
+    for (int i = 0; i < blk->n; i++) {
+        pp_node *s = blk->list[i];
+        if (!s || s->sym != label) continue;
+        if (s->type == N_LABEL || s->type == N_WHILE || s->type == N_FOR || s->type == N_FOREACH) return i;
+    }
+    return -1;
+}
 static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
     pp_val last = pp_undef();
+    struct pp_stmts here = { I->stmts, blk };
+    I->stmts = &here;
     for (int i = 0; i < blk->n; i++) {
         pp_node *s = blk->list[i];
         if (s->line) I->line = s->line;   /* line 0: signature check, keep the caller's line */
@@ -1107,8 +1118,18 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         int is_last = i == blk->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
+        if (I->ctl == CTL_GOTO) {
+            int j = find_label(blk, I->ctl_label);
+            if (j >= 0) {                        /* the label is here: go on from it */
+                I->ctl = CTL_NONE; I->ctl_label = NULL;
+                pp_release(last); last = pp_undef();
+                i = j - 1;
+                continue;
+            }
+        }
         if (I->ctl) break;
     }
+    I->stmts = here.up;
     return last;
 }
 
@@ -2222,6 +2243,16 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_FOREACH: return eval_foreach(I, n);
     case N_SUBDEF: return eval_subdef(I, n);
     case N_RETURN: return eval_return(I, n);
+    case N_GOTO: {
+        /* the label must be in a statement list that is running now (this block, an enclosing
+           one, or one of a caller); otherwise the error is raised here, as in perl */
+        struct pp_stmts *f = I->stmts;
+        while (f && find_label(f->blk, n->sym) < 0) f = f->up;
+        if (!f) return pp_die(I, "Can't find label %s", n->sym->name);
+        I->ctl = CTL_GOTO; I->ctl_label = n->sym;
+        return pp_undef();
+    }
+    case N_LABEL: return n->a ? pp_eval(I, n->a, ctx, out) : pp_undef();
     case N_LAST: I->ctl = CTL_LAST; I->ctl_label = n->sym; return pp_undef();
     case N_NEXT: I->ctl = CTL_NEXT; I->ctl_label = n->sym; return pp_undef();
     case N_NOP: return pp_undef();
@@ -2357,6 +2388,8 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     }
     I->nsubdefs = 0;
     int lh = I->nlocals;
+    struct pp_stmts here = { I->stmts, unit };
+    I->stmts = &here;
     /* UNITCHECK blocks of this file run before its first statement */
     for (int i = 0; i < unit->n && !I->ctl; i++) {
         pp_node *s = unit->list[i];
@@ -2399,9 +2432,23 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         int is_last = i == unit->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
-        if (!keeps_code(s)) { pp_free_ast(s); unit->list[i] = NULL; }
+        if (I->ctl == CTL_GOTO) {
+            int j = find_label(unit, I->ctl_label);
+            if (j >= 0) {
+                I->ctl = CTL_NONE; I->ctl_label = NULL;
+                pp_release(last); last = pp_undef();
+                i = j - 1;
+                continue;
+            }
+            pp_sym *label = I->ctl_label;        /* nowhere left to look */
+            I->ctl = CTL_NONE; I->ctl_label = NULL;
+            pp_release(pp_die(I, "Can't find label %s", label ? label->name : "?"));
+        }
+        /* statements that ran are freed, unless a goto may come back to them */
+        if (!(unit->flags & PP_UNIT_GOTO) && !keeps_code(s)) { pp_free_ast(s); unit->list[i] = NULL; }
         if (I->ctl) break;
     }
+    I->stmts = here.up;
     local_unwind(I, lh);
     I->env = saved;
     I->file_pkg = saved_pkg;
