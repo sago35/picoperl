@@ -58,3 +58,8 @@ print "filetest expr: ", (-e $ft_file ? "yes" : "no"), " ", (-e $ft_none ? "yes"
 my %ft_h = (-s => 1, -e => 2, -x => 3); my $ft_n = 5; my $ft_e = 2;
 print "filetest not: $ft_h{-s} $ft_h{-e} $ft_h{-x} ", $ft_n -$ft_e, " ", $ft_n - $ft_e, " ", -$ft_e, "\n";
 unless (-e $ft_none) { print "filetest unless\n" }
+# print STDERR (LIST) / print STDOUT (LIST)
+print STDOUT ("paren ", "list", "\n");
+print STDOUT (join("-", 1, 2), "\n");
+printf STDOUT ("%s-%d\n", "fmt", 7);
+print STDERR ("to stderr ", 1 + 1, "\n");

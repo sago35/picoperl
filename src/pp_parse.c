@@ -2398,6 +2398,16 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
 
     pp_sym *s = sym_sigil(P, '&', id, len);
+    if (strcmp(P->pkg, "main") != 0 && !has_pkg_sep(id, len) && !pp_lookup_sub(P->I, s)) {
+        /* a native registered without a package (chdir) works like a builtin: every package
+           calls the one in main, unless it defines a sub of that name itself */
+        char buf[128];
+        int bn = snprintf(buf, sizeof buf, "&%.*s", len, id);
+        pp_sym *m = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
+        int local_decl = 0;
+        for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) local_decl = 1;
+        if (m && m->sub && m->sub->u.code.native && !local_decl) s = m;
+    }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = line;
     if (cur_is_op(P, "(")) { parse_call_args(P, n); return parse_postfix(P, n); }
