@@ -188,6 +188,8 @@ enum {
     N_SUBCLOSE,     /* a named sub that uses `my` variables of an enclosing block: define it here, when
                        the block runs (sym: the sub; its N_SUBDEF is flagged PP_SUB_INPLACE) */
     N_LOCALELEM,    /* local $h{k} / local $a[i] / local @h{...} / local @a[...]: a: the element or slice */
+    N_INIT,         /* UNITCHECK { ... }: a: N_ANONSUB; runs when its file starts to run (pp_exec_unit).
+                       INIT and CHECK blocks are queued by the parser and leave no node. */
     N_END,          /* END { ... }: a: N_ANONSUB; evaluating it queues the block to run at exit */
     N_FILETEST,     /* -e $path etc.: op: the letter (e f d s z r w x l), a: path expr */
     N_CALLER,       /* caller / caller(N): a: frame number expr or NULL */
@@ -310,6 +312,8 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    pp_node *main_unit;          /* the program given to pp_run: INIT blocks run when it starts */
+    uint8_t  init_ran;           /* ... and after that it is too late for more of them */
     int      eval_seq;           /* number of eval STRINGs so far: their "file" is "(eval N)" */
     pp_env  *pending_env;        /* file scope of the file being parsed, made early when a BEGIN block
                                     needs the subs defined so far; pp_exec_unit runs the file in it */

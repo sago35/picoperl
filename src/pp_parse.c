@@ -2765,6 +2765,33 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             exec_at_parse(P, b, rs, is);
             return NULL;
         }
+        if ((tok_is_ident(t, "INIT") || tok_is_ident(t, "CHECK") || tok_is_ident(t, "UNITCHECK")) && is_op(nx, "{")) {
+            int kind = t->s[0] == 'I' ? 0 : t->s[0] == 'C' ? 1 : 2;
+            pp_node *n = node(P, N_INIT);
+            int file_level = P->sc->n == 1 && !P->sc->heap_depth && !P->sc->track;
+            P->cur.s = "sub"; P->cur.len = 3;
+            n->a = parse_ident_term(P);
+            accept_op(P, ";");
+            if (kind == 2) return n;                 /* UNITCHECK: when this file starts to run */
+            /* INIT / CHECK: queue the block now, in the order the blocks are compiled; the main
+               program runs the queues before its first statement. The block closes over the
+               file scope, which is made early for it. Too late once the program runs, and not
+               done for blocks inside other blocks or an eval STRING. */
+            pp_interp *I = P->I;
+            if (file_level && !I->init_ran && n->a->type == N_ANONSUB) {
+                if (!I->pending_env) I->pending_env = pp_env_new(NULL, 0);
+                pp_env *saved = I->env;
+                I->env = I->pending_env;
+                pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
+                I->env = saved;
+                pp_array_push(pp_global(I, pp_intern(I, kind ? "@ CHECK" : "@ INIT", kind ? 7 : 6)), code);
+                pp_node *keep = node(P, N_NOP);      /* the block's AST must outlive this statement */
+                keep->a = n->a; n->a = NULL;
+                keep->type = N_INIT; keep->op = 9;   /* op 9: already queued, pp_exec_unit skips it */
+                return keep;
+            }
+            return NULL;
+        }
         if (tok_is_ident(t, "END") && is_op(nx, "{")) {
             /* END { ... } is an anonymous sub that runs at exit: parse it as `sub { ... }` */
             pp_node *n = node(P, N_END);

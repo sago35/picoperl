@@ -2241,6 +2241,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         for (int i = I->nall_subdefs - 1; i >= 0; i--)
             if (I->all_subdefs[i]->sym == n->sym && (I->all_subdefs[i]->flags & PP_SUB_INPLACE)) return eval_subdef(I, I->all_subdefs[i]);
         return pp_undef();
+    case N_INIT: return pp_undef();   /* reached inside a block or sub: too late to run it */
     case N_END: {   /* queue the block; pp_run calls the queue in reverse order */
         pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(code); return pp_undef(); }
@@ -2354,12 +2355,41 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     }
     I->nsubdefs = 0;
     int lh = I->nlocals;
+    /* UNITCHECK blocks of this file run before its first statement */
+    for (int i = 0; i < unit->n && !I->ctl; i++) {
+        pp_node *s = unit->list[i];
+        if (!s || s->type != N_INIT || s->op == 9) continue;
+        pp_val code = pp_eval(I, s->a, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(code); break; }
+        pp_list args = {0};
+        if (code.t == PP_REF && code.u.o->kind == PP_OCODE) { pp_val v = pp_call(I, code.u.o, &args, CTX_VOID, NULL); pp_release(v); }
+        pp_list_free(&args);
+        pp_release(code);
+    }
+    /* The main program is about to run: first the CHECK blocks (last compiled first), then
+       the INIT blocks (in compile order), of the program and of every module it loaded
+       with `use`. After that it is too late for more, as in perl. */
+    if (unit == I->main_unit && !I->init_ran) {
+        I->init_ran = 1;
+        for (int pass = 0; pass < 2; pass++) {
+            pp_obj *q = pp_global(I, pp_intern(I, pass ? "@ INIT" : "@ CHECK", pass ? 6 : 7));
+            for (int k = 0; k < q->u.arr.n && !I->ctl; k++) {
+                pp_val code = q->u.arr.v[pass ? k : q->u.arr.n - 1 - k];
+                pp_list args = {0};
+                if (code.t == PP_REF && code.u.o->kind == PP_OCODE) { pp_val v = pp_call(I, code.u.o, &args, CTX_VOID, NULL); pp_release(v); }
+                pp_list_free(&args);
+            }
+            for (int k = 0; k < q->u.arr.n; k++) pp_release(q->u.arr.v[k]);
+            q->u.arr.n = 0;
+        }
+    }
     /* like exec_stmts, but each top-level statement's AST is freed once it has run
        (saves the memory of big literals such as constant tables) */
     pp_val last = pp_undef();
     for (int i = 0; i < unit->n; i++) {
         pp_node *s = unit->list[i];
-        if (!s) continue;
+        if (!s || s->type == N_INIT) continue;       /* INIT blocks were handled above */
+        if (I->ctl) break;
         I->line = s->line;
         I->warn_on = (s->flags & PP_STMT_WARN) != 0;
         if ((++I->stmt_counter & 0xFF) == 0) pp_host_poll();
@@ -2527,6 +2557,7 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
     char *fname = pp_xmalloc(strlen(filename) + 1); strcpy(fname, filename);
     track_unit(I, unit, fname);
     I->ctl = CTL_NONE;
+    I->main_unit = unit;
     pp_val r = pp_exec_unit(I, unit, CTX_VOID, NULL);
     pp_release(r);
     int rc = 0;
