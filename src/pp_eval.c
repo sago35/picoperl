@@ -277,6 +277,10 @@ static NOINLINE pp_val eval_filetest(pp_interp *I, pp_node *n, int ctx, pp_list 
         pp_str *s = pp_to_str(v);
         long long size = 0;
         int m = (int)strlen(s->d) == s->len ? pp_host_filetest(s->d, &size) : -1;
+        {   /* remember the path for a following -X _ / stat(_) */
+            pp_obj *last = pp_global(I, pp_intern(I, "$\002stat", 6));
+            if (!(last->u.scalar.t == PP_STR && last->u.scalar.u.s == s)) { pp_release(last->u.scalar); s->refcnt++; last->u.scalar = pp_str_val(s); }
+        }
         pp_str_decref(s);
         if (m >= 0) {
             int t;
@@ -2825,6 +2829,8 @@ pp_interp *pp_new(void) {
     I->g_argv = pp_global(I, pp_intern(I, "@ARGV", 5));
     pp_global(I, pp_intern(I, "$!", 2))->u.scalar = pp_int(0);       /* no error yet */
     pp_global(I, pp_intern(I, "$$", 2))->u.scalar = pp_int(1);       /* process id: the host sets the real one */
+    pp_global(I, pp_intern(I, "$<", 2))->u.scalar = pp_int(0);       /* user ids: the host sets the real ones */
+    pp_global(I, pp_intern(I, "$>", 2))->u.scalar = pp_int(0);
     pp_global(I, pp_intern(I, "@INC", 4));                           /* directories `require` looks in first */
     pp_global(I, pp_intern(I, "%INC", 4));
     I->g_ofs = pp_global(I, pp_intern(I, "$,", 2));

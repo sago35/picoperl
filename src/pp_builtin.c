@@ -1751,6 +1751,140 @@ static pp_val n_unpack(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return first;
 }
 
+/* ------------------------------------------------------------------ */
+/* directories, unlink, rename                                         */
+/* ------------------------------------------------------------------ */
+
+static const char *no_fs_msg = NULL;     /* set while a weak default below was the one that ran */
+__attribute__((weak)) int pp_host_mkdir(const char *path, int mode) { (void)path; (void)mode; no_fs_msg = "Function not implemented"; return -1; }
+__attribute__((weak)) int pp_host_remove(const char *path, int is_dir) { (void)path; (void)is_dir; no_fs_msg = "Function not implemented"; return -1; }
+__attribute__((weak)) int pp_host_rename(const char *from, const char *to) { (void)from; (void)to; no_fs_msg = "Function not implemented"; return -1; }
+__attribute__((weak)) int pp_host_listdir(const char *path, void (*add)(void *, const char *), void *ctx) { (void)path; (void)add; (void)ctx; no_fs_msg = "Function not implemented"; return -1; }
+/* after a failed host call: $! */
+static pp_val fs_fail(pp_interp *I) {
+    set_errno_var(I, no_fs_msg ? no_fs_msg : pp_host_io_error());
+    no_fs_msg = NULL;
+    return pp_strn("", 0);
+}
+/* the path argument: a->v[i], or $_ when there is none */
+static pp_str *fs_path(pp_interp *I, pp_list *a, int i) {
+    return i < a->n ? pp_to_str(a->v[i]) : pp_to_str(I->g_underscore->u.scalar);
+}
+static pp_val n_mkdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_str *p = fs_path(I, a, 0);
+    int r = pp_host_mkdir(p->d, a->n > 1 ? (int)pp_to_int(a->v[1]) : 0777);
+    pp_str_decref(p);
+    return r == 0 ? pp_int(1) : fs_fail(I);
+}
+static pp_val n_rmdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_str *p = fs_path(I, a, 0);
+    int r = pp_host_remove(p->d, 1);
+    pp_str_decref(p);
+    return r == 0 ? pp_int(1) : fs_fail(I);
+}
+/* unlink LIST: the number of files removed */
+static pp_val n_unlink(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int done = 0, failed = 0;
+    for (int i = 0; i < (a->n ? a->n : 1); i++) {
+        pp_str *p = fs_path(I, a, i);
+        if (pp_host_remove(p->d, 0) == 0) done++; else failed = 1;
+        pp_str_decref(p);
+    }
+    if (failed) { pp_val f = fs_fail(I); pp_release(f); }
+    return pp_int(done);
+}
+static pp_val n_rename(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_die(I, "Not enough arguments for rename");
+    pp_str *from = pp_to_str(a->v[0]), *to = pp_to_str(a->v[1]);
+    int r = pp_host_rename(from->d, to->d);
+    pp_str_decref(from); pp_str_decref(to);
+    return r == 0 ? pp_int(1) : fs_fail(I);
+}
+/* A directory handle is an array: [position, name, name, ...], read in full when the directory
+   is opened. opendir(my $dh, $path) is parsed as $dh = __opendir($path); a bareword handle
+   (opendir(DH, $path)) keeps the array in a hidden global, see dir_handle. */
+static void dir_add(void *ctx, const char *name) { pp_array_push((pp_obj *)ctx, pp_cstr(name)); }
+static pp_obj *dir_read(pp_interp *I, pp_val pathv) {
+    pp_str *p = pp_to_str(pathv);
+    pp_obj *arr = pp_obj_new(PP_OARRAY);
+    pp_array_push(arr, pp_int(1));
+    int r = pp_host_listdir(p->d, dir_add, arr);
+    pp_str_decref(p);
+    if (r != 0) { pp_obj_decref(arr); pp_val f = fs_fail(I); pp_release(f); return NULL; }
+    return arr;
+}
+static pp_sym *dir_named_sym(pp_interp *I, pp_val name) {
+    pp_str *s = pp_to_str(name);
+    char buf[264];
+    int n = pp_snprintf(buf, sizeof buf, "@\002dir%s", pp_glob_named(I, s->d)->name);
+    pp_str_decref(s);
+    return pp_intern(I, buf, n);
+}
+static pp_val n_opendir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 1) return pp_die(I, "Not enough arguments for opendir");
+    pp_obj *arr = dir_read(I, a->v[0]);
+    if (!arr) return pp_undef();
+    pp_val r = pp_ref(arr);
+    pp_obj_decref(arr);
+    return r;
+}
+static pp_val n_opendir_named(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_die(I, "Not enough arguments for opendir");
+    pp_obj *arr = dir_read(I, a->v[1]);
+    if (!arr) return pp_strn("", 0);
+    pp_obj *g = pp_global(I, dir_named_sym(I, a->v[0]));
+    pp_array_clear(g);
+    for (int i = 0; i < arr->u.arr.n; i++) pp_array_push(g, pp_copy(arr->u.arr.v[i]));
+    pp_obj_decref(arr);
+    return pp_int(1);
+}
+/* the array behind a directory handle (borrowed), NULL + die if the value is none */
+static pp_obj *dir_handle(pp_interp *I, pp_list *a, const char *what) {
+    pp_obj *arr = NULL;
+    if (a->n > 0 && a->v[0].t == PP_REF && a->v[0].u.o->kind == PP_OARRAY) arr = a->v[0].u.o;
+    else if (a->n > 0 && (a->v[0].t == PP_STR || (a->v[0].t == PP_REF && a->v[0].u.o->kind == PP_OGLOB))) {
+        pp_val name = a->v[0].t == PP_REF ? a->v[0].u.o->u.glob.name : a->v[0];
+        pp_sym *s = dir_named_sym(I, name);
+        if (s->gcell) arr = s->gcell;
+    }
+    if (!arr || arr->u.arr.n < 1 || arr->u.arr.v[0].t != PP_INT) { pp_die(I, "%s() attempted on invalid dirhandle", what); return NULL; }
+    return arr;
+}
+static pp_val n_readdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    pp_obj *d = dir_handle(I, a, "readdir");
+    if (!d) return pp_undef();
+    int64_t pos = d->u.arr.v[0].u.i;
+    if (pos < 1) pos = 1;
+    if (ctx == CTX_LIST && out) {
+        for (; pos < d->u.arr.n; pos++) pp_list_push(out, pp_copy(d->u.arr.v[pos]));
+        d->u.arr.v[0] = pp_int(pos);
+        return pp_no_value();
+    }
+    if (pos >= d->u.arr.n) return pp_undef();
+    d->u.arr.v[0] = pp_int(pos + 1);
+    return pp_copy(d->u.arr.v[pos]);
+}
+static pp_val n_rewinddir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_obj *d = dir_handle(I, a, "rewinddir");
+    if (!d) return pp_undef();
+    d->u.arr.v[0] = pp_int(1);
+    return pp_int(1);
+}
+static pp_val n_closedir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_obj *d = dir_handle(I, a, "closedir");
+    if (!d) return pp_undef();
+    while (d->u.arr.n > 0) { pp_val v = d->u.arr.v[--d->u.arr.n]; pp_release(v); }     /* no longer a handle */
+    return pp_int(1);
+}
+
 /* fileno(HANDLE): 0 / 1 / 2 for the standard handles, 3 for any other open file, undef otherwise */
 static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)ctx; (void)out;
@@ -1762,6 +1896,15 @@ static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "fileno", n_fileno);
+    pp_register(I, "mkdir", n_mkdir);
+    pp_register(I, "rmdir", n_rmdir);
+    pp_register(I, "unlink", n_unlink);
+    pp_register(I, "rename", n_rename);
+    pp_register(I, "__opendir", n_opendir);
+    pp_register(I, "__opendir_named", n_opendir_named);
+    pp_register(I, "readdir", n_readdir);
+    pp_register(I, "rewinddir", n_rewinddir);
+    pp_register(I, "closedir", n_closedir);
     pp_register(I, "vec", n_vec);
     pp_register(I, "__vec_set", n_vec_set);
     pp_register(I, "pack", n_pack);

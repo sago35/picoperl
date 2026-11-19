@@ -109,6 +109,10 @@ long  pp_host_fseek(void *f, long off, int whence) { return flashfs_fseek(f, off
 long  pp_host_ftell(void *f) { return flashfs_ftell(f); }
 int   pp_host_feof(void *f) { return flashfs_feof(f); }
 const char *pp_host_io_error(void) { return flashfs_io_error(); }
+int   pp_host_mkdir(const char *path, int mode) { (void)mode; return flashfs_mkdir(path); }   /* FAT has no permissions */
+int   pp_host_remove(const char *path, int is_dir) { return flashfs_remove(path, is_dir); }
+int   pp_host_rename(const char *from, const char *to) { return flashfs_rename(from, to); }
+int   pp_host_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx) { return flashfs_listdir(path, add, ctx); }
 
 void pp_host_fatal(const char *msg) {
     pp_host_write(2, msg, (int)strlen(msg));

@@ -208,6 +208,57 @@ int flashfs_filetest(const char *path, long long *size) {
     return r;
 }
 
+/* mkdir / unlink / rmdir / rename / reading a directory, for the interpreter. 0 on success,
+   -1 on failure (flashfs_io_error() says why). Like the file handles above, these change the
+   drive without asking for a reload: only writes from the USB host do that. */
+static const char *fs_root(const char *path) { return (!path[0] || !strcmp(path, ".")) ? "/" : path; }
+int flashfs_mkdir(const char *path) {
+    remount_if_stale();
+    if (!mounted) { io_err = "filesystem not mounted"; return -1; }
+    FRESULT r = f_mkdir(path);
+    if (r != FR_OK) { io_err = fr_str(r); return -1; }
+    return 0;
+}
+int flashfs_remove(const char *path, int is_dir) {
+    remount_if_stale();
+    if (!mounted) { io_err = "filesystem not mounted"; return -1; }
+    static FILINFO fi;
+    FRESULT r = f_stat(path, &fi);
+    if (r != FR_OK) { io_err = fr_str(r); return -1; }
+    /* FatFs removes files and empty directories alike; perl keeps unlink and rmdir apart */
+    if (is_dir && !(fi.fattrib & AM_DIR)) { io_err = "Not a directory"; return -1; }
+    if (!is_dir && (fi.fattrib & AM_DIR)) { io_err = "Is a directory"; return -1; }
+    r = f_unlink(path);
+    if (r != FR_OK) { io_err = is_dir && r == FR_DENIED ? "Directory not empty" : fr_str(r); return -1; }
+    return 0;
+}
+int flashfs_rename(const char *from, const char *to) {
+    remount_if_stale();
+    if (!mounted) { io_err = "filesystem not mounted"; return -1; }
+    FRESULT r = f_rename(from, to);
+    if (r == FR_EXIST) {                     /* perl's rename replaces an existing file */
+        static FILINFO fi;
+        if (f_stat(to, &fi) == FR_OK && !(fi.fattrib & AM_DIR) && f_unlink(to) == FR_OK) r = f_rename(from, to);
+    }
+    if (r != FR_OK) { io_err = fr_str(r); return -1; }
+    return 0;
+}
+int flashfs_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx) {
+    remount_if_stale();
+    if (!mounted) { io_err = "filesystem not mounted"; return -1; }
+    static DIR d;
+    static FILINFO fi;
+    FRESULT r = f_opendir(&d, fs_root(path));
+    if (r != FR_OK) { io_err = r == FR_NO_PATH || r == FR_NO_FILE ? "No such file or directory" : fr_str(r); return -1; }
+    add(ctx, "."); add(ctx, "..");           /* FAT's root has neither; scripts expect both */
+    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        if (!strcmp(fi.fname, ".") || !strcmp(fi.fname, "..")) continue;
+        add(ctx, fi.fname);
+    }
+    f_closedir(&d);
+    return 0;
+}
+
 void *flashfs_fopen(const char *path, const char *mode) {
     remount_if_stale();
     if (!mounted) { io_err = "filesystem not mounted"; return NULL; }

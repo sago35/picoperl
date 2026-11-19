@@ -27,6 +27,10 @@ int   flashfs_fwrite(void *f, const void *buf, int n);
 long  flashfs_fseek(void *f, long off, int whence);
 long  flashfs_ftell(void *f);
 int   flashfs_feof(void *f);
+int   flashfs_mkdir(const char *path);                       /* these four: 0 ok, -1 failed */
+int   flashfs_remove(const char *path, int is_dir);          /* unlink (0) / rmdir (1) */
+int   flashfs_rename(const char *from, const char *to);
+int   flashfs_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx);
 const char *flashfs_io_error(void);
 /* write a file (used to populate defaults) */
 bool  flashfs_write_file(const char *path, const char *data, unsigned len);

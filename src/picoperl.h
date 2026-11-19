@@ -417,6 +417,13 @@ void        pp_host_poll(void);
 uint32_t    pp_host_millis(void);
 /* seconds since epoch (0 if unknown) */
 int64_t     pp_host_time(void);
+/* Directories and removing / renaming files. Optional: the interpreter has weak defaults that
+   fail. All return 0 on success and -1 on failure (pp_host_io_error() then says why).
+   pp_host_listdir calls add(ctx, name) for every entry, "." and ".." included. */
+int         pp_host_mkdir(const char *path, int mode);
+int         pp_host_remove(const char *path, int is_dir);        /* unlink (0) / rmdir (1) */
+int         pp_host_rename(const char *from, const char *to);
+int         pp_host_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx);
 /* seconds local time is ahead of UTC at time t (and whether that is summer time). Optional:
    the interpreter has a weak default that returns 0. */
 int         pp_host_utc_offset(int64_t t, int *isdst);

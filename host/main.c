@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <grp.h>
 #include <errno.h>
 
@@ -495,6 +497,99 @@ static pp_val n_getgrgid(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
     return gr_result(getgrgid((gid_t)pp_to_int(a->v[0])), ctx, out, 0);
 }
+int pp_host_mkdir(const char *path, int mode) { return mkdir(path, (mode_t)mode) == 0 ? 0 : -1; }
+int pp_host_remove(const char *path, int is_dir) { return (is_dir ? rmdir(path) : unlink(path)) == 0 ? 0 : -1; }
+int pp_host_rename(const char *from, const char *to) { return rename(from, to) == 0 ? 0 : -1; }
+int pp_host_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx) {
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) add(ctx, e->d_name);
+    closedir(d);
+    return 0;
+}
+/* $! after a failed call in one of the natives below */
+static pp_val host_fail(pp_interp *I) {
+    pp_obj *c = pp_global(I, pp_intern(I, "$!", 2));
+    pp_release(c->u.scalar);
+    c->u.scalar = pp_cstr(strerror(errno));
+    return pp_strn("", 0);
+}
+/* chmod MODE, LIST / chown UID, GID, LIST / utime ATIME, MTIME, LIST: the number of files changed */
+static pp_val n_chmod(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int done = 0;
+    for (int i = 1; i < a->n; i++) { pp_str *p = pp_to_str(a->v[i]); if (chmod(p->d, (mode_t)pp_to_int(a->v[0])) == 0) done++; else { pp_val f = host_fail(I); pp_release(f); } pp_str_decref(p); }
+    return pp_int(done);
+}
+static pp_val n_chown(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int done = 0;
+    for (int i = 2; i < a->n; i++) { pp_str *p = pp_to_str(a->v[i]); if (chown(p->d, (uid_t)pp_to_int(a->v[0]), (gid_t)pp_to_int(a->v[1])) == 0) done++; else { pp_val f = host_fail(I); pp_release(f); } pp_str_decref(p); }
+    return pp_int(done);
+}
+static pp_val n_utime(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int done = 0;
+    for (int i = 2; i < a->n; i++) {
+        pp_str *p = pp_to_str(a->v[i]);
+        struct timespec ts[2];
+        for (int k = 0; k < 2; k++) {
+            if (a->v[k].t == PP_UNDEF) { ts[k].tv_sec = 0; ts[k].tv_nsec = UTIME_NOW; }
+            else { double t = pp_to_num(a->v[k]); ts[k].tv_sec = (time_t)t; ts[k].tv_nsec = (long)((t - (double)(time_t)t) * 1e9); }
+        }
+        if (utimensat(AT_FDCWD, p->d, ts, 0) == 0) done++; else { pp_val f = host_fail(I); pp_release(f); }
+        pp_str_decref(p);
+    }
+    return pp_int(done);
+}
+static pp_val n_symlink(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_strn("", 0);
+    pp_str *from = pp_to_str(a->v[0]), *to = pp_to_str(a->v[1]);
+    int r = symlink(from->d, to->d);
+    pp_str_decref(from); pp_str_decref(to);
+    return r == 0 ? pp_int(1) : host_fail(I);
+}
+static pp_val n_link(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_strn("", 0);
+    pp_str *from = pp_to_str(a->v[0]), *to = pp_to_str(a->v[1]);
+    int r = link(from->d, to->d);
+    pp_str_decref(from); pp_str_decref(to);
+    return r == 0 ? pp_int(1) : host_fail(I);
+}
+static pp_val n_readlink(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    pp_str *p = pp_to_str(a->v[0]);
+    char buf[4096];
+    ssize_t n = readlink(p->d, buf, sizeof buf);
+    pp_str_decref(p);
+    if (n < 0) { pp_val f = host_fail(I); pp_release(f); return pp_undef(); }
+    return pp_strn(buf, (int)n);
+}
+/* stat PATH / lstat PATH: (dev, ino, mode, nlink, uid, gid, rdev, size, atime, mtime, ctime,
+   blksize, blocks); the empty list if there is no such file. Scalar context: true / false. */
+static pp_val stat_result(pp_interp *I, pp_list *a, int ctx, pp_list *out, int follow) {
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
+    pp_str *p = pp_to_str(a->v[0]);
+    struct stat st;
+    int r = follow ? stat(p->d, &st) : lstat(p->d, &st);
+    {   /* remember the path for a following -X _ / stat(_) */
+        pp_obj *last = pp_global(I, pp_intern(I, "$\002stat", 6));
+        if (!(last->u.scalar.t == PP_STR && last->u.scalar.u.s == p)) { pp_release(last->u.scalar); last->u.scalar = pp_strn(p->d, p->len); }
+    }
+    pp_str_decref(p);
+    if (r != 0) { pp_val f = host_fail(I); pp_release(f); return ctx == CTX_LIST && out ? pp_no_value() : pp_strn("", 0); }
+    if (!(ctx == CTX_LIST && out)) return pp_int(1);
+    int64_t v[12] = { (int64_t)st.st_dev, (int64_t)st.st_ino, (int64_t)st.st_mode, (int64_t)st.st_nlink, (int64_t)st.st_uid, (int64_t)st.st_gid,
+                      (int64_t)st.st_rdev, (int64_t)st.st_size, (int64_t)st.st_atime, (int64_t)st.st_mtime, (int64_t)st.st_ctime, (int64_t)st.st_blksize };
+    for (int i = 0; i < 12; i++) pp_list_push(out, pp_int(v[i]));
+    return pp_int((int64_t)st.st_blocks);          /* the caller appends the last element */
+}
+static pp_val n_stat(pp_interp *I, pp_list *a, int ctx, pp_list *out) { return stat_result(I, a, ctx, out, 1); }
+static pp_val n_lstat(pp_interp *I, pp_list *a, int ctx, pp_list *out) { return stat_result(I, a, ctx, out, 0); }
 int pp_host_utc_offset(int64_t t, int *isdst) {
     time_t tt = (time_t)t;
     struct tm tm;
@@ -561,6 +656,9 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
     pp_register(I, "chdir", n_chdir);
+    pp_register(I, "chmod", n_chmod); pp_register(I, "chown", n_chown); pp_register(I, "utime", n_utime);
+    pp_register(I, "symlink", n_symlink); pp_register(I, "link", n_link); pp_register(I, "readlink", n_readlink);
+    pp_register(I, "stat", n_stat); pp_register(I, "lstat", n_lstat);
     pp_register(I, "getpwnam", n_getpwnam);
     pp_register(I, "getpwuid", n_getpwuid);
     pp_register(I, "getgrnam", n_getgrnam);
@@ -602,6 +700,8 @@ int main(int argc, char **argv) {
     if (getenv("PICOPERL_STACK_LIMIT")) I->stack_limit = (size_t)atol(getenv("PICOPERL_STACK_LIMIT"));   /* emulate the board's stack budget */
     if (getenv("PICOPERL_MAX_DEPTH")) I->max_depth = atoi(getenv("PICOPERL_MAX_DEPTH"));
     pp_global(I, pp_intern(I, "$$", 2))->u.scalar = pp_int((int64_t)getpid());
+    pp_global(I, pp_intern(I, "$<", 2))->u.scalar = pp_int((int64_t)getuid());
+    pp_global(I, pp_intern(I, "$>", 2))->u.scalar = pp_int((int64_t)geteuid());
     {   /* %ENV: a copy of the process environment (changing it does not change the real one) */
         extern char **environ;
         pp_obj *env = pp_global(I, pp_intern(I, "%ENV", 4));

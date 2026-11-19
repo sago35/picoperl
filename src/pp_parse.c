@@ -183,6 +183,7 @@ static int lex_filetest_operand(pp_lex *L) {
     if (i >= L->len) return 0;
     char c = L->src[i];
     if (c == '$') return i + 1 < L->len && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$');
+    if (c == '_' && !(i + 1 < L->len && (isalnum((unsigned char)L->src[i + 1]) || L->src[i + 1] == '_' || L->src[i + 1] == ':'))) return 1;   /* -d _ */
     return c == '"' || c == '\'';
 }
 /* is a '*' here a typeglob sigil rather than multiplication? Yes where a term is expected.
@@ -199,7 +200,7 @@ static int lex_glob_position(pp_lex *L) {
 static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
         char c = name[0];
-        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '.' || c == '|' || c == '^' || c == ']' || c == '?')) return 1;
+        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '.' || c == '<' || c == '>' || c == '|' || c == '^' || c == ']' || c == '?')) return 1;
         if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
         if (sigil == '%' && c == '+') return 1;
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
@@ -613,7 +614,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         else if (c1 == '^' && isupper(peekc(L, 2))) {   /* $^O, $^W, ...: the name is "^O" */
             L->pos += 3; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
         }
-        else if (c1 == '?' || c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-' || c1 == '.') {
+        else if (c1 == '?' || c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-' || c1 == '.' || c1 == '<' || c1 == '>') {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
@@ -2245,6 +2246,10 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
         int kind;
         pp_tok *nx = peek(P);
         int nx_ends = nx->type == T_OP && (!strcmp(nx->op, ",") || !strcmp(nx->op, "=>") || !strcmp(nx->op, "->") || !strcmp(nx->op, ")") || !strcmp(nx->op, ";"));
+        {   /* sort readdir($dh): a built-in function is the start of the list, not a comparison sub */
+            pp_sym *fs = sym_sigil(P, '&', P->cur.s, P->cur.len);
+            if (fs->sub && fs->sub->u.code.native) nx_ends = 1;
+        }
         if (pp_builtin_id(P->cur.s, P->cur.len, &kind) <= 0 && !cur_is_ident(P, "reverse") && !cur_is_ident(P, "map") && !cur_is_ident(P, "grep") && !cur_is_ident(P, "keys") && !cur_is_ident(P, "values") && !nx_ends && (nx->type != T_OP || !strcmp(nx->op, "(") || !strcmp(nx->op, "@"))) {
             pp_node *call = node(P, N_CALL); call->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
             advance(P);
@@ -2408,6 +2413,35 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 9 && !memcmp(id, "wantarray", 9)) { advance(P); if (accept_op(P, "(")) expect_op(P, ")"); return node(P, N_WANTARRAY); }
     if (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6))) {
         pp_node *n = node(P, N_FILEHANDLE); n->op = id[3] == 'O' ? 1 : 2; advance(P); return n;
+    }
+    if (len == 1 && id[0] == '_') {
+        /* _ : the file of the last file test or stat. There is no saved stat buffer here; it
+           stands for the path that was looked at last, which is looked at again. */
+        advance(P);
+        pp_node *v = node(P, N_VAR); v->sym = pp_intern(P->I, "$\002stat", 6); v->line = line;
+        return v;
+    }
+    if (len == 7 && !memcmp(id, "opendir", 7) && !is_declared(P, sym_sigil(P, '&', id, len))) {
+        /* opendir(my $dh, $path) is $dh = __opendir($path) (the handle, or undef);
+           opendir(DH, $path) is __opendir_named("*Pkg::DH", $path) */
+        advance(P);
+        int parens = accept_op(P, "(");
+        pp_node *h;
+        if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len) && is_op(peek(P), ",")) { h = handle_const(P, P->cur.s, P->cur.len); advance(P); }
+        else h = parse_assign(P);
+        expect_op(P, ",");
+        pp_node *path = parse_assign(P);
+        if (parens) expect_op(P, ")");
+        pp_node *c = node(P, N_CALL); c->line = line;
+        if (h->type == N_CONST || h->type == N_GLOB || h->type == N_REF) {
+            c->sym = pp_intern(P->I, "&__opendir_named", 16);
+            node_add(c, h); node_add(c, path);
+            return c;
+        }
+        c->sym = pp_intern(P->I, "&__opendir", 10);
+        node_add(c, path);
+        pp_node *as = node(P, N_ASSIGN); as->op = OP_NONE; as->a = h; as->b = c; as->line = line;
+        return as;
     }
     if (len == 7 && !memcmp(id, "require", 7)) {
         advance(P);
