@@ -104,3 +104,9 @@ print "pos in s///e: $pe $_ $pt\n";
 $_ = "a\tb\tc"; my $po = 0; s{\t}{ my $p = 8 - ((pos() + $po) % 8); $po += $p - 1; " " x $p }ge;
 my $pb = "q.r"; $pb =~ s{\.}{ "{" . 1 . "}" }e; my $pm = "n=5"; $pm =~ s/(\d+)/my $d = $1 * 2; $d + 1/e;
 print "statements in s///e: [$_] $pb $pm\n";
+# Unicode プロパティ (ASCII の範囲)
+print "properties: ", join("", map { $_ ? 1 : 0 } "a1 b" =~ /^\pL/, "a1 b" =~ /\pN/, "a" =~ /\pM/, "a" =~ /\PM/, "ab" =~ /^\p{Lower}+$/, "AB" =~ /^\p{Lu}+$/, " " =~ /\p{Space}/,
+    "A-b" =~ /^[\p{Lu}\-\pL]+$/, "x" =~ /\p{^L}/, "x" =~ /\P{L}/, "a.b" =~ /\pP/, "a+b" =~ /\pS/, "a_1" =~ /^\p{Word}+$/, "ff" =~ /^\p{XDigit}+$/), "\n";
+my $pcount = () = "ab cd" =~ /\PM/g; my @pwords = "one two3" =~ /(\p{Alpha}+)/g;
+print "property counts: $pcount @pwords\n";
+my $punknown = "\\p{NoSuchProperty}"; eval { my $r = "x" =~ /$punknown/ }; print "unknown property: ", ($@ ? "dies" : "ok"), "\n";

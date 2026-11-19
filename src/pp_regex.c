@@ -68,8 +68,59 @@ static int new_class(rparser *P) {
 static void class_set(uint8_t *cls, int c) { cls[(c & 255) >> 3] |= (uint8_t)(1 << (c & 7)); }
 static int  class_has(const uint8_t *cls, int c) { return (cls[(c & 255) >> 3] >> (c & 7)) & 1; }
 static void class_range(uint8_t *cls, int lo, int hi) { for (int c = lo; c <= hi; c++) class_set(cls, c); }
+/* Unicode properties, for the bytes of ASCII: \pL \p{Lower} \PM \p{^Space} ...
+   Strings are bytes here, so only ASCII characters have properties; a byte >= 0x80 (part of
+   a UTF-8 character) matches none of them. */
+static const struct { const char *name; char kind; } uprops[] = {
+    { "L", 'a' }, { "Letter", 'a' }, { "Alpha", 'a' }, { "Alphabetic", 'a' }, { "IsAlpha", 'a' }, { "XPosixAlpha", 'a' }, { "PosixAlpha", 'a' },
+    { "Lu", 'u' }, { "Upper", 'u' }, { "Uppercase", 'u' }, { "IsUpper", 'u' }, { "Uppercase_Letter", 'u' }, { "XPosixUpper", 'u' },
+    { "Ll", 'l' }, { "Lower", 'l' }, { "Lowercase", 'l' }, { "IsLower", 'l' }, { "Lowercase_Letter", 'l' }, { "XPosixLower", 'l' },
+    { "N", 'd' }, { "Nd", 'd' }, { "Digit", 'd' }, { "Number", 'd' }, { "IsDigit", 'd' }, { "XPosixDigit", 'd' }, { "Decimal_Number", 'd' },
+    { "M", 'm' }, { "Mn", 'm' }, { "Mc", 'm' }, { "Me", 'm' }, { "Mark", 'm' },
+    { "P", 'p' }, { "Punct", 'p' }, { "Punctuation", 'p' }, { "IsPunct", 'p' },
+    { "S", 'y' }, { "Symbol", 'y' },
+    { "Z", 'z' }, { "Zs", 'z' }, { "Space_Separator", 'z' },
+    { "Space", 's' }, { "IsSpace", 's' }, { "White_Space", 's' }, { "XPosixSpace", 's' }, { "SpacePerl", 's' }, { "XPerlSpace", 's' },
+    { "Word", 'w' }, { "IsWord", 'w' }, { "W", 'w' }, { "XPosixWord", 'w' }, { "PerlWord", 'w' },
+    { "Alnum", 'n' }, { "IsAlnum", 'n' }, { "XPosixAlnum", 'n' },
+    { "XDigit", 'x' }, { "IsXDigit", 'x' }, { "Hex", 'x' }, { "AHex", 'x' }, { "Hex_Digit", 'x' }, { "ASCII_Hex_Digit", 'x' },
+    { "C", 'c' }, { "Cc", 'c' }, { "Cntrl", 'c' }, { "Control", 'c' }, { "IsCntrl", 'c' },
+    { "ASCII", 'A' }, { "IsASCII", 'A' }, { "Any", '*' }, { "All", '*' },
+    { "Print", 'P' }, { "IsPrint", 'P' }, { "Graph", 'g' }, { "IsGraph", 'g' }, { "Blank", 'b' }, { "HorizSpace", 'b' },
+    { NULL, 0 }
+};
+static void class_property(uint8_t *cls, int kind, int negate) {
+    uint8_t tmp[32]; memset(tmp, 0, 32);
+    for (int c = 0; c < 128; c++) {
+        int in;
+        switch (kind) {
+        case 'a': in = isalpha(c); break;
+        case 'u': in = isupper(c); break;
+        case 'l': in = islower(c); break;
+        case 'd': in = isdigit(c); break;
+        case 'm': in = 0; break;
+        case 'y': in = c && strchr("$+<=>^`|~", c) != NULL; break;
+        case 'p': in = ispunct(c) && !strchr("$+<=>^`|~", c); break;
+        case 'z': in = c == ' '; break;
+        case 's': in = isspace(c); break;
+        case 'w': in = isalnum(c) || c == '_'; break;
+        case 'n': in = isalnum(c); break;
+        case 'x': in = isxdigit(c); break;
+        case 'c': in = iscntrl(c); break;
+        case 'P': in = isprint(c); break;
+        case 'g': in = isgraph(c); break;
+        case 'b': in = c == ' ' || c == '\t'; break;
+        default:  in = 1; break;             /* 'A' ASCII, '*' Any (bytes >= 0x80 added below) */
+        }
+        if (in) class_set(tmp, c);
+    }
+    if (kind == '*') for (int c = 128; c < 256; c++) class_set(tmp, c);
+    if (negate) for (int i = 0; i < 32; i++) cls[i] |= (uint8_t)~tmp[i];
+    else for (int i = 0; i < 32; i++) cls[i] |= tmp[i];
+}
 static void class_named(uint8_t *cls, int letter) {
-    /* \d \w \s and their negations */
+    /* \d \w \s and their negations; a property from parse_escape: 0x100 | negate << 7 | kind */
+    if (letter & 0x100) { class_property(cls, letter & 0x7F, (letter & 0x80) != 0); return; }
     uint8_t tmp[32]; memset(tmp, 0, 32);
     switch (tolower(letter)) {
     case 'd': class_range(tmp, '0', '9'); break;
@@ -137,6 +188,24 @@ static int parse_escape(rparser *P, int *cls) {
         return v & 255;
     }
     case 'd': case 'D': case 'w': case 'W': case 's': case 'S': *cls = c; return -1;
+    case 'p': case 'P': {
+        const char *name; int len, negate = c == 'P';
+        if (P->p < P->end && *P->p == '{') {
+            name = ++P->p;
+            while (P->p < P->end && *P->p != '}') P->p++;
+            if (P->p >= P->end) { rfail(P, "missing } in \\p{...}"); return 0; }
+            len = (int)(P->p - name);
+            P->p++;
+            if (len && *name == '^') { negate = !negate; name++; len--; }
+        } else {
+            if (P->p >= P->end) { rfail(P, "empty \\p in regex"); return 0; }
+            name = P->p++; len = 1;
+        }
+        for (int i = 0; uprops[i].name; i++)
+            if ((int)strlen(uprops[i].name) == len && !memcmp(uprops[i].name, name, (size_t)len)) { *cls = 0x100 | (negate ? 0x80 : 0) | uprops[i].kind; return -1; }
+        rfail(P, "Unicode property not supported in \\p{...}");
+        return 0;
+    }
     default: return c;    /* \. \\ \/ \$ ... : the character itself */
     }
 }
