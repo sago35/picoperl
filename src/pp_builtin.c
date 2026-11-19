@@ -633,9 +633,26 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         }
         pp_str_decref(ms);
     }
+    if (args.n == 1) {
+        /* open(FH, "<$path") / open(FH, $path): the mode is the front of the string (none: read).
+           Split it into the 3-argument form. Pipes ("cmd |", "| cmd") are not available. */
+        pp_str *ws = pp_to_str(args.v[0]);
+        const char *m = ws->d, *e = ws->d + ws->len;
+        while (m < e && isspace((unsigned char)*m)) m++;
+        while (e > m && isspace((unsigned char)e[-1])) e--;
+        const char *q = m;
+        while (q < e && (*q == '+' || *q == '<' || *q == '>')) q++;
+        int piped = (m < e && *m == '|') || (e > m && e[-1] == '|');
+        pp_val mode = q > m ? pp_strn(m, (int)(q - m)) : pp_strn("<", 1);
+        while (q < e && isspace((unsigned char)*q)) q++;
+        pp_val path = pp_strn(q, (int)(e - q));
+        pp_str_decref(ws);
+        pp_release(args.v[0]); args.v[0] = mode;
+        pp_list_push(&args, path);
+        if (piped) args.n = 0;
+    }
     if (args.n < 2) {
-        if (!(I->compat_warn & 8)) { I->compat_warn |= 8; pp_warn(I, "picoperl: 2-argument open is not supported, use open(my $fh, '<', $path)"); }
-        set_errno_var(I, "2-argument open is not supported");
+        set_errno_var(I, args.n ? "Invalid argument" : "pipes are not supported");
         pp_list_free(&args);
         return ret(ctx, out, pp_undef());
     }

@@ -197,3 +197,15 @@ sub path { $0 } print((-s path() > 10) ? "y\n":"n\n");
 my %h = (-e => 1, -s => 2); print join(",", sort keys %h), "\n";
 my $x = 5; my $e = 2; print 0 + $x -$e, "\n";
 print((-e join "", "/", "tmp") ? "y\n":"n\n");
+
+# 2 引数の open: モードは文字列の先頭 (無ければ読み込み)
+{
+    my $f = 'test/io_tmp.txt';
+    open(OUT2, ">$f") or die "w: $!"; print OUT2 "one\ntwo\n"; close OUT2;
+    open(OUT2, ">> $f") or die; print OUT2 "three\n"; close OUT2;
+    open(IN2, $f) or die "r: $!"; my @l = <IN2>; close IN2; print scalar(@l), " $l[2]";
+    open(my $fh, "< $f ") or die; my $x = <$fh>; close $fh; print $x;
+    open(IN2, "+<$f") or die; print scalar(<IN2>); close IN2;
+    print open(IN2, "<$f.none") ? "opened\n" : "fail\n";
+    unlink $f;
+}
