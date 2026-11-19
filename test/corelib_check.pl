@@ -56,6 +56,25 @@ for my $root ($privlib, $archlib) {
     } }, $root);
 }
 
+# picoperl 自身の lib/ にあるモジュール (builtin、Time::HiRes、List::Util など) は、実機と同じく
+# perl 本体のものより優先する
+(my $pico_lib = abs_path($0)) =~ s{/test/[^/]+$}{/lib};
+my %shim;
+if (-d $pico_lib) {
+    find({ no_chdir => 1, wanted => sub {
+        return unless -f $File::Find::name && $File::Find::name =~ /\.pm$/;
+        my $rel = substr($File::Find::name, length($pico_lib) + 1);
+        my $dir = $rel =~ m{(.*)/} ? $1 : '';
+        my $path = $merged;
+        for my $part (split m{/}, $dir) { $path .= "/$part"; mkdir $path }
+        (my $m = $rel) =~ s{/}{::}g; $m =~ s/\.pm$//;
+        return unless exists $mod{$m};      # 標準モジュールと同名のものだけが対象
+        unlink "$merged/$rel";
+        symlink $File::Find::name, "$merged/$rel";
+        $shim{$m} = 1;
+    } }, $pico_lib);
+}
+
 sub normalize {
     my ($msg) = @_;
     $msg =~ s/ at \S+ line \d+.*//s;
@@ -90,7 +109,7 @@ for my $m (sort keys %mod) {
     elsif ($sig || $code > 128 && $code != 255) { $status = 'crash'; $reason = "signal " . ($sig || $code - 128) }
     elsif ($code != 0)         { $status = 'fail'; $reason = normalize($last) }
     # XS モジュールは読み込めなくても picoperl の Perl 対応度とは別の話なので別枠にする
-    $status = 'xs' if $status ne 'ok' && $xs{$m};
+    $status = 'xs' if $status ne 'ok' && $xs{$m} && !$shim{$m};
     $count{$status}++;
     if ($status eq 'fail') {
         $why{$reason}++;
@@ -109,6 +128,7 @@ if ($out) {
 
 my $total = keys %mod;
 print "perl $version の標準モジュール: $total 個\n";
+print "  (picoperl の lib/ で置き換えたもの: ", join(" ", sort keys %shim), ")\n" if %shim;
 printf "  %-8s %4d (%.1f%%)\n", $_, $count{$_} // 0, 100 * ($count{$_} // 0) / $total
     for qw(ok fail xs timeout crash);
 print "\n失敗の原因 (多い順):\n";
