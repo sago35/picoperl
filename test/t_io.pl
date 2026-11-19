@@ -80,4 +80,9 @@ $! = 0; $! = $en_saved; print "errno restored from a copy: ", $! + 0, " $!\n";
 sub en_local { local $!; open(my $f, '<', 'test/no_such_file_here'); $! + 0 }
 $! = 1; my $en_in = en_local(); print "errno local: inside $en_in, outside ", $! + 0, "\n";
 my $en_copy = $!; print "errno copy is the message: $en_copy / " . $! . "\n";
+# getpwnam / getpwuid / getgrnam / getgrgid (ホスト版)
+my @pw_none = getpwnam("no_such_user_xyz_123"); my $pw_none = getpwnam("no_such_user_xyz_123");
+my @pw_root = getpwuid(0); my $pw_name = getpwuid(0); my $pw_uid = getpwnam($pw_name);
+my @gr_none = getgrnam("no_such_group_xyz_123"); my @gr_zero = getgrgid(0);
+print "passwd: ", scalar(@pw_none), " ", (defined $pw_none ? "def" : "undef"), " ", scalar(@pw_root), " ", ($pw_root[0] eq $pw_name ? "same name" : "differs"), " uid=$pw_uid $pw_root[2] / group: ", scalar(@gr_none), " ", scalar(@gr_zero), " gid=$gr_zero[2]\n";
 

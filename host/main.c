@@ -8,6 +8,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pwd.h>
+#include <grp.h>
 #include <errno.h>
 
 static char *script_dir;
@@ -437,6 +439,62 @@ static pp_val n_heap_free(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static pp_val n_sim_exit_after(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
 
+/* getpwnam($name) / getpwuid($uid): (name, passwd, uid, gid, quota, comment, gcos, dir, shell),
+   the uid / the name in scalar context, nothing if there is no such user */
+static pp_val pw_result(struct passwd *pw, int ctx, pp_list *out, int by_name) {
+    if (!pw) return pp_no_value();
+    if (!(ctx == CTX_LIST && out)) return by_name ? pp_int((int64_t)pw->pw_uid) : pp_cstr(pw->pw_name);
+    pp_list_push(out, pp_cstr(pw->pw_name));
+    pp_list_push(out, pp_cstr(pw->pw_passwd ? pw->pw_passwd : ""));
+    pp_list_push(out, pp_int((int64_t)pw->pw_uid));
+    pp_list_push(out, pp_int((int64_t)pw->pw_gid));
+    pp_list_push(out, pp_strn("", 0));
+    pp_list_push(out, pp_strn("", 0));
+    pp_list_push(out, pp_cstr(pw->pw_gecos ? pw->pw_gecos : ""));
+    pp_list_push(out, pp_cstr(pw->pw_dir ? pw->pw_dir : ""));
+    return pp_cstr(pw->pw_shell ? pw->pw_shell : "");      /* the caller appends the last element */
+}
+static pp_val n_getpwnam(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
+    pp_str *name = pp_to_str(a->v[0]);
+    struct passwd *pw = getpwnam(name->d);
+    pp_str_decref(name);
+    return pw_result(pw, ctx, out, 1);
+}
+static pp_val n_getpwuid(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_undef();
+    return pw_result(getpwuid((uid_t)pp_to_int(a->v[0])), ctx, out, 0);
+}
+/* getgrnam($name) / getgrgid($gid): (name, passwd, gid, members) */
+static pp_val gr_result(struct group *gr, int ctx, pp_list *out, int by_name) {
+    if (!gr) return pp_no_value();
+    if (!(ctx == CTX_LIST && out)) return by_name ? pp_int((int64_t)gr->gr_gid) : pp_cstr(gr->gr_name);
+    pp_list_push(out, pp_cstr(gr->gr_name));
+    pp_list_push(out, pp_cstr(gr->gr_passwd ? gr->gr_passwd : ""));
+    pp_list_push(out, pp_int((int64_t)gr->gr_gid));
+    pp_str *members = pp_str_new(NULL, 0);
+    for (char **m = gr->gr_mem; m && *m; m++) {
+        members = pp_str_reserve(members, (int)strlen(*m) + 1);
+        if (members->len) members->d[members->len++] = ' ';
+        memcpy(members->d + members->len, *m, strlen(*m)); members->len += (int)strlen(*m); members->d[members->len] = 0;
+    }
+    return pp_str_val(members);
+}
+static pp_val n_getgrnam(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
+    pp_str *name = pp_to_str(a->v[0]);
+    struct group *gr = getgrnam(name->d);
+    pp_str_decref(name);
+    return gr_result(gr, ctx, out, 1);
+}
+static pp_val n_getgrgid(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_no_value();
+    return gr_result(getgrgid((gid_t)pp_to_int(a->v[0])), ctx, out, 0);
+}
 /* chdir($dir): true on success */
 static pp_val n_chdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
@@ -496,6 +554,10 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
     pp_register(I, "chdir", n_chdir);
+    pp_register(I, "getpwnam", n_getpwnam);
+    pp_register(I, "getpwuid", n_getpwuid);
+    pp_register(I, "getgrnam", n_getgrnam);
+    pp_register(I, "getgrgid", n_getgrgid);
     pp_register(I, "Cwd::_getcwd", n_cwd_getcwd);
     pp_register(I, "Cwd::_realpath", n_cwd_realpath);
     pp_register(I, "Matrix::_scan", n_matrix_scan);

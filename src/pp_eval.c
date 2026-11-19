@@ -1027,6 +1027,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     if (code->u.code.native) {
         /* natives return one scalar; in list context it becomes a one-element list */
         pp_val r = code->u.code.native(I, args, ctx, out);
+        if (r.t == PP_UNDEF && r.u.i == PP_NO_VALUE) return pp_undef();          /* an empty list */
         if (ctx == CTX_LIST && out && !I->ctl) { pp_list_push(out, r); return pp_undef(); }
         if (ctx == CTX_VOID) { pp_release(r); return pp_undef(); }
         return r;
