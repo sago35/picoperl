@@ -162,3 +162,12 @@ print "posix ascii: ", join("", map { $_ ? 1 : 0 } "abc" =~ /^[[:ascii:]]+$/, "a
     my $rq = qr/a.b/i; my ($rp, $rf) = re::regexp_pattern($rq);
     print "re:: ", (re::is_regexp($rq) ? 1 : 0), (re::is_regexp("x") ? 1 : 0), " $rp $rf ", scalar(re::regexp_pattern($rq)), "\n";
 }
+# 変数以外 (引数、要素、$$ref) に対する //g と pos
+{
+    sub pos_scan { my @at; while ($_[0] =~ /(\d)/g) { push @at, pos($_[0]); last if @at > 9 } "@at" }
+    my $ps = "a1b2c3"; my @pa = ("x1y2"); my %ph = (k => "p9q8r7");
+    my $pn = 0; while ($pa[0] =~ /\d/g) { $pn++; last if $pn > 9 }
+    my @pp; while ($ph{k} =~ /(\d)/g) { push @pp, $1 . "@" . pos($ph{k}); last if @pp > 9 }
+    my $pr = \$ps; $$pr =~ /b/g;
+    print "pos of non-variables: ", pos_scan("a1b2c3"), " | $pn ", (defined pos($pa[0]) ? "def" : "undef"), " | @pp | ", pos($$pr), " ", pos($ps), "\n";
+}

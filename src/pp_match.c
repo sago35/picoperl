@@ -171,13 +171,39 @@ static int exec_or_die(pp_interp *I, const pp_regex *re, const char *s, int len,
     return r;
 }
 
+/* pos() of things that are not plain variables is filed under this stand-in cell */
+static pp_obj pos_anon;
+/* pos(EXPR) for any expression (a variable, $$ref, $_[0], $h{k} ...) */
+static pp_val match_subject(pp_interp *I, pp_node *target, pp_obj **cell, const char *what);
+pp_val pp_pos_of_node(pp_interp *I, pp_node *target) {
+    pp_obj *cell;
+    int saved = I->warn_on; I->warn_on = 0;
+    pp_val subj = match_subject(I, target, &cell, "pos");
+    I->warn_on = saved;
+    if (I->ctl) return pp_undef();
+    pp_str *s = pp_to_str(subj); pp_release(subj);
+    pp_pos_ent *e = pos_entry(I, cell, s, 0);
+    pp_str_decref(s);
+    return e ? pp_int(e->pos) : pp_undef();
+}
 /* subject of a match: the cell when the target is a plain scalar variable (needed for pos) */
 static pp_val match_subject(pp_interp *I, pp_node *target, pp_obj **cell, const char *what) {
     pp_val subj;
     *cell = NULL;
     if (!target) { *cell = I->g_underscore; subj = pp_copy((*cell)->u.scalar); }
     else if (target->type == N_VAR && target->sym->name[0] == '$') { *cell = pp_var_cell(I, target); subj = pp_copy((*cell)->u.scalar); }
-    else { subj = pp_eval(I, target, CTX_SCALAR, NULL); if (I->ctl) { pp_release(subj); return pp_undef(); } }
+    else if (target->type == N_RV2SV) {   /* $$ref: the scalar it points to keeps its own pos */
+        pp_val r = pp_eval(I, target->a, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(r); return pp_undef(); }
+        if (r.t == PP_REF && r.u.o->kind == PP_OSCALAR && r.u.o->refcnt > 1) { *cell = r.u.o; subj = pp_copy(r.u.o->u.scalar); pp_release(r); }
+        else { pp_release(r); subj = pp_eval(I, target, CTX_SCALAR, NULL); if (I->ctl) { pp_release(subj); return pp_undef(); } *cell = &pos_anon; }
+    }
+    else {
+        /* an element, an argument ($_[0]) ...: no cell of its own, so pos is kept by the text */
+        subj = pp_eval(I, target, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(subj); return pp_undef(); }
+        *cell = &pos_anon;
+    }
     if (I->warn_on && subj.t == PP_UNDEF) pp_warn_uninit(I, what, target ? pp_var_name_of(target) : "$_");
     return subj;
 }

@@ -842,8 +842,9 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_SPLIT: return do_split(I, n, ctx, out);
     case B_POS: {
         pp_node *v = n->n ? n->list[0] : NULL;
-        if (v && !(v->type == N_VAR && v->sym->name[0] == '$')) return pp_die(I, "pos() needs a scalar variable");
-        return ret(ctx, out, pp_pos_of(I, v ? pp_var_cell(I, v) : I->g_underscore));
+        pp_val pv = pp_pos_of_node(I, v);
+        if (I->ctl) return pp_undef();
+        return ret(ctx, out, pv);
     }
     case B_SPRINTF: {
         pp_list args = {0};

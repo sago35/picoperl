@@ -1075,6 +1075,7 @@ static int interp_extent(const char *s, int len, int i) {
     else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
         return interp_extent(s, len, j);
     }
+    else if (s[i] == '$' && s[j] == '$') return j + 1;   /* "$$": the process id */
     else if (s[i] == '@' && s[j] == '$' && j + 1 < len && is_ident_start((unsigned char)s[j+1])) {   /* "@$ref" */
         j++;
         while (j < len && is_ident_char((unsigned char)s[j])) j++;
@@ -1148,6 +1149,10 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
             case 'f': append_char(&buf, &n, &cap, '\f'); break;
             case 'a': append_char(&buf, &n, &cap, '\a'); break;
             case 'e': append_char(&buf, &n, &cap, 27); break;
+            case 'b': append_char(&buf, &n, &cap, 8); break;
+            case 'c':   /* \cA is chr(1): the control character of the letter */
+                if (i < len) { append_char(&buf, &n, &cap, toupper((unsigned char)s[i]) ^ 64); i++; }
+                break;
             case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
                 int v = d - '0', k = 1;
                 while (k < 3 && i < len && s[i] >= '0' && s[i] <= '7') { v = v * 8 + (s[i] - '0'); i++; k++; }

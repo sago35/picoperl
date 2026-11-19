@@ -2111,6 +2111,7 @@ static pp_sym *pkg_sym(pp_interp *I, char sigil, const char *pkg, const char *na
     return pp_intern(I, buf, n);
 }
 
+static void builtin_import(pp_interp *I, const char *mod, const char *pkg, pp_list *args, int from);
 static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
 /* export one symbol from module `mod` into package `pkg`; returns 0 if it does not exist */
 static int export_symbol(pp_interp *I, const char *mod, const char *pkg, const char *name) {
@@ -2151,6 +2152,26 @@ static void export_array(pp_interp *I, const char *mod, const char *pkg, const c
 }
 
 /* use Module LIST: require Module.pm, then import (user import() or Exporter emulation) */
+/* what Exporter's import does, without Exporter.pm: export @EXPORT of `mod` into `pkg`, or
+   the names in args (from, the first one to look at); a :tag takes @EXPORT and @EXPORT_OK */
+static void builtin_import(pp_interp *I, const char *mod, const char *pkg, pp_list *args, int from) {
+    if (args->n <= from) { export_array(I, mod, pkg, "EXPORT", NULL); return; }
+    pp_list names = {0}; int all = 0;
+    for (int i = from; i < args->n; i++) {
+        pp_str *a = pp_to_str(args->v[i]);
+        if (a->d[0] == ':') all = 1;                 /* :all / :DEFAULT tags: take everything */
+        else pp_list_push(&names, pp_strn(a->d, a->len));
+        pp_str_decref(a);
+    }
+    if (all) { export_array(I, mod, pkg, "EXPORT", NULL); if (!I->ctl) export_array(I, mod, pkg, "EXPORT_OK", NULL); }
+    for (int i = 0; i < names.n && !I->ctl; i++) {
+        pp_str *nm = pp_to_str(names.v[i]);
+        if (!export_symbol(I, mod, pkg, nm->d)) pp_die(I, "\"%s\" is not exported by the %s module", nm->d, mod);
+        pp_str_decref(nm);
+    }
+    pp_list_free(&names);
+}
+
 static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
     pp_str *mod = pp_to_str(n->a->val);
     pp_str *pkg = pp_to_str(n->b->val);
@@ -2202,24 +2223,7 @@ static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
         pp_val v = pp_call(I, impcode, &cargs, CTX_VOID, NULL);
         pp_release(v);
         pp_list_free(&cargs);
-    } else if (args.n == 0) {
-        export_array(I, mod->d, pkg->d, "EXPORT", NULL);
-    } else {
-        pp_list names = {0}; int all = 0;
-        for (int i = 0; i < args.n; i++) {
-            pp_str *a = pp_to_str(args.v[i]);
-            if (a->d[0] == ':') all = 1;                 /* :all / :DEFAULT tags: take everything */
-            else pp_list_push(&names, pp_strn(a->d, a->len));
-            pp_str_decref(a);
-        }
-        if (all) { export_array(I, mod->d, pkg->d, "EXPORT", NULL); if (!I->ctl) export_array(I, mod->d, pkg->d, "EXPORT_OK", NULL); }
-        for (int i = 0; i < names.n && !I->ctl; i++) {
-            pp_str *nm = pp_to_str(names.v[i]);
-            if (!export_symbol(I, mod->d, pkg->d, nm->d)) pp_die(I, "\"%s\" is not exported by the %s module", nm->d, mod->d);
-            pp_str_decref(nm);
-        }
-        pp_list_free(&names);
-    }
+    } else builtin_import(I, mod->d, pkg->d, &args, 0);
     pp_list_free(&args);
 out:
     pp_str_decref(mod); pp_str_decref(pkg);
@@ -2911,6 +2915,13 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             pp_list_free(&args); if (dyn) pp_str_decref(dyn);
             if (I->ctl) { pp_release(have); return e; }
             return scalar_or_push(ctx, out, have);
+        } else if (strcmp(mname, "import") == 0 || strcmp(mname, "unimport") == 0) {
+            /* Class->import(LIST) for a class without an import of its own (use Exporter 'import'
+               is not loaded here): the built-in export into the calling package. With nothing
+               to export it does nothing, like perl's missing import. */
+            if (mname[0] == 'i' && n->c && n->c->type == N_CONST && n->c->val.t == PP_STR) builtin_import(I, cls, n->c->val.u.s->d, &args, 1);
+            pp_list_free(&args); if (dyn) pp_str_decref(dyn);
+            return pp_undef();
         } else if (strcmp(mname, "can") == 0) {
             pp_str *want = args.n > 1 ? pp_to_str(args.v[1]) : pp_str_new("", 0);
             pp_obj *m = find_method(I, cls, want->d, 0);

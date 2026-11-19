@@ -73,3 +73,9 @@ print "case mods heredoc: $cmh";
       substr("abc", -5, 3), substr("abc", -5), substr("abc", -5, 1), substr("abc", -5, 2), substr("abc", -4, 2), substr("abcdef", -4, -1), substr("abc", 1, 99)), "\n"; }
 print "pid: ", ($$ > 0 ? "positive" : "missing"), " ", ($$ == $$ + 0 ? "numeric" : "odd"), "\n";
 print "end\n";
+# "\b" (バックスペース)、"\cA" (制御文字)、文字列の中の $$ (プロセス ID)
+{
+    my $sref = \"ref";
+    print "escapes: ", join(",", map { ord } split //, "a\bb\0c\cAd\x{41}\c[\c?"), "\n";
+    print "pid in string: ", ("tpkg$$" =~ /^tpkg\d+$/ ? "ok" : "ng"), " ", ("$$" eq $$ ? "same" : "diff"), " $$sref ${$sref} ", ("a$$" . "b" =~ /b/ ? 1 : 0), "\n";
+}

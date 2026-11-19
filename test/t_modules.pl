@@ -86,3 +86,13 @@ print "done modules\n";
 print "caller at file level: ", (caller() ? "has caller" : "no caller"), "\n";
 require TestCaller;
 print "caller in a required file: $TestCaller::top / $TestCaller::modulino / $TestCaller::sub0\n";
+# Class->import(LIST) を自分で呼ぶ形 (use Exporter 'import' のモジュール) と、取り込んだ関数への can
+{
+    require TestExpOnly;
+    package ExpA; TestExpOnly->import('eo_one');
+    print "explicit import: ", (ExpA->can('eo_one') ? 1 : 0), (__PACKAGE__->can('eo_one') ? 1 : 0), (ExpA->can('eo_two') ? 1 : 0), " call ", eo_one(), "\n";
+    package main;
+    my $epkg = "ExpDyn$$";
+    print "use in eval: ", (eval "package $epkg; use TestExpOnly ':all'; sub own { 1 } 1" ? "ok" : "failed: $@"), " ", ($epkg->can('eo_one') ? 1 : 0), ($epkg->can('eo_two') ? 1 : 0), ($epkg->can('own') ? 1 : 0), (main->can('eo_two') ? 1 : 0), "\n";
+    print "import on a class without one: ", (eval { ExpA->import; ExpA->unimport; 1 } ? "quiet" : "died"), "\n";
+}
