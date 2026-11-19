@@ -144,6 +144,11 @@ pp_str *pp_to_str(pp_val v) {
             r->d[n++] = ')'; r->d[n] = 0; r->len = n;
             return r;
         }
+        if (v.u.o->class) {   /* a blessed reference: Class=HASH(0x...) */
+            char big[192];
+            int n = snprintf(big, sizeof big, "%s=%s(0x%lx)", v.u.o->class->name, ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
+            return pp_str_new(big, n >= (int)sizeof big ? (int)sizeof big - 1 : n);
+        }
         int n = snprintf(buf, sizeof buf, "%s(0x%lx)", ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
         return pp_str_new(buf, n);
     }
