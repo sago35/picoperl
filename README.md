@@ -309,6 +309,10 @@ reftype refaddr indexed)`、
   ボードにはカレントディレクトリが無いので `cwd` は常に `/` で、`abs_path` は `.` と `..` を畳むだけです。
   `chdir` はありません
 
+- `File::Spec` / `File::Spec::Functions`: `catfile` `catdir` `canonpath` `splitpath` `splitdir` `catpath`
+  `rel2abs` `abs2rel` `file_name_is_absolute` `no_upwards` `tmpdir` `path` など。本家は OS ごとの実装に
+  切り替えますが、picoperl 版は Unix 形式 (`/` 区切り) だけです。ボードのドライブのパスにもそのまま使えます
+
 `main` 以外のパッケージで `use Module qw($x %h);` と変数を取り込んだ場合、そのパッケージの中の `$x` / `%h` は
 取り込んだ変数を指します (それ以外の、宣言していないグローバルは従来どおり `main` のものです)。
 
