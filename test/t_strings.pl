@@ -43,4 +43,8 @@ print "x" x 3 . "y", "\n";
 print "abc" . 5 + 3, "\n";
 print "multi
 line\n";
+# substr への代入
+my $ls = "hello world"; substr($ls, 0, 1) = "J"; substr($ls, 6) = "there"; print "lvalue substr: $ls\n";
+my $ls2 = "-details"; substr($ls2, 0, 1) = '' if 1; substr($ls2, -1, 1) = "S!"; print "lvalue substr 2: $ls2\n";
+my %lsh = (k => "abcdef"); substr($lsh{k}, 2, 2) = "XY"; my @lsa = ("12345"); substr($lsa[0], 1, 3) = ""; print "lvalue substr 3: $lsh{k} $lsa[0]\n";
 print "end\n";

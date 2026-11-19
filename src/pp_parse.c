@@ -1475,6 +1475,15 @@ static int assign_op_of(pp_parser *P) {
 static pp_node *parse_assign(pp_parser *P) {
     pp_node *lhs = parse_ternary(P);
     int op = assign_op_of(P);
+    if (op == OP_NONE && lhs->type == N_BUILTIN && (lhs->n == 2 || lhs->n == 3)
+        && lhs->op == (uint8_t)pp_builtin_id("substr", 6, NULL)) {
+        /* substr($s, OFF, LEN) = VALUE is the 4-argument substr($s, OFF, LEN, VALUE);
+           without LEN it replaces to the end of the string */
+        advance(P);
+        if (lhs->n == 2) node_add(lhs, const_int(P, 0x7fffffff));
+        node_add(lhs, parse_assign(P));
+        return lhs;
+    }
     if (op >= 0) {
         if (op == OP_REPEAT) advance(P);
         advance(P);

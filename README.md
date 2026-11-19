@@ -313,6 +313,9 @@ reftype refaddr indexed)`、
 
 bless したリファレンスを文字列にすると、perl と同じ `Class=HASH(0x...)` の形になります。
 
+`substr($s, OFF, LEN) = VALUE;` と書けます (4 引数の `substr` と同じ動作。`.=` などの複合代入や、
+`\substr(...)` は未対応)。
+
 **`END { ... }`** はプログラムの終了時 (`die` や `exit` の後も) に、登録の逆順で実行されます。
 ブロックの中では終了コードが **`$?`** に入っていて、書き換えると終了コードが変わります。
 perl と違い、登録されるのは `END` の文に実行が到達したときです (コンパイル時ではありません)。
@@ -383,7 +386,7 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 
 非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
 `DESTROY`、`AUTOLOAD`、`eval STRING`、`redo`、`goto LABEL`、
-lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、
+`localtime`/`gmtime`、
 `system`/バッククォート、`tie`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)、
 値としての型グロブ (`\*STDOUT` など)。
