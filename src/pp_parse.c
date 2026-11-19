@@ -2428,7 +2428,12 @@ static pp_node *parse_use(pp_parser *P) {
             return n;
         }
     }
-    while (!cur_is_op(P, ";") && P->cur.type != T_EOF) advance(P);
+    /* an ignored `use Module ARGS;`: skip to the ';' that ends it (not one inside { ... },
+       as in use overload '+' => sub { ...; }) */
+    for (int depth = 0; P->cur.type != T_EOF && !(depth == 0 && cur_is_op(P, ";")); advance(P)) {
+        if (cur_is_op(P, "{")) depth++;
+        else if (cur_is_op(P, "}") && depth > 0) depth--;
+    }
     accept_op(P, ";");
     return NULL;
 }
