@@ -2804,6 +2804,32 @@ pp_val pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, 
     return r;
 }
 
+/* a version string as numbers: "v1.2.3" and "1.2.3" by their parts, a decimal "1.25" as
+   1.250 (three digits per part, as perl reads it); underscores are ignored */
+static void version_parts(const char *s, long *part, int max) {
+    for (int i = 0; i < max; i++) part[i] = 0;
+    while (*s == ' ') s++;
+    int dotted = *s == 'v', dots = 0;
+    if (dotted) s++;
+    for (const char *p = s; *p; p++) if (*p == '.') dots++;
+    if (dots >= 2) dotted = 1;
+    int k = 0;
+    while (*s && k < max) {
+        long v = 0; int digits = 0;
+        while ((isdigit((unsigned char)*s) || *s == '_') && (dotted || k == 0 || digits < 3)) { if (*s != '_') { v = v * 10 + (*s - '0'); digits++; } s++; }
+        if (!dotted && k > 0) while (digits < 3) { v *= 10; digits++; }   /* .25 is .250 */
+        part[k++] = v;
+        if (*s == '.') s++;
+        else if (!isdigit((unsigned char)*s)) break;
+    }
+}
+static int version_cmp(const char *a, const char *b) {
+    long pa[6], pb[6];
+    version_parts(a, pa, 6); version_parts(b, pb, 6);
+    for (int i = 0; i < 6; i++) if (pa[i] != pb[i]) return pa[i] < pb[i] ? -1 : 1;
+    return 0;
+}
+
 static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val inv = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
@@ -2865,6 +2891,26 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             pp_str_decref(want);
             pp_list_free(&args); if (dyn) pp_str_decref(dyn);
             return scalar_or_push(ctx, out, r);
+        } else if (strcmp(mname, "VERSION") == 0) {
+            /* Class->VERSION: $Class::VERSION; Class->VERSION(N) also dies when it is older than N */
+            char vb[256];
+            int vn = !strcmp(cls, "main") ? pp_snprintf(vb, sizeof vb, "$VERSION") : pp_snprintf(vb, sizeof vb, "$%s::VERSION", cls);
+            pp_sym *vs = pp_intern(I, vb, vn);
+            pp_val have = vs->gcell ? pp_copy(vs->gcell->u.scalar) : pp_undef();
+            pp_val e = pp_undef();
+            if (args.n > 1 && args.v[1].t != PP_UNDEF) {
+                pp_str *want = pp_to_str(args.v[1]);
+                if (have.t == PP_UNDEF) e = pp_die(I, "%s does not define $%s::VERSION--version check failed", cls, cls);
+                else {
+                    pp_str *hs = pp_to_str(have);
+                    if (version_cmp(hs->d, want->d) < 0) e = pp_die(I, "%s version %s required--this is only version %s", cls, want->d, hs->d);
+                    pp_str_decref(hs);
+                }
+                pp_str_decref(want);
+            }
+            pp_list_free(&args); if (dyn) pp_str_decref(dyn);
+            if (I->ctl) { pp_release(have); return e; }
+            return scalar_or_push(ctx, out, have);
         } else if (strcmp(mname, "can") == 0) {
             pp_str *want = args.n > 1 ? pp_to_str(args.v[1]) : pp_str_new("", 0);
             pp_obj *m = find_method(I, cls, want->d, 0);

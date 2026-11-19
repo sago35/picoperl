@@ -88,3 +88,18 @@ my $tc_name = Tc::Deep::; my %tc_h = (StrCls:: => 1);
 print "trailing :: ", Tc::Deep::->new(3)->get, " ", Tc::Deep::->name, " ", StrCls::->name, " $tc_name ", join(",", keys %tc_h), " ", (1 ? StrCls::->name : 0), "\n";
 { my ($p, $q) = (StrCls->new(1), StrCls->new(2)); print "paren invocant: ", ($p || $q)->get, (0 || $q)->get, ((StrCls->new(5)))->get, "\n"; }
 
+# Class->VERSION と Class->VERSION(N) (古ければ die)
+{
+    package VFoo; our $VERSION = "1.25"; package VDot; our $VERSION = "v1.2.3"; package VNum; our $VERSION = 2.005003; package VBar; sub x {}
+    package VOwn; our $VERSION = "9"; sub VERSION { "own method" }
+    package main;
+    print "VERSION: ", VFoo->VERSION, " ", VDot->VERSION, " ", VNum->VERSION, " ", VOwn->VERSION, " ", (defined(VBar->VERSION) ? "def" : "undef"), "\n";
+    my @vr;
+    for my $t ([VFoo => 1.0], [VFoo => 1.25], [VFoo => "1.3"], [VFoo => 2], [VFoo => "1.249"], [VFoo => "1.2501"], [VDot => "v1.2.3"], [VDot => "1.2.4"], [VDot => "1.002"], [VDot => "1.003"], [VNum => "2.005"], [VNum => "2.006"], [VNum => "v2.5.3"], [VNum => "v2.5.4"]) {
+        my ($c, $v) = @$t; push @vr, (eval { $c->VERSION($v); 1 } ? "ok" : "old");
+    }
+    print "VERSION checks: @vr\n";
+    eval { VFoo->VERSION(2) }; (my $ve = $@) =~ s/ at .*//s; print "VERSION message: $ve\n";
+    eval { VBar->VERSION(1) }; ($ve = $@) =~ s/ at .*//s; print "VERSION missing: $ve\n";
+    my $vo = bless {}, 'VFoo'; print "VERSION on an object: ", $vo->VERSION, "\n";
+}
