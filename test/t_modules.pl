@@ -33,4 +33,23 @@ BEGIN { require 5.008; }
 print "require version: ", (require 5.010 ? "true" : "false"), "\n";
 eval { require 7.001 };  print "too new: ", ($@ =~ /^Perl v7\.1\.0 required--this is only v5\.\d+\.\d+, stopped at / ? "dies" : "no: $@"), "\n";
 eval { require v9.2.3 }; print "too new vstring: ", ($@ =~ /^Perl v9\.2\.3 required/ ? "dies" : "no: $@"), "\n";
+# 継承した import: use は親クラスの import を呼ぶ
+use TestImpChild tests => 5;
+print "inherited import: ", join(" | ", @TestImpBase::log), " / ", imp_marker(), "\n";
+{ package ImpUser; use TestImpChild qw(a b); }
+print "inherited import in a package: $TestImpBase::log[-1] / ", ImpUser::imp_marker(), "\n";
+use TestImpExp;
+use TestImpExp qw(exp_optional);
+print "Exporter subclass: ", exp_default(), " ", exp_optional(), "\n";
+# import を自分で呼ぶ / export_to_level / タグ
+{ package ImpManual; sub take { TestImpExp->import('exp_optional'); exp_optional() } }
+print "manual import: ", ImpManual::take(), "\n";
+{ package ImpTags; require Exporter; our @ISA = ('Exporter'); our @EXPORT_OK = qw(t_one t_two $t_var); our %EXPORT_TAGS = (both => [qw(t_one t_two)]);
+  our $t_var = "tv"; sub t_one { 1 } sub t_two { 2 } sub push_up { ImpTags->export_to_level(1, undef, 't_two') } }
+{ package ImpTagUser; ImpTags->import(':both', '$t_var'); our $t_var; sub sum { t_one() + t_two() . $t_var } }
+print "tags: ", ImpTagUser::sum(), "\n";
+{ package ImpLevel; sub go { ImpTags::push_up(); t_two() } }
+print "export_to_level: ", ImpLevel::go(), "\n";
+eval { ImpTags->import('no_such_name') };
+print "unknown name: ", ($@ =~ /^"no_such_name" is not exported by the ImpTags module/ ? "dies" : "no: $@"), "\n";
 print "done modules\n";

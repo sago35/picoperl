@@ -1523,6 +1523,7 @@ static pp_sym *pkg_sym(pp_interp *I, char sigil, const char *pkg, const char *na
     return pp_intern(I, buf, n);
 }
 
+static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
 /* export one symbol from module `mod` into package `pkg`; returns 0 if it does not exist */
 static int export_symbol(pp_interp *I, const char *mod, const char *pkg, const char *name) {
     char sigil = '&';
@@ -1598,13 +1599,18 @@ static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
     if (I->ctl) goto out;
     pp_list args = {0};
     for (int i = 0; i < n->n; i++) { pp_eval(I, n->list[i], CTX_LIST, &args); if (I->ctl) { pp_list_free(&args); goto out; } }
+    /* Module->import(LIST): the module's own import, or one it inherits (use Test::Simple
+       tests => 5 runs Test::Builder::Module::import). An inherited Exporter::import is left
+       to the built-in export code below, which does not need Exporter.pm. */
     pp_sym *imp = pkg_sym(I, '&', mod->d, "import");
-    if (imp->sub) {
+    pp_obj *impcode = imp->sub ? imp->sub : find_method(I, mod->d, "import", 0);
+    if (impcode && impcode->u.code.name && !strcmp(impcode->u.code.name, "Exporter::import")) impcode = NULL;
+    if (impcode) {
         pp_list cargs = {0};
         pp_list_push(&cargs, pp_strn(mod->d, mod->len));
         for (int i = 0; i < args.n; i++) pp_list_push(&cargs, args.v[i]);
         args.n = 0;
-        pp_val v = pp_call(I, imp->sub, &cargs, CTX_VOID, NULL);
+        pp_val v = pp_call(I, impcode, &cargs, CTX_VOID, NULL);
         pp_release(v);
         pp_list_free(&cargs);
     } else if (args.n == 0) {

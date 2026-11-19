@@ -321,6 +321,15 @@ reftype refaddr indexed)`、
   `rel2abs` `abs2rel` `file_name_is_absolute` `no_upwards` `tmpdir` `path` など。本家は OS ごとの実装に
   切り替えますが、picoperl 版は Unix 形式 (`/` 区切り) だけです。ボードのドライブのパスにもそのまま使えます
 
+`use Module LIST;` は、モジュールが `import` を**継承している**場合もそれを呼びます
+(`use Test::Simple tests => 5;` は親クラス `Test::Builder::Module` の `import` を実行します)。
+継承元が `Exporter` の場合は、組み込みのエクスポート処理を使います。
+`$obj->Pkg::method(...)` のように、探し始めるパッケージを指定したメソッド呼び出しも書けます。
+
+- `Exporter`: `use Module;` のエクスポートはインタプリタが直接行うので、普段は読み込まれません。
+  `require Exporter; our @ISA = ('Exporter');` という昔ながらの書き方や、`Module->import(...)` /
+  `export_to_level` を自分で呼ぶコードのために置いてあります (`@EXPORT` `@EXPORT_OK` `%EXPORT_TAGS` に対応)
+
 `main` 以外のパッケージで `use Module qw($x %h);` と変数を取り込んだ場合、そのパッケージの中の `$x` / `%h` は
 取り込んだ変数を指します (それ以外の、宣言していないグローバルは従来どおり `main` のものです)。
 
