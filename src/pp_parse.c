@@ -1630,10 +1630,9 @@ static int at_list_end(pp_parser *P) {
     if (t->type == T_IDENT) {
         pp_tok *nx = peek(P);
         if (nx->type == T_OP && !strcmp(nx->op, "=>")) return 0;
-        if (tok_is_ident(t, "not") && nx->type == T_OP && !strcmp(nx->op, "(")) return 0;
         return tok_is_ident(t, "if") || tok_is_ident(t, "unless") || tok_is_ident(t, "while") || tok_is_ident(t, "until")
             || tok_is_ident(t, "for") || tok_is_ident(t, "foreach") || tok_is_ident(t, "or") || tok_is_ident(t, "and")
-            || tok_is_ident(t, "xor") || tok_is_ident(t, "not") || tok_is_ident(t, "x") || tok_is_ident(t, "eq") || tok_is_ident(t, "ne")
+            || tok_is_ident(t, "xor") || tok_is_ident(t, "x") || tok_is_ident(t, "eq") || tok_is_ident(t, "ne")
             || tok_is_ident(t, "lt") || tok_is_ident(t, "gt") || tok_is_ident(t, "le") || tok_is_ident(t, "ge") || tok_is_ident(t, "cmp");
     }
     return 0;
@@ -1650,7 +1649,7 @@ static pp_node *parse_comma_list(pp_parser *P) {
 }
 
 static pp_node *parse_not(pp_parser *P) {
-    if (cur_is_ident(P, "not")) {
+    if (cur_is_ident(P, "not") && !is_op(peek(P), "=>") && !is_op(peek(P), "(")) {   /* not(...) is a term: (not(1), 2) has two elements */
         advance(P);
         pp_node *n = node(P, N_NOT);
         n->a = parse_not(P);
@@ -2419,6 +2418,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
         n->op = (uint8_t)((top->strict_vars ? 1 : 0) | (top->strict_subs ? 2 : 0) | (top->strict_refs ? 4 : 0) | (top->warnings ? 8 : 0));
         return n;
     }
+    if (len == 3 && !memcmp(id, "not", 3) && !(nx->type == T_OP && (!strcmp(nx->op, "(") || !strcmp(nx->op, "=>")))) {
+        /* `not` where a term is expected ($x = not IS_VMS): negates the expression after it */
+        advance(P);
+        pp_node *n = node(P, N_NOT); n->line = line;
+        n->a = parse_assign(P);
+        return n;
+    }
     if (len == 3 && !memcmp(id, "not", 3) && nx->type == T_OP && !strcmp(nx->op, "(")) {
         advance(P); advance(P);
         pp_node *n = node(P, N_NOT);
@@ -2914,7 +2920,8 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             I->subdefs[I->nsubdefs++] = n;
             return NULL;
         }
-        if (tok_is_ident(t, "try") && nx->type == T_OP && !strcmp(nx->op, "{")) {
+        if (tok_is_ident(t, "try") && nx->type == T_OP && !strcmp(nx->op, "{")
+            && !is_declared(P, sym_sigil(P, '&', "try", 3))) {   /* a sub try(&) of the script's own wins */
             advance(P);
             pp_node *n = node(P, N_TRY);
             n->a = parse_block(P);

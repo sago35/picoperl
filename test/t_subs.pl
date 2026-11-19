@@ -143,3 +143,16 @@ my ($pa_a, $pa_b) = (4, 5, 6)[0, 1]; print "list slice still works: $pa_a$pa_b "
 sub cc_f { "mainf@_" }
 { package CcPkg; sub cc_f { "pkgf" } print "leading ::  ", ::cc_f(1), " ", &::cc_f(2), " ", cc_f(), " ", (\&::cc_f == \&main::cc_f ? "same" : "differs"), "\n"; }
 print "done\n";
+# try という名前のサブを自分で定義したら、try { ... }; はその呼び出し (組み込みの try/catch ではない)
+{
+    package TrySub;
+    sub try(&) { my $code = shift; my $ok = eval { $code->(); 1 }; return ($ok, $@) }
+    my ($ok) = try { die "x\n" };
+    my @got;
+    try { push @got, "ran" };
+    try {
+        push @got, "second";
+        die "boom\n";
+    };
+    print "own try: ", ($ok ? "ok" : "caught"), " @got\n";
+}

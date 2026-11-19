@@ -129,3 +129,12 @@ print "local \@ARGV: ", la_argv(), " ", scalar(@ARGV), "\n";
     printf "date: %04d-%02d-%02d\n", 1900 + $g[5], 1 + $g[4], $g[3];
 }
 print "done\n";
+# not: 項の位置にも書ける ($x = not CONST)。not(...) は項で、not => はハッシュのキー
+{
+    use constant NOT_NO => 0; use constant NOT_YES => 1;
+    my $na = not NOT_NO; my $nb = not NOT_YES; my $nc = not 0 || 1; my @nl = (not(1), not 0); my @nm = (not 1, 0);
+    my %nh = (not => 1); my $nd = (not NOT_YES) ? "f" : "t"; my $ne = 1 && not 0;
+    my ($nt, $nf) = (1, 0);
+    print "not: ", join("|", map { $_ ? 1 : 0 } $na, $nb, $nc, @nl, $nh{not}, $ne, (not($nt) || 1), (not($nf) && 0), scalar(not($nt) + 5)), " $nd ", scalar(@nl), scalar(@nm), "\n";
+    print "not stmt\n" if not NOT_NO and not $nb;
+}
