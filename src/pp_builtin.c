@@ -1,5 +1,6 @@
 /* Built-in functions for picoperl. */
 #include "pp_internal.h"
+#include "pp_regex.h"
 #include <math.h>
 #include <ctype.h>
 
@@ -126,7 +127,25 @@ pp_val pp_sprintf(pp_interp *I, pp_list *args, int start) {
         spec[sn++] = '%';
         /* flags */
         while (i < flen && strchr("-+ 0#", f[i])) { if (sn < 20) spec[sn++] = f[i]; i++; }
-        /* vector flag not supported */
+        /* %vd: the numbers of the string's characters joined with dots (sprintf("%vd", "1.22.333") is itself) */
+        if (i + 1 < flen && f[i] == 'v' && f[i + 1] == 'd') {
+            i += 2;
+            pp_str *vs = ai < args->n ? pp_to_str(args->v[ai]) : pp_str_new("", 0);
+            if (ai < args->n) ai++;
+            const unsigned char *p = (const unsigned char *)vs->d;
+            for (int k = 0; k < vs->len; ) {
+                /* one character: a UTF-8 sequence when it is well formed, else the byte */
+                long cp = p[k]; int nb = 1;
+                if (p[k] >= 0xC2 && p[k] < 0xE0 && k + 1 < vs->len && (p[k + 1] & 0xC0) == 0x80) { cp = ((p[k] & 0x1F) << 6) | (p[k + 1] & 0x3F); nb = 2; }
+                else if (p[k] >= 0xE0 && p[k] < 0xF0 && k + 2 < vs->len && (p[k + 1] & 0xC0) == 0x80 && (p[k + 2] & 0xC0) == 0x80) { cp = ((p[k] & 0x0F) << 12) | ((p[k + 1] & 0x3F) << 6) | (p[k + 2] & 0x3F); nb = 3; }
+                else if (p[k] >= 0xF0 && p[k] < 0xF5 && k + 3 < vs->len && (p[k + 1] & 0xC0) == 0x80 && (p[k + 2] & 0xC0) == 0x80 && (p[k + 3] & 0xC0) == 0x80) { cp = ((long)(p[k] & 0x07) << 18) | ((p[k + 1] & 0x3F) << 12) | ((p[k + 2] & 0x3F) << 6) | (p[k + 3] & 0x3F); nb = 4; }
+                char nbuf[16]; int nn = pp_snprintf(nbuf, sizeof nbuf, "%s%ld", k ? "." : "", cp);
+                str_append(&r, nbuf, nn);
+                k += nb;
+            }
+            pp_str_decref(vs);
+            continue;
+        }
         /* width */
         if (i < flen && f[i] == '*') { int w = ai < args->n ? (int)pp_to_int(args->v[ai++]) : 0; if (w < 0) { spec[sn++] = '-'; w = -w; } sn += pp_snprintf(spec + sn, sizeof spec - sn, "%d", w); i++; }
         else while (i < flen && isdigit((unsigned char)f[i])) { if (sn < 20) spec[sn++] = f[i]; i++; }
@@ -2020,7 +2039,34 @@ static pp_val n_ovl_strval(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_ovl_hook = saved;
     return pp_str_val(s);
 }
+/* re::is_regexp($x): is it a qr// object (blessed or not)?
+   re::regexp_pattern($qr): (pattern, flags) in list context, "(?^flags:pattern)" in scalar context */
+static pp_val n_re_is_regexp(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    return a->n && a->v[0].t == PP_REF && a->v[0].u.o->kind == PP_OREGEX ? pp_int(1) : pp_strn("", 0);
+}
+static pp_val n_re_pattern(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (!a->n || a->v[0].t != PP_REF || a->v[0].u.o->kind != PP_OREGEX) return ctx == CTX_LIST && out ? pp_no_value() : pp_strn("", 0);
+    const pp_regex *re = a->v[0].u.o->u.re;
+    if (!(ctx == CTX_LIST && out)) {
+        int (*saved)(pp_val, int, pp_val *) = pp_ovl_hook;
+        pp_ovl_hook = NULL;
+        pp_str *s = pp_to_str(a->v[0]);
+        pp_ovl_hook = saved;
+        return pp_str_val(s);
+    }
+    char fl[8]; int n = 0;
+    if (re->flags & PP_RE_M) fl[n++] = 'm';
+    if (re->flags & PP_RE_S) fl[n++] = 's';
+    if (re->flags & PP_RE_I) fl[n++] = 'i';
+    if (re->flags & PP_RE_X) fl[n++] = 'x';
+    pp_list_push(out, pp_strn(re->source, re->srclen));
+    return pp_strn(fl, n);                 /* the caller appends the last element */
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "re::is_regexp", n_re_is_regexp);
+    pp_register(I, "re::regexp_pattern", n_re_pattern);
     pp_register(I, "overload::_enable", n_ovl_enable);
     pp_register(I, "overload::StrVal", n_ovl_strval);
     pp_register(I, "__tie", n_tie);

@@ -1327,14 +1327,34 @@ static pp_node *pattern_node(pp_parser *P, const char *s, int len, int delim, in
 }
 
 /* tr/// list: expand escapes and a-z ranges into out (up to 256 bytes) */
+/* one character of a tr list at s[*i], escapes included (\n \t \\ \- \012 \x41 \x{41}) */
+static int tr_char(const char *s, int len, int *i) {
+    int c = (unsigned char)s[(*i)++];
+    if (c != '\\' || *i >= len) return c;
+    int d = (unsigned char)s[(*i)++];
+    switch (d) {
+    case 'n': return '\n'; case 't': return '\t'; case 'r': return '\r'; case 'f': return '\f'; case 'e': return 27; case 'a': return 7;
+    case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
+        int v = d - '0', k = 1;
+        while (k < 3 && *i < len && s[*i] >= '0' && s[*i] <= '7') { v = v * 8 + (s[*i] - '0'); (*i)++; k++; }
+        return v & 255;
+    }
+    case 'x': {
+        int v = 0;
+        if (*i < len && s[*i] == '{') { (*i)++; while (*i < len && s[*i] != '}') { v = v * 16 + hexval(s[*i]); (*i)++; } if (*i < len) (*i)++; }
+        else { int k = 0; while (k < 2 && *i < len && isxdigit((unsigned char)s[*i])) { v = v * 16 + hexval(s[*i]); (*i)++; k++; } }
+        return v > 255 ? 255 : v;
+    }
+    default: return d;
+    }
+}
 static int tr_expand(const char *s, int len, unsigned char *out) {
     int n = 0;
     for (int i = 0; i < len && n < 256; ) {
-        int c = (unsigned char)s[i++];
-        if (c == '\\' && i < len) { int d = s[i++]; c = d == 'n' ? '\n' : d == 't' ? '\t' : d == 'r' ? '\r' : d == 'f' ? '\f' : d == 'e' ? 27 : d; }
+        int c = tr_char(s, len, &i);
         if (i + 1 < len && s[i] == '-') {
-            int hi = (unsigned char)s[i+1]; i += 2;
-            if (hi == '\\' && i < len) { int d = s[i++]; hi = d == 'n' ? '\n' : d == 't' ? '\t' : d; }
+            i++;
+            int hi = tr_char(s, len, &i);
             for (int k = c; k <= hi && n < 256; k++) out[n++] = (unsigned char)k;
         } else out[n++] = (unsigned char)c;
     }
@@ -1761,6 +1781,15 @@ static pp_node *parse_hash_key(pp_parser *P) {
 
 static pp_node *parse_subscripts(pp_parser *P, pp_node *base, int allow_implicit) {
     for (;;) {
+        if (allow_implicit && cur_is_op(P, "(") && (base->type == N_AELEM || base->type == N_HELEM || base->type == N_CALLREF)) {
+            /* $h->{code}(args), $a[0](args), $f->(1)(2): the arrow between subscripts is optional before ( too */
+            advance(P);
+            pp_node *n = node(P, N_CALLREF); n->a = base;
+            pp_node *args = parse_comma_list(P);
+            expect_op(P, ")");
+            take_children(n, args);
+            base = n; continue;
+        }
         if (cur_is_op(P, "->")) {
             pp_tok *nx = peek(P);
             if (nx->type == T_OP && !strcmp(nx->op, "[")) {
@@ -2132,6 +2161,26 @@ static void check_parse_stack(pp_parser *P) {
 static pp_node *parse_term(pp_parser *P) {
     check_parse_stack(P);
     pp_tok *t = &P->cur;
+    if (t->type == T_CAST && !P->has_nxt && (((t->op[0] == '$' || t->op[0] == '@' || t->op[0] == '%') && !t->op[1]) || !strcmp(t->op, "$#"))) {
+        /* ${name} @{name} %{name}: a name alone in the braces is the variable itself, so the
+           token becomes $name and everything after it (subscripts included) reads the same */
+        pp_lex *L = &P->L;
+        int i = L->pos;
+        if (i < L->len && L->src[i] == '{') {
+            i++;
+            while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+            int start = i;
+            if (i < L->len && is_ident_start((unsigned char)L->src[i])) {
+                while (i < L->len && (is_ident_char((unsigned char)L->src[i]) || (L->src[i] == ':' && i + 2 < L->len && L->src[i + 1] == ':' && is_ident_start((unsigned char)L->src[i + 2])))) i += L->src[i] == ':' ? 2 : 1;
+                int end = i;
+                while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+                if (i < L->len && L->src[i] == '}') {
+                    t->type = T_VAR; t->sigil = t->op[1] ? '#' : t->op[0]; t->s = L->src + start; t->len = end - start;
+                    L->pos = i + 1; L->prev_term = 1; L->prev_brace = 0;
+                }
+            }
+        }
+    }
     switch (t->type) {
     case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
     case T_STR: {
@@ -2367,6 +2416,25 @@ static pp_node *parse_ident_term(pp_parser *P) {
 
     pp_tok *nx = peek(P);
     if (nx->type == T_OP && !strcmp(nx->op, "=>")) { pp_node *n = const_str(P, id, len); advance(P); return n; }
+    if (len >= 2 && id[0] == 'v' && isdigit((unsigned char)id[1]) && !is_declared(P, sym_sigil(P, '&', id, len))) {
+        /* v1.22.333: a v-string, the characters with those numbers (v65.66 is "AB") */
+        int ok = 1;
+        for (int i = 1; i < len; i++) if (!isdigit((unsigned char)id[i]) && !(id[i] == '.' && i + 1 < len && isdigit((unsigned char)id[i + 1]) && isdigit((unsigned char)id[i - 1]))) ok = 0;
+        if (ok) {
+            char *buf = NULL; int n = 0, cap = 0;
+            for (int i = 1; i < len; ) {
+                long v = 0;
+                while (i < len && isdigit((unsigned char)id[i])) { if (v < 0x110000) v = v * 10 + (id[i] - '0'); i++; }
+                if (v > 0x10FFFF) v = 0xFFFD;
+                if (v < 128) append_char(&buf, &n, &cap, (int)v); else append_utf8(&buf, &n, &cap, (int)v);
+                if (i < len) i++;                /* the dot */
+            }
+            pp_node *k = const_str(P, buf ? buf : "", n);
+            free(buf);
+            advance(P);
+            return k;
+        }
+    }
     int forced_core = 0;
     if (len > 6 && !memcmp(id, "CORE::", 6) && pp_builtin_id(id + 6, len - 6, NULL) > 0) {
         /* CORE::length: the builtin itself, even where a sub of that name exists */

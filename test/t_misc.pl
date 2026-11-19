@@ -144,3 +144,32 @@ print "done\n";
     package main; print "our again: @OurA::olog | @OurB::olog | $OurA::oy $OurB::oy\n";
     my @ia = (1, 2, 3); my $iar = \@ia; print "array ref in string: @$iar | @$iar[0,1] | a@$iar.\n";
 }
+# ${name} @{name} %{name} $#{name}: 波かっこの中が名前だけなら、その変数そのもの
+{
+    my $bv_pkg = "Foo::"; my $bv_name = "bar"; my @bv_arr = (1, 2, 3); my %bv_h = (k => "v"); our $bv_g = "glob";
+    my $bv_full = ${bv_pkg}.${bv_name};
+    print "braced var: $bv_full ${ bv_pkg } @{bv_arr} ", scalar(@{bv_arr}), " ", join(",", sort keys %{bv_h}), " ${main::bv_g} ", ${bv_arr}[1], ${bv_h}{k}, $#{bv_arr}, "\n";
+    ${bv_name} = "baz"; push @{bv_arr}, 4; ${bv_h}{n} = 1; print "braced var write: $bv_name @bv_arr ", join(",", sort keys %bv_h), "\n";
+    my $bv_r = \@bv_arr; sub bv_list { [7, 8] }
+    print "braced expr still derefs: @{$bv_r} ${$bv_r}[0] @{[ 1 + 1 ]} ${\ 'x'} ", join(",", @{$bv_r}[0, 1]), " @{ bv_list() }\n";
+}
+# v 文字列 (v65.66 は "AB") と sprintf の %vd
+{
+    my $vs = v65.66.67; my %vh = (v1 => "key"); sub v9 { "sub" }
+    print "vstring: $vs ", v97, " ", join(".", map { ord } split //, v1.22.100), " $vh{v1} ", (v1.2 eq "\x01\x02" ? "eq" : "ne"), " ", (v5.36.0 lt v5.40.1 ? "older" : "newer"), " ", v9(), "\n";
+    printf("%%vd: %vd %vd [%vd] %s\n", "1.22.333", v5.44.0, "", sprintf("%vd", "A"));
+}
+# 添字の直後の呼び出し: $h->{code}(args) は $h->{code}->(args)
+{
+    my %ch = (f => sub { "f(@_)" }, g => sub { my $x = shift; sub { "inner$x@_" } }); my @ca = (sub { "a0:@_" }); my $cr = \%ch;
+    print "call after subscript: ", $cr->{f}(1, 2), " ", $ch{f}(3), " ", $ca[0](4), " ", $cr->{g}(5)(6), " ", $ch{g}->(7)->(8), "\n";
+}
+# local の右辺は、local が効く前に評価される
+{
+    my %ls = (apad => "A", n => 1); our %lgh = (k => "K");
+    my $lshow = sub { "$ls{apad}|$ls{n}|$lgh{k}" };
+    { local($ls{apad}) = $ls{apad}; $ls{apad} .= "+"; print "local rhs 1: ", $lshow->(), "\n"; }
+    { local $ls{apad} = $ls{apad} . "x"; local $lgh{k} = lc $lgh{k}; print "local rhs 2: ", $lshow->(), "\n"; }
+    { local ($ls{apad}, $ls{n}) = ($ls{n}, $ls{apad}); print "local rhs 3: ", $lshow->(), "\n"; }
+    print "local rhs after: ", $lshow->(), "\n";
+}

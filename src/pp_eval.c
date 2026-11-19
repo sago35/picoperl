@@ -1377,15 +1377,22 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
         int has = 0;
         for (int i = 0; i < a->n; i++) if (a->list[i]->type == N_LOCALELEM) has = 1;
         if (has) {
+            /* the right side is evaluated before anything is localized: local($h{k}) = $h{k} */
+            pp_list src = {0};
+            pp_eval(I, b, CTX_LIST, &src);
+            if (I->ctl) { pp_list_free(&src); return pp_undef(); }
+            int count = src.n;
             pp_node *items[32];
             for (int i = 0; i < a->n; i++) {
                 pp_node *c = a->list[i];
-                if (c->type == N_LOCALELEM) { eval_local_elem(I, c); if (I->ctl) return pp_undef(); c = c->a; }
+                if (c->type == N_LOCALELEM) { eval_local_elem(I, c); if (I->ctl) { pp_list_free(&src); return pp_undef(); } c = c->a; }
                 items[i] = c;
             }
             pp_node tl = *a; tl.list = items; tl.flags &= ~PP_NODE_HEAP;
-            pp_node tn = *n; tn.a = &tl; tn.flags &= ~PP_NODE_HEAP;
-            return eval_assign(I, &tn, ctx, out);
+            assign_list(I, &tl, &src);
+            if (ctx == CTX_LIST && out && !I->ctl) pp_eval(I, &tl, CTX_LIST, out);
+            pp_list_free(&src);
+            return pp_int(count);
         }
     }
     if (a->type == N_LOCALGLOB) {   /* local *name = v */
@@ -1402,7 +1409,28 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
         pp_release(v);
         return r;
     }
-    if (a->type == N_LOCALELEM) {   /* local $h{k} = v: localize, then assign to the element itself */
+    if (a->type == N_LOCALELEM) {   /* local $h{k} = v: evaluate v, localize, then assign to the element itself */
+        if (n->op == OP_NONE) {
+            int lst = is_list_lhs(a);
+            pp_list src = {0};
+            if (lst) pp_eval(I, b, CTX_LIST, &src); else pp_list_push(&src, pp_eval(I, b, CTX_SCALAR, NULL));
+            if (I->ctl) { pp_list_free(&src); return pp_undef(); }
+            int count = src.n;
+            eval_local_elem(I, a);
+            if (I->ctl) { pp_list_free(&src); return pp_undef(); }
+            if (lst) {
+                assign_list(I, a->a, &src);
+                if (ctx == CTX_LIST && out && !I->ctl) pp_eval(I, a->a, CTX_LIST, out);
+                pp_list_free(&src);
+                return pp_int(count);
+            }
+            pp_node kn; memset(&kn, 0, sizeof kn);
+            kn.type = N_CONST; kn.val = src.v[0]; kn.line = n->line;
+            pp_node tmp = *n; tmp.a = a->a; tmp.b = &kn; tmp.flags &= ~PP_NODE_HEAP;
+            pp_val r = eval_assign(I, &tmp, ctx, out);
+            pp_list_free(&src);
+            return r;
+        }
         eval_local_elem(I, a);
         if (I->ctl) return pp_undef();
         pp_node tmp = *n; tmp.a = a->a; tmp.flags &= ~PP_NODE_HEAP;

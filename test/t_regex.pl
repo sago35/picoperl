@@ -150,3 +150,15 @@ for my $p ('(?<=a+)b', '(?<=a{1,300})b', '(?<=\1)b', '(?<=a*)b') { my $r = eval 
 # ASCII に文字が無いカテゴリ (\p{Zl} など) は何にも一致しない
 print "empty properties: ", join("", map { $_ ? 1 : 0 } "a \n" =~ /[\p{Zl}\p{Zp}]/, "a \n" =~ /[\s\t\p{Zl}\p{C}\p{Zp}]/, "aZ" =~ /\p{Lo}/, "a" =~ /\P{Zl}/, "12" =~ /\p{No}/), "\n";
 print "posix ascii: ", join("", map { $_ ? 1 : 0 } "abc" =~ /^[[:ascii:]]+$/, "a\xC3\xA9" =~ /[[:^ascii:]]/, "abc" =~ /[[:^ascii:]]/, "a\xC3\xA9" =~ /^[[:ascii:]]+$/), "\n";
+# tr の中の 8 進数・16 進数のエスケープ
+{
+    my $tv = "abc\x01\x7f\xff-z";
+    my @tr = (scalar($tv =~ tr/\0-\377//c), scalar($tv =~ tr/\0-\377//), scalar($tv =~ tr/\0-\177//c), scalar($tv =~ tr/\x00-\x1f//), scalar($tv =~ tr/\x{61}-\x{63}//), scalar($tv =~ tr/a\-z//), scalar($tv =~ tr/\\//));
+    (my $tw = "a\tb\nc") =~ tr/\011\012/TN/; (my $to = "ABC") =~ tr/\101-\103/\141-\143/;
+    print "tr escapes: @tr $tw $to\n";
+}
+# re::is_regexp と re::regexp_pattern
+{
+    my $rq = qr/a.b/i; my ($rp, $rf) = re::regexp_pattern($rq);
+    print "re:: ", (re::is_regexp($rq) ? 1 : 0), (re::is_regexp("x") ? 1 : 0), " $rp $rf ", scalar(re::regexp_pattern($rq)), "\n";
+}
