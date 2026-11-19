@@ -351,6 +351,17 @@ static void local_push(pp_interp *I, pp_obj *cell) {
     cell->u.scalar = pp_undef();
     I->nlocals++;
 }
+/* local @a / local %h: the variable is empty until the scope ends. Its contents move into a
+   spare object (kind 3 on the save stack) and are swapped back on the way out. */
+static void local_push_aggregate(pp_interp *I, pp_obj *cell) {
+    if (I->nlocals == I->caplocals) { I->caplocals = I->caplocals ? I->caplocals * 2 : 8; I->locals = pp_xrealloc(I->locals, I->caplocals * sizeof *I->locals); }
+    pp_obj *spare = pp_obj_new(cell->kind);
+    __typeof__(cell->u) tmp = cell->u; cell->u = spare->u; spare->u = tmp;
+    I->locals[I->nlocals].cell = cell; cell->refcnt++;
+    I->locals[I->nlocals].saved = pp_ref(spare); pp_obj_decref(spare);
+    I->locals[I->nlocals].key = NULL; I->locals[I->nlocals].kind = 3;
+    I->nlocals++;
+}
 /* local $h{key} (key != NULL) or local $a[idx]: the element becomes undef until the scope ends */
 static void local_push_elem(pp_interp *I, pp_obj *box, pp_str *key, int idx) {
     if (I->nlocals == I->caplocals) { I->caplocals = I->caplocals ? I->caplocals * 2 : 8; I->locals = pp_xrealloc(I->locals, I->caplocals * sizeof *I->locals); }
@@ -375,6 +386,11 @@ static void local_unwind(pp_interp *I, int height) {
         if (I->locals[I->nlocals].kind == 0) {
             pp_release(cell->u.scalar);
             cell->u.scalar = I->locals[I->nlocals].saved;
+        } else if (I->locals[I->nlocals].kind == 3) {       /* local @a / %h: swap the contents back */
+            pp_val saved = I->locals[I->nlocals].saved;
+            pp_obj *spare = saved.u.o;
+            __typeof__(cell->u) tmp = cell->u; cell->u = spare->u; spare->u = tmp;
+            pp_release(saved);                               /* frees what the scope left in the variable */
         } else {
             pp_str *key = I->locals[I->nlocals].key;
             pp_val saved = I->locals[I->nlocals].saved;
@@ -802,7 +818,10 @@ static int declare_my(pp_interp *I, pp_node *m) {
             }
         }
         else if (m->op == 'o') pp_global(I, v->sym);
-        else if (m->op == 'l') { if (v->sym->name[0] == '$') local_push(I, var_cell(I, v)); }
+        else if (m->op == 'l') {
+            if (v->sym->name[0] == '$') local_push(I, var_cell(I, v));
+            else local_push_aggregate(I, var_cell(I, v));
+        }
     }
     return existed;
 }

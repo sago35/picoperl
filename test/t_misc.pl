@@ -106,4 +106,16 @@ $@ = "outer"; (my $ll_r = ll_guard()) =~ s/\n//; print "local \$\@ in a list: $l
 { local($,, $\) = ("-", "!\n"); print 1, 2, 3; }
 { local $, = ","; print "a", "b"; print "\n"; }
 print "plain", " print", "\n";
+# local を配列とハッシュに
+our %lah = (k => 1); our @laa = (1, 2);
+sub la_copy  { local %lah = %lah; $lah{$_[0]} = 1; local @laa = (@laa, 9); push @laa, 5; scalar(keys %lah) . ":" . scalar(@laa) }
+sub la_empty { local %lah; local @laa; $lah{x} = 1; push @laa, 1; scalar(keys %lah) . scalar(@laa) }
+sub la_die   { local %lah = (); local @laa; die "x\n" }
+sub la_rec   { my $n = shift; local @laa = (@laa, $n); return $n ? la_rec($n - 1) : "@laa" }
+sub la_list  { local (@laa, %lah); scalar(@laa) . scalar(keys %lah) }
+print "local aggregates: ", la_copy("a"), " ", la_copy("b"), " / ", la_empty(), " / ", la_rec(2), " / ", la_list(), "\n";
+eval { la_die() };
+print "restored: ", join(",", sort keys %lah), " [@laa]\n";
+sub la_argv { local @ARGV = (7, 8); shift(@ARGV) . scalar(@ARGV) }
+print "local \@ARGV: ", la_argv(), " ", scalar(@ARGV), "\n";
 print "done\n";
