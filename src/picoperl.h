@@ -68,6 +68,7 @@ struct pp_obj {
     int     refcnt;
     uint8_t kind;
     uint8_t tied;           /* tie'd: the object it is tied to is in the tie table (pp_tie_find) */
+    uint8_t destroyed;      /* its DESTROY has been called (or is queued): not again */
     pp_sym *class;          /* package name when blessed, else NULL */
     union {
         pp_val scalar;
@@ -338,6 +339,7 @@ struct pp_interp {
     struct pp_looplabel *loop_labels;   /* labelled loops being run, innermost first (for last/next LABEL) */
     struct pp_stmts *stmts;      /* statement lists being run, innermost first (for goto LABEL) */
     pp_node *main_unit;          /* the program given to pp_run: INIT blocks run when it starts */
+    pp_env  *main_env;            /* the main script's file scope (held for the DESTROYs at exit) */
     uint8_t  init_ran;           /* ... and after that it is too late for more of them */
     int      eval_seq;           /* number of eval STRINGs so far: their "file" is "(eval N)" */
     pp_env  *pending_env;        /* file scope of the file being parsed, made early when a BEGIN block

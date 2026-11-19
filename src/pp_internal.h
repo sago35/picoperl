@@ -52,6 +52,14 @@ extern int pp_tie_count;                           /* how many ties exist (0: no
 /* call METHOD on a tie object (or a class name) with args; must: die when there is no such method */
 pp_val  pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must);
 
+/* DESTROY. Once some class defines a DESTROY (pp_destroy_on), a blessed object whose last
+   reference goes away is kept and queued instead of freed; pp_destroy_run() calls the methods
+   at the next safe point (the end of a statement) and then lets the objects go. */
+extern uint8_t pp_destroy_on;
+extern int     pp_destroy_n;                      /* objects waiting for their DESTROY */
+pp_obj *pp_destroy_next(int from);                /* take the oldest one at or after index `from` (refcnt 1), or NULL */
+void    pp_destroy_run(pp_interp *I);
+
 /* operator overloading. The conversions (pp_to_str, pp_numify, pp_truth) ask this hook about a
    blessed reference: kind 's' string, 'n' number, 'b' truth; 1 with the result in *out when
    the class has a conversion. NULL until `use overload` runs, so nothing else pays for it. */

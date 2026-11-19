@@ -411,8 +411,28 @@ static void obj_free(pp_obj *o) {
  * so destruction runs at a fixed stack depth. */
 static pp_obj **free_work; static int free_nwork, free_capwork, free_active;
 
+uint8_t pp_destroy_on;
+int pp_destroy_n;
+static pp_obj **destroy_q;
+static int destroy_cap;
+pp_obj *pp_destroy_next(int from) {
+    if (pp_destroy_n <= from) return NULL;
+    pp_obj *o = destroy_q[from];
+    pp_destroy_n--;
+    memmove(destroy_q + from, destroy_q + from + 1, (size_t)(pp_destroy_n - from) * sizeof *destroy_q);   /* oldest first */
+    if (!pp_destroy_n) { free(destroy_q); destroy_q = NULL; destroy_cap = 0; }
+    return o;
+}
 void pp_obj_decref(pp_obj *o) {
     if (!o || --o->refcnt > 0) return;
+    if (o->class && pp_destroy_on && !o->destroyed) {
+        /* a blessed object: it lives on until its DESTROY has had a chance to run */
+        o->destroyed = 1;
+        o->refcnt = 1;
+        if (pp_destroy_n == destroy_cap) { destroy_cap = destroy_cap ? destroy_cap * 2 : 8; destroy_q = pp_xrealloc(destroy_q, destroy_cap * sizeof *destroy_q); }
+        destroy_q[pp_destroy_n++] = o;
+        return;
+    }
     if (free_active) {
         if (free_nwork == free_capwork) {
             free_capwork = free_capwork ? free_capwork * 2 : 32;
@@ -462,8 +482,10 @@ pp_val pp_array_get(pp_obj *a, int i) {
     return pp_copy(a->u.arr.v[i]);
 }
 void pp_array_clear(pp_obj *a) {
-    for (int i = 0; i < a->u.arr.n; i++) pp_release(a->u.arr.v[i]);
+    /* last element first, like perl (it shows in the order of DESTROY calls) */
+    int n = a->u.arr.n;
     a->u.arr.n = 0;
+    while (n > 0) pp_release(a->u.arr.v[--n]);
 }
 pp_val pp_array_shift(pp_obj *a) {
     if (a->u.arr.n == 0) return pp_undef();

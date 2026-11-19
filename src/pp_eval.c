@@ -397,8 +397,44 @@ static NOINLINE pp_val eval_globslot(pp_interp *I, pp_node *n, int ctx, pp_list 
 static int is_sub_stub(const pp_obj *o) {
     return o->kind == PP_OCODE && !o->u.code.body && !o->u.code.native && !o->u.code.is_const;
 }
+static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
+/* run the DESTROY methods that are waiting; called between statements */
+void pp_destroy_run(pp_interp *I) {
+    /* A DESTROY that is running may drop more objects: those are destroyed right away (the
+       nested call), ahead of the ones that were already waiting when it started (floor). */
+    static int floor;
+    if (I->ctl) return;                  /* not while a die is travelling */
+    pp_obj *o;
+    while (!I->ctl && (o = pp_destroy_next(floor)) != NULL) {
+        pp_obj *code = o->class ? find_method(I, o->class->name, "DESTROY", 0) : NULL;
+        if (code) {
+            pp_list args = {0};
+            pp_list_push(&args, pp_ref(o));
+            code->refcnt++;
+            int saved_line = I->line, saved_floor = floor;
+            floor = pp_destroy_n;
+            pp_release(pp_call(I, code, &args, CTX_VOID, NULL));
+            floor = saved_floor;
+            pp_list_free(&args);
+            pp_obj_decref(code);
+            I->line = saved_line;
+            if (I->ctl == CTL_DIE) {         /* a die in DESTROY is only a warning, like perl */
+                pp_str *m = pp_to_str(I->err);
+                I->ctl = CTL_NONE;
+                if (I->warn_on) pp_warn(I, "\t(in cleanup) %.*s", m->len > 0 && m->d[m->len - 1] == '\n' ? m->len - 1 : m->len, m->d);
+                pp_str_decref(m);
+            }
+        }
+        if (o->refcnt > 1) o->destroyed = 0;     /* DESTROY stored it somewhere: it lives on, and is destroyed again later */
+        pp_obj_decref(o);
+    }
+}
 void pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code) {
     /* takes ownership of code */
+    {   /* a DESTROY anywhere turns the DESTROY machinery on */
+        size_t nl = strlen(sym->name);
+        if (nl >= 8 && !strcmp(sym->name + nl - 7, "DESTROY") && (nl == 8 || sym->name[nl - 8] == ':')) pp_destroy_on = 1;
+    }
     pp_obj *cell = pp_global(I, sym);   /* SCALAR cell holding a CODE ref keeps it alive */
     if (cell->u.scalar.t == PP_REF && cell->u.scalar.u.o != code && is_sub_stub(cell->u.scalar.u.o)
         && code->refcnt == 1 && code->u.code.body && !code->u.code.is_const) {
@@ -1678,6 +1714,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
         if (I->tie_pend) pp_tie_flush(I);
+        if (pp_destroy_n) pp_destroy_run(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(blk, I->ctl_label);
             if (j >= 0) {                        /* the label is here: go on from it */
@@ -3147,6 +3184,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     pp_env *env = I->pending_env ? I->pending_env : pp_env_new(NULL, unit->aux);
     I->pending_env = NULL;
     pp_env_grow(env, unit->aux);
+    if (unit == I->main_unit && !I->main_env) { I->main_env = env; pp_env_incref(env); }
     I->env = env;
     /* named subs are defined before the unit body runs; they close over the unit scope */
     for (int i = 0; i < I->nsubdefs; i++) {
@@ -3207,6 +3245,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
         if (I->tie_pend) pp_tie_flush(I);
+        if (pp_destroy_n) pp_destroy_run(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(unit, I->ctl_label);
             if (j >= 0) {
@@ -3280,7 +3319,16 @@ static pp_val n_univ_can(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return code ? pp_ref(code) : pp_undef();
 }
 
+/* state kept outside the interpreter (the overload hook, the DESTROY queue) must not carry
+   over from one interpreter to the next: a board runs a fresh one on every reload */
+static void reset_static_state(void) {
+    pp_ovl_hook = NULL; ovl_I = NULL; ovl_assign = 0;
+    pp_destroy_on = 0;
+    pp_obj *o;
+    while ((o = pp_destroy_next(0)) != NULL) pp_obj_decref(o);   /* freed without their DESTROY */
+}
 pp_interp *pp_new(void) {
+    reset_static_state();
     pp_interp *I = pp_xmalloc(sizeof *I);
     memset(I, 0, sizeof *I);
     I->globals = pp_env_new(NULL, 0);
@@ -3326,6 +3374,7 @@ pp_interp *pp_new(void) {
 }
 
 void pp_free(pp_interp *I) {
+    reset_static_state();
     if (!I) return;
     if (I->pending_env) { pp_env_decref(I->pending_env); I->pending_env = NULL; }
     hold(I, NULL);
@@ -3445,6 +3494,26 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
     if (I->ctl == CTL_DIE) { report_die(I); rc = 255; }
     else if (I->ctl == CTL_EXIT) rc = I->exit_code;
     I->ctl = CTL_NONE;
+    if (I->main_env) {
+        /* the end of the program (before the END blocks, as perl does for file-level lexicals): objects still held by the script's file-level variables get
+           their DESTROY now, newest variable first (package variables are not visited) */
+        pp_env *me = I->main_env;
+        if (pp_destroy_on) {
+            if (pp_destroy_n) pp_destroy_run(I);
+            for (int pass = 0; pass < 2; pass++) {
+                for (int i = me->n - 1; i >= 0; i--) {
+                    pp_obj *c = me->cells[i];
+                    if (!c) continue;
+                    if (pass == 0 && c->kind == PP_OSCALAR && c->u.scalar.t == PP_REF) { pp_val v = c->u.scalar; c->u.scalar = pp_undef(); pp_release(v); }
+                    else if (pass == 1 && c->kind == PP_OARRAY) pp_array_clear(c);
+                    else if (pass == 1 && c->kind == PP_OHASH) pp_hash_clear(c);
+                    if (pp_destroy_n) pp_destroy_run(I);
+                }
+            }
+        }
+        I->main_env = NULL;
+        pp_env_decref(me);
+    }
     /* END blocks: last queued first, also after die and exit. They see the exit code in $?
        and may change it. */
     pp_obj *ends = pp_global(I, pp_intern(I, "@ END", 5));
