@@ -2743,11 +2743,29 @@ static pp_node *parse_ident_term(pp_parser *P) {
             else if (cur_is_op(P, "{")) { advance(P); n->a = parse_expr(P); expect_op(P, "}"); }
             else if (P->cur.type == T_VAR && P->cur.sigil == '$') {
                 /* `print $fh LIST` (no comma): the handle is a plain scalar followed by a value */
+                int at_list = 0;
+                if (!P->has_nxt) {
+                    /* print $fh @list: seen in the source text, because after a term the lexer
+                       would read "@list" as an operator */
+                    pp_lex *L = &P->L;
+                    int i = L->pos, sp = 0;
+                    while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) { i++; sp = 1; }
+                    if (sp && i + 1 < L->len && L->src[i] == '@' && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$' || L->src[i + 1] == ':')) at_list = 1;
+                }
+                if (at_list) {
+                    n->a = mkvar(P, '$', P->cur.s, P->cur.len);
+                    P->L.prev_term = 0;                 /* what follows starts a term */
+                    advance(P);
+                } else {
                 pp_tok *nx2 = peek(P);
+                static const char *const opwords[] = { "x", "eq", "ne", "lt", "gt", "le", "ge", "cmp", "and", "or", "xor", "if", "unless", "for", "foreach", "while", "until", "isa", NULL };
+                int word = nx2->type == T_IDENT;
+                for (int i = 0; word && opwords[i]; i++) if (tok_is_ident(nx2, opwords[i])) word = 0;
                 if (nx2->type == T_STR || nx2->type == T_ISTR || nx2->type == T_NUM || nx2->type == T_QW ||
-                    nx2->type == T_VAR || nx2->type == T_READLINE) {
+                    nx2->type == T_VAR || nx2->type == T_READLINE || word) {
                     n->a = mkvar(P, '$', P->cur.s, P->cur.len);
                     advance(P);
+                }
                 }
             }
             take_children(n, parse_comma_list(P));

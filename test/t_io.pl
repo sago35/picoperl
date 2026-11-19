@@ -142,3 +142,12 @@ close BW;
         defined(-t STDIN) ? "defined" : "undef", defined(-t STDERR) ? "defined" : "undef"), "\n";
     close $tfh;
 }
+# print $fh @list: ハンドルの直後が配列や関数呼び出しでも、$fh はハンドル
+{
+my @p = ("a", "b"); my %h = (k => 1); my $fh = \*STDOUT; my ($x, $y) = (7, 2);
+print $fh @p; print $fh "\n"; print $fh @p, "\n"; print {$fh} @p, "\n"; print $fh join("-", @p), "\n"; print $fh map { "<$_>" } @p; print $fh "\n";
+print $fh uc("up"), lc("LO"), "\n"; printf $fh "%s+%s\n", @p; print STDOUT @p, "\n";
+print $x x 3, "\n"; print $x eq 7 ? "eq\n" : "ne\n"; print $x, @p, "\n"; print $x . "@p\n"; print $x if $y; print "\n"; print $x % $y, "\n"; print $x for 1 .. 2; print "\n";
+print $_ @p for $fh; print "\n"; my @fhs = ($fh); print $_ "each\n" for @fhs;
+sub out { my $o = shift; print $o @_ } out($fh, "s", "u", "b", "\n");
+}

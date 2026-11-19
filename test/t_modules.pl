@@ -82,3 +82,7 @@ eval { TestWhere::via(sub { die "callback" }) }; print "callback defined here: "
 eval { die "here" }; print "back in this file: ", tw_short($@);
 { my @w = TestWhere::where(); s{.*/}{} for @w; print "__FILE__ / caller: @w\n"; }
 print "done modules\n";
+# require されたファイルの先頭での caller (unless (caller) { ... } の慣用句が正しく働く)
+print "caller at file level: ", (caller() ? "has caller" : "no caller"), "\n";
+require TestCaller;
+print "caller in a required file: $TestCaller::top / $TestCaller::modulino / $TestCaller::sub0\n";

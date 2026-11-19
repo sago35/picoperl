@@ -323,9 +323,9 @@ static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *o
     pp_list_push(out, pp_cstr(f->file ? f->file : "-"));
     pp_list_push(out, pp_int(f->line));
     if (n->a) {
-        const char *name = f->code->u.code.name ? f->code->u.code.name : "__ANON__";
+        const char *name = !f->code ? "(eval)" : f->code->u.code.name ? f->code->u.code.name : "__ANON__";   /* no code: a require */
         char buf[200];
-        int len = pp_snprintf(buf, sizeof buf, "%s%s", strstr(name, "::") ? "" : "main::", name);
+        int len = pp_snprintf(buf, sizeof buf, "%s%s", !f->code || strstr(name, "::") ? "" : "main::", name);
         pp_list_push(out, pp_strn(buf, len >= (int)sizeof buf ? (int)sizeof buf - 1 : len));
         pp_list_push(out, pp_int(1));
         pp_list_push(out, f->ctx == CTX_LIST ? pp_int(1) : f->ctx == CTX_SCALAR ? pp_strn("", 0) : pp_undef());
@@ -2080,7 +2080,12 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
     const char *saved_file = I->file; int saved_line = I->line;
     pp_env *saved_env = I->env;
     I->file = fname;
+    /* the file runs as if called from the require: caller() at its top level names the
+       requiring code (so `unless (caller) { self-test }` stays quiet), like perl */
+    struct pp_frame fr = { I->frame, I->cur_code, I->file_pkg, saved_file, NULL, saved_line, CTX_SCALAR };
+    I->frame = &fr;
     pp_val r = pp_exec_unit(I, unit, CTX_SCALAR, NULL);
+    I->frame = fr.up;
     free(I->subdefs);
     I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
     I->env = saved_env;
