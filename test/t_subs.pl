@@ -103,4 +103,21 @@ my $bc_top = "top"; sub bc_file { $bc_top }
 { package BcPkg; sub early { "early" } }
 sub bc_outer { my $v = shift; sub bc_inner { defined $v ? "def" : "undef" } bc_inner() }
 print "block subs: ", bc_next(), bc_next(), bc_peek(), " ", bc_sum(), " ", bc_lookup("a"), bc_lookup("z"), " ", bc_file(), " ", BcPkg::early(), " ", bc_outer(1), "\n";
+# BEGIN / use constant から、その上で定義したサブを呼ぶ
+my $pd_file_var = "fv";
+sub pd_helper { "helped(@_)" }
+sub pd_file_var { defined $pd_file_var ? $pd_file_var : "undef" }
+our ($pd_from_begin, $pd_seen, $pd_later_known, $pd_unknown);
+BEGIN { $pd_from_begin = pd_helper(1); $pd_seen = pd_file_var(); }
+use constant PD_CONST => pd_helper("const");
+sub pd_later { "later" }
+BEGIN { *pd_alias = \&pd_helper; $pd_later_known = defined &pd_later ? "known" : "unknown"; $pd_unknown = defined &pd_not_yet ? "known" : "unknown"; }
+sub pd_not_yet { 1 }
+print "predefined subs: $pd_from_begin / $pd_seen / ", PD_CONST, " / ", pd_alias(2), " / ", pd_file_var(), " / $pd_later_known $pd_unknown\n";
+# use の行より前に定義したサブが、ファイルの my 変数を使う
+my $pu_var = 5;
+sub pu_before { "before:$pu_var" }
+use List::Util qw(sum);
+sub pu_after { "after:$pu_var" }
+print "subs around use: ", pu_before(), " ", pu_after(), " ", sum(1, 2), "\n";
 print "done\n";

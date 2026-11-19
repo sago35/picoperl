@@ -705,9 +705,40 @@ static int keeps_code_p(pp_node *n) {
     for (int i = 0; i < n->n; i++) if (keeps_code_p(n->list[i])) return 1;
     return 0;
 }
+/* Code that runs while the file is still being parsed (BEGIN, use, use constant) may call the
+   named subs defined above it, as in perl. Define the ones collected so far now, in the scope
+   the file will run in (pending_env), instead of waiting for pp_exec_unit. */
+static void predefine_subs(pp_parser *P) {
+    pp_interp *I = P->I;
+    pscopes *S = P->sc;
+    int todo = 0;
+    for (int i = 0; i < I->nsubdefs; i++) if (!(I->subdefs[i]->flags & PP_SUB_EARLY)) todo = 1;
+    if (!todo) return;
+    /* their bodies need the depth of each lexical now; the pass at the end of the file
+       computes the same values again */
+    for (int i = 0; i < S->nrecs; i++) {
+        int depth = 0, id = S->recs[i].own;
+        while (id != S->recs[i].target && id >= 0) { if (!S->collapsed[id]) depth++; id = S->parent_of[id]; }
+        if (id >= 0 && depth <= 250) S->recs[i].node->aux = (uint8_t)depth;
+    }
+    if (!I->pending_env) I->pending_env = pp_env_new(NULL, 0);
+    pp_env_grow(I->pending_env, S->st[0].n);
+    for (int i = 0; i < I->nsubdefs; i++) {
+        pp_node *d = I->subdefs[i];
+        if (d->flags & PP_SUB_EARLY) continue;
+        d->flags |= PP_SUB_EARLY;
+        pp_obj *code = pp_obj_new(PP_OCODE);
+        code->u.code.body = d->a;
+        code->u.code.env = I->pending_env; pp_env_incref(I->pending_env);
+        code->u.code.name = d->sym->name + 1;
+        code->u.code.block_proto = d->op == 1;
+        pp_define_sub(I, d->sym, code);
+    }
+}
 static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start) {
     pp_interp *I = P->I;
     scope_finalize(P, rec_start, id_start);
+    predefine_subs(P);
     pp_env *saved = I->env; int made = 0;
     if (!I->env) { I->env = pp_env_new(NULL, 0); made = 1; }
     const char *sf = I->file; int sl = I->line;

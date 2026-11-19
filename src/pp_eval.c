@@ -1439,14 +1439,27 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
     pp_hash_set(I->loaded, fn, fnlen, pp_int(1));
     int err = 0;
     char *fname = pp_xmalloc(fnlen + 1); memcpy(fname, fn, fnlen + 1);   /* outlives the AST */
+    /* the file that asked for this one (a `use` in a file still being parsed) keeps its own
+       list of subs waiting to be defined, and its own file scope */
+    pp_node **outer_subs = I->subdefs; int outer_nsubs = I->nsubdefs;
+    pp_env *outer_pending = I->pending_env;
+    I->subdefs = NULL; I->nsubdefs = 0; I->pending_env = NULL;
     pp_node *unit = pp_parse(I, fname, src, &err);
     free(src);
-    if (err) { free(fname); return pp_die(I, "Compilation failed in require"); }
+    if (err) {
+        free(fname);
+        if (I->pending_env) pp_env_decref(I->pending_env);
+        free(I->subdefs);
+        I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
+        return pp_die(I, "Compilation failed in require");
+    }
     track_unit(I, unit, fname);
     const char *saved_file = I->file; int saved_line = I->line;
     pp_env *saved_env = I->env;
     I->file = fname;
     pp_val r = pp_exec_unit(I, unit, CTX_SCALAR, NULL);
+    free(I->subdefs);
+    I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
     I->env = saved_env;
     I->file = saved_file; I->line = saved_line;
     return r;
@@ -2243,11 +2256,15 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     pp_env *saved = I->env;
     const char *saved_pkg = I->file_pkg;
     I->file_pkg = NULL;                  /* every file starts in package main */
-    pp_env *env = pp_env_new(NULL, unit->aux);
+    /* the file scope: the one subs defined during parsing already closed over, if any */
+    pp_env *env = I->pending_env ? I->pending_env : pp_env_new(NULL, unit->aux);
+    I->pending_env = NULL;
+    pp_env_grow(env, unit->aux);
     I->env = env;
     /* named subs are defined before the unit body runs; they close over the unit scope */
     for (int i = 0; i < I->nsubdefs; i++) {
         pp_node *d = I->subdefs[i];
+        if (d->flags & PP_SUB_EARLY) continue;       /* a BEGIN block needed it: defined already */
         pp_obj *code = pp_obj_new(PP_OCODE);
         code->u.code.body = d->a;
         code->u.code.env = env; pp_env_incref(env);
@@ -2319,6 +2336,7 @@ pp_interp *pp_new(void) {
 
 void pp_free(pp_interp *I) {
     if (!I) return;
+    if (I->pending_env) { pp_env_decref(I->pending_env); I->pending_env = NULL; }
     hold(I, NULL);
     local_unwind(I, 0);
     free(I->locals);
@@ -2421,7 +2439,11 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
     I->stack_base = &base;                /* the parser checks the watermark too (deep nesting) */
     if (!I->stack_limit) I->stack_limit = PP_DEFAULT_STACK_LIMIT;
     pp_node *unit = pp_parse(I, filename, src, &err);
-    if (err) { I->stack_base = NULL; return 255; }
+    if (err) {
+        if (I->pending_env) { pp_env_decref(I->pending_env); I->pending_env = NULL; }
+        I->stack_base = NULL;
+        return 255;
+    }
     char *fname = pp_xmalloc(strlen(filename) + 1); strcpy(fname, filename);
     track_unit(I, unit, fname);
     I->ctl = CTL_NONE;

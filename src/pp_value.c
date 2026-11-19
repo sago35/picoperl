@@ -505,6 +505,13 @@ pp_sym *pp_intern(pp_interp *I, const char *name, int len) {
     return s;
 }
 
+void pp_env_grow(pp_env *e, int nslots) {
+    if (nslots <= e->n) return;
+    e->cells = pp_xrealloc(e->cells, nslots * sizeof(pp_obj *));
+    for (int i = e->n; i < nslots; i++) e->cells[i] = NULL;
+    e->n = e->cap = nslots;
+}
+
 /* like pp_intern, but NULL when the name was never interned (does not create a symbol) */
 pp_sym *pp_sym_find(pp_interp *I, const char *name, int len) {
     unsigned h = hash_bytes(name, len);

@@ -273,6 +273,10 @@ reftype refaddr indexed)`、
 `${^UNICODE}` (0)、`${^GLOBAL_PHASE}` (`RUN`、`END` ブロックの中では `END`) だけで、
 `${^WARNING_BITS}` などは undef です。`%^H` に書いてもレキシカルなヒントとしては働きません。
 
+`BEGIN { ... }`、`use`、`use constant NAME => helper();` のようにパース中に実行されるコードから、
+その行より上で定義した名前付きサブを呼べます (perl と同じ)。その時点ではファイルの `my` 変数には
+まだ値が入っていません。
+
 ブロックの `my` 変数を使う名前付きサブ (`{ my $n = 0; sub next_id { ++$n } }`) は、そのブロックが
 実行されたときに定義されます。ブロックより前で呼ぶと `Undefined subroutine` になり、ループの中に
 書くと繰り返しのたびに定義し直されます (perl は最初の 1 回の変数を使い続けます)。

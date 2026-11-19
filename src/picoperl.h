@@ -229,6 +229,7 @@ struct pp_node {
     };
 };
 #define PP_NODE_HEAP 0x80
+#define PP_SUB_EARLY 0x08          /* N_SUBDEF: already defined while parsing (a BEGIN block or `use` needed it) */
 #define PP_SUB_INPLACE 0x10        /* N_SUBDEF: not defined up front, see N_SUBCLOSE */
 #define PP_BLOCK_PKG 0x10          /* N_BLOCK: contains a `package` statement, restore the package on exit */
 #define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
@@ -305,6 +306,8 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    pp_env  *pending_env;        /* file scope of the file being parsed, made early when a BEGIN block
+                                    needs the subs defined so far; pp_exec_unit runs the file in it */
     const char *file_pkg;        /* package of the file-level code being run (NULL = main), for caller */
     struct pp_frame *frame;      /* innermost sub call (frames live on the C stack of pp_call) */
     pp_val   try_err;            /* error being handed to a catch block */
