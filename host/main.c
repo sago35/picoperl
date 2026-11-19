@@ -57,6 +57,25 @@ void *pp_host_fopen(const char *path, const char *mode) {
     return fopen(path, m);
 }
 const char *pp_host_strerror(int errnum) {
+#ifdef __EMSCRIPTEN__
+    /* wasm numbers its errors differently (ENOENT is 44). Scripts see the usual numbers, the
+       same ones the boards report, so that `$! == 2` means the same thing everywhere. */
+    switch (errnum) {
+    case 1:  return "Operation not permitted";
+    case 2:  return "No such file or directory";
+    case 5:  return "Input/output error";
+    case 9:  return "Bad file descriptor";
+    case 12: return "Out of memory";
+    case 13: return "Permission denied";
+    case 17: return "File exists";
+    case 20: return "Not a directory";
+    case 21: return "Is a directory";
+    case 22: return "Invalid argument";
+    case 28: return "No space left on device";
+    case 39: return "Directory not empty";
+    default: return NULL;
+    }
+#endif
     if (errnum <= 0 || errnum > 133) return NULL;
     const char *m = strerror(errnum);
     return m && strncmp(m, "Unknown error", 13) ? m : NULL;
