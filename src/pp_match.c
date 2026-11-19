@@ -264,6 +264,11 @@ pp_val pp_eval_subst(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         count++;
         set_captures(I, re, s->d, caps, re->ncap);
         str_append(&result, s->d + last, caps[0] - last);
+        if ((flags & PP_M_E) && !(flags & PP_M_R) && (!n->a || (n->a->type == N_VAR && n->a->sym->name[0] == '$'))) {
+            /* the replacement code may ask pos(): it is where this match starts */
+            pp_pos_ent *pe = pos_entry(I, n->a ? pp_var_cell(I, n->a) : I->g_underscore, s, 1);
+            pe->pos = caps[0]; pe->empty = 0;
+        }
         pp_val rv = pp_eval(I, n->c, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(rv); break; }
         if (I->warn_on && rv.t == PP_UNDEF) pp_warn_uninit(I, "substitution iterator", pp_var_name_of(n->c));

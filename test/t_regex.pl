@@ -97,3 +97,10 @@ print "B29: ", ("ab" =~ /^(a)(x)?(b)$/ ? (defined $2 ? "def" : "undef") : "no"),
 my @caps = "ab" =~ /^(a)(x)?(b)$/; print "30: ", scalar(@caps), " ", defined($caps[1]) ? 1 : 0, "\n";
 print "B31: ", "abc" =~ /B/i ? "yes" : "no", "\n";
 }
+# s///e: 置換式の中の pos() は一致の開始位置、置換式には複数の文を書ける
+my $pe = "aXbXc"; $pe =~ s/X/pos($pe)/ge; $_ = "aXbX"; s/X/pos()/ge;
+my $pt = "a\tb"; $pt =~ s/(\t)/"[" . pos($pt) . "]"/e;
+print "pos in s///e: $pe $_ $pt\n";
+$_ = "a\tb\tc"; my $po = 0; s{\t}{ my $p = 8 - ((pos() + $po) % 8); $po += $p - 1; " " x $p }ge;
+my $pb = "q.r"; $pb =~ s{\.}{ "{" . 1 . "}" }e; my $pm = "n=5"; $pm =~ s/(\d+)/my $d = $1 * 2; $d + 1/e;
+print "statements in s///e: [$_] $pb $pm\n";

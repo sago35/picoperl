@@ -869,6 +869,7 @@ static pp_sym *sym_sigil(pp_parser *P, char sigil, const char *name, int len) {
 }
 
 static pp_node *node(pp_parser *P, int type);
+#define PARSE_AS_BLOCK 0x40000000   /* flag in the `line` argument of parse_expr_shared */
 static pp_node *parse_expr_shared(pp_parser *parent, const char *src, int len, int line, int *err);
 /* N_VAR for a variable use */
 static pp_node *mkvar(pp_parser *P, char sigil, const char *name, int len) {
@@ -1329,7 +1330,8 @@ static pp_node *parse_pattern_term(pp_parser *P) {
     pp_node *n = node(P, N_SUBST); n->line = (uint16_t)line; n->b = pat; n->op = (uint8_t)op; n->aux = (uint8_t)cflags;
     if (op & PP_M_E) {
         int err = 0;
-        pp_node *code = parse_expr_shared(P, t.s2, t.len2, line, &err);
+        /* the replacement is code: one expression, or several statements (the last one's value) */
+        pp_node *code = parse_expr_shared(P, t.s2, t.len2, line | (memchr(t.s2, ';', (size_t)t.len2) ? PARSE_AS_BLOCK : 0), &err);
         if (err || !code) longjmp(P->jb, 1);
         n->c = code;
     }
@@ -3074,9 +3076,12 @@ pp_node *pp_parse_eval(pp_interp *I, const char *filename, const char *src, pp_n
     return parse_unit(I, filename, src, &err, site, errbuf, errcap, arena);
 }
 
-/* parse an interpolated expression with the scopes of the enclosing parser */
+/* parse an interpolated expression with the scopes of the enclosing parser; with
+   PARSE_AS_BLOCK or'ed into the line, a sequence of statements as a block of its own */
 static pp_node *parse_expr_shared(pp_parser *parent, const char *src, int len, int line, int *err) {
     pp_parser P;
+    int as_block = (line & PARSE_AS_BLOCK) != 0;
+    line &= ~PARSE_AS_BLOCK;
     parser_init(&P, parent->I, parent->file, src, len, line, parent);
     *err = 0;
     if (setjmp(P.jb)) {
@@ -3085,7 +3090,15 @@ static pp_node *parse_expr_shared(pp_parser *parent, const char *src, int len, i
         *err = 1; parser_free(&P); return NULL;
     }
     advance(&P);
-    pp_node *e = parse_expr(&P);
+    pp_node *e;
+    if (as_block) {
+        e = node(&P, N_BLOCK);
+        scope_push(&P, SCOPE_BLOCK);
+        while (P.cur.type != T_EOF) { pp_node *st = parse_statement(&P); if (st) node_add(e, st); }
+        int nv = scope_pop(&P);
+        if (nv) { e->flags |= 1; e->aux = (uint8_t)nv; }
+    }
+    else e = parse_expr(&P);
     if (P.cur.type != T_EOF) { snprintf(parent->errmsg, sizeof parent->errmsg, "syntax error in interpolated string"); *err = 1; parser_free(&P); return NULL; }
     parser_free(&P);
     return e;
