@@ -181,6 +181,7 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_END,          /* END { ... }: a: N_ANONSUB; evaluating it queues the block to run at exit */
     N_FILETEST,     /* -e $path etc.: op: the letter (e f d s z r w x l), a: path expr */
     N_CALLER,       /* caller / caller(N): a: frame number expr or NULL */
     N_PACKAGE,      /* `package X;` at run time: sym = package name (interned, no sigil; NULL = main).

@@ -2081,6 +2081,12 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_GLOB: return eval_glob(I, n, ctx, out);
     case N_CALLER: return eval_caller(I, n, ctx, out);
     case N_FILETEST: return eval_filetest(I, n, ctx, out);
+    case N_END: {   /* queue the block; pp_run calls the queue in reverse order */
+        pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(code); return pp_undef(); }
+        pp_array_push(pp_global(I, pp_intern(I, "@ END", 5)), code);
+        return pp_undef();
+    }
     case N_PACKAGE: I->file_pkg = n->sym ? n->sym->name : NULL; return pp_undef();
     case N_NAMEDBIND: {
         pp_obj *args = current_args(I);
@@ -2331,6 +2337,11 @@ void pp_events_poll(pp_interp *I) {
     I->in_dispatch = 0;
 }
 
+static void report_die(pp_interp *I) {
+    pp_str *s = pp_to_str(I->err);
+    pp_host_write(2, s->d, s->len);
+    pp_str_decref(s);
+}
 int pp_run(pp_interp *I, const char *filename, const char *src) {
     int err = 0;
     I->file = filename;
@@ -2343,16 +2354,29 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
     track_unit(I, unit, fname);
     I->ctl = CTL_NONE;
     pp_val r = pp_exec_unit(I, unit, CTX_VOID, NULL);
-    I->stack_base = NULL;
     pp_release(r);
-    if (I->ctl == CTL_DIE) {
-        pp_str *s = pp_to_str(I->err);
-        pp_host_write(2, s->d, s->len);
-        pp_str_decref(s);
-        I->ctl = CTL_NONE;
-        return 255;
-    }
-    if (I->ctl == CTL_EXIT) { I->ctl = CTL_NONE; return I->exit_code; }
+    int rc = 0;
+    if (I->ctl == CTL_DIE) { report_die(I); rc = 255; }
+    else if (I->ctl == CTL_EXIT) rc = I->exit_code;
     I->ctl = CTL_NONE;
-    return 0;
+    /* END blocks: last queued first, also after die and exit. They see the exit code in $?
+       and may change it. */
+    pp_obj *ends = pp_global(I, pp_intern(I, "@ END", 5));
+    if (ends->u.arr.n > 0) {
+        pp_obj *status = pp_global(I, pp_intern(I, "$?", 2));
+        pp_release(status->u.scalar); status->u.scalar = pp_int(rc);
+        while (ends->u.arr.n > 0) {
+            pp_val code = ends->u.arr.v[--ends->u.arr.n];
+            pp_list args = {0};
+            if (code.t == PP_REF && code.u.o->kind == PP_OCODE) { pp_val v = pp_call(I, code.u.o, &args, CTX_VOID, NULL); pp_release(v); }
+            pp_list_free(&args);
+            pp_release(code);
+            if (I->ctl == CTL_DIE) report_die(I);
+            else if (I->ctl == CTL_EXIT) { pp_release(status->u.scalar); status->u.scalar = pp_int(I->exit_code); }
+            I->ctl = CTL_NONE;
+        }
+        rc = (int)pp_to_int(status->u.scalar) & 255;
+    }
+    I->stack_base = NULL;
+    return rc;
 }

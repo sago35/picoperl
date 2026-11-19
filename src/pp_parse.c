@@ -185,7 +185,7 @@ static int lex_glob_position(pp_lex *L) {
 static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
         char c = name[0];
-        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^' || c == ']')) return 1;
+        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^' || c == ']' || c == '?')) return 1;
         if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
         if (sigil == '%' && c == '+') return 1;
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
@@ -557,7 +557,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         else if (c1 == '^' && isupper(peekc(L, 2))) {   /* $^O, $^W, ...: the name is "^O" */
             L->pos += 3; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
         }
-        else if (c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-') {
+        else if (c1 == '?' || c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-') {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
@@ -947,7 +947,7 @@ static int interp_extent(const char *s, int len, int i) {
     }
     else if (s[i] == '$' && s[j] == '^' && j + 1 < len && isupper((unsigned char)s[j+1])) j += 2;   /* $^O */
     else if (s[i] == '$' && s[j] == ']') return j + 1;                                                /* $] */
-    else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&' || s[j] == '+' || s[j] == '-')) {
+    else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&' || s[j] == '+' || s[j] == '-' || s[j] == '?')) {
         j++;
         while (isdigit((unsigned char)s[j-1]) && j < len && isdigit((unsigned char)s[j])) j++;
     }
@@ -2618,7 +2618,14 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             exec_at_parse(P, b, rs, is);
             return NULL;
         }
-        if (tok_is_ident(t, "END")) { advance(P); return parse_block(P); }
+        if (tok_is_ident(t, "END") && is_op(nx, "{")) {
+            /* END { ... } is an anonymous sub that runs at exit: parse it as `sub { ... }` */
+            pp_node *n = node(P, N_END);
+            P->cur.s = "sub"; P->cur.len = 3;
+            n->a = parse_ident_term(P);
+            accept_op(P, ";");
+            return n;
+        }
     }
 
     pp_node *e = parse_expr(P);
