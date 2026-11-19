@@ -61,4 +61,11 @@ print "caller while loading: ", LoaderPkg::load(), " / body: $TestCallerUser::bo
 { package EmptyImp3; use TestImpChild (); }
 print "empty import list: ", EmptyImp::has(), " ", EmptyImp::direct(), " ", EmptyImp2::has(), " ", (grep({ /EmptyImp3/ } @TestImpBase::log) ? "import called" : "import not called"), "\n";
 print "builtins are not methods: ", (main->can('chdir') ? "can" : "cannot"), "\n";
+# use lib / @INC / %INC
+use lib 'test/lib/inc_a';
+use IncMod; use Deep::Mod;
+print "use lib: ", IncMod::hi(), " ", Deep::Mod::hi(), " ", $INC{"IncMod.pm"}, " ", $INC{"Deep/Mod.pm"}, " [$INC[0]]\n";
+unshift @INC, "test/lib/inc_b"; require IncOther;
+print "unshift \@INC: ", IncOther::hi(), " $INC{'IncOther.pm'}\n";
+eval { require No::Such::Thing::Here }; print "not in \@INC: ", ($@ =~ /^Can't locate No\/Such\/Thing\/Here\.pm in \@INC/ ? "dies" : $@), "\n";
 print "done modules\n";

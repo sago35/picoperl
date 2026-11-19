@@ -532,6 +532,7 @@ int main(int argc, char **argv) {
     I_for_stats = I;
     if (getenv("PICOPERL_STACK_LIMIT")) I->stack_limit = (size_t)atol(getenv("PICOPERL_STACK_LIMIT"));   /* emulate the board's stack budget */
     if (getenv("PICOPERL_MAX_DEPTH")) I->max_depth = atoi(getenv("PICOPERL_MAX_DEPTH"));
+    pp_global(I, pp_intern(I, "$$", 2))->u.scalar = pp_int((int64_t)getpid());
     {   /* %ENV: a copy of the process environment (changing it does not change the real one) */
         extern char **environ;
         pp_obj *env = pp_global(I, pp_intern(I, "%ENV", 4));

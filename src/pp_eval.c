@@ -1504,8 +1504,26 @@ void pp_request_exit(pp_interp *I, int code) {
 static pp_val do_require(pp_interp *I, const char *fn, int force) {
     int fnlen = (int)strlen(fn);
     if (!force && pp_hash_find(I->loaded, fn, fnlen)) return pp_int(1);
-    char *src = pp_host_read_file(fn);
+    /* the directories in @INC (use lib 'dir'; unshift @INC, ...) come first, then the places
+       the host looks in by itself. A path that says where it is (/abs, ./rel) is taken as is. */
+    char *src = NULL;
+    char found[512];
+    pp_snprintf(found, sizeof found, "%s", fn);
+    if (fn[0] != '/' && !(fn[0] == '.' && (fn[1] == '/' || (fn[1] == '.' && fn[2] == '/')))) {
+        pp_obj *inc = pp_global(I, pp_intern(I, "@INC", 4));
+        for (int i = 0; i < inc->u.arr.n && !src; i++) {
+            if (inc->u.arr.v[i].t != PP_STR || inc->u.arr.v[i].u.s->len == 0) continue;
+            pp_snprintf(found, sizeof found, "%s/%s", inc->u.arr.v[i].u.s->d, fn);
+            src = pp_host_read_file(found);
+        }
+        if (!src) pp_snprintf(found, sizeof found, "%s", fn);
+    }
+    if (!src) src = pp_host_read_file(fn);
     if (!src) return pp_die(I, "Can't locate %s in @INC (you may need to install the module)", fn);
+    {   /* %INC: what was loaded, and from where */
+        pp_val *slot = pp_hash_slot(pp_global(I, pp_intern(I, "%INC", 4)), fn, fnlen);
+        pp_release(*slot); *slot = pp_cstr(found);
+    }
     pp_hash_set(I->loaded, fn, fnlen, pp_int(1));
     int err = 0;
     char *fname = pp_xmalloc(fnlen + 1); memcpy(fname, fn, fnlen + 1);   /* outlives the AST */
@@ -2622,6 +2640,9 @@ pp_interp *pp_new(void) {
     I->g_at->u.scalar = pp_strn("", 0);
     I->g_argv = pp_global(I, pp_intern(I, "@ARGV", 5));
     pp_global(I, pp_intern(I, "$!", 2))->u.scalar = pp_int(0);       /* no error yet */
+    pp_global(I, pp_intern(I, "$$", 2))->u.scalar = pp_int(1);       /* process id: the host sets the real one */
+    pp_global(I, pp_intern(I, "@INC", 4));                           /* directories `require` looks in first */
+    pp_global(I, pp_intern(I, "%INC", 4));
     I->g_ofs = pp_global(I, pp_intern(I, "$,", 2));
     I->g_ors = pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);

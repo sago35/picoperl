@@ -2539,7 +2539,7 @@ static pp_node *parse_cond_block(pp_parser *P, int is_unless) {
 }
 
 static const char *ignored_modules[] = {
-    "utf8", "feature", "lib", "Exporter", "integer", "bytes",
+    "utf8", "feature", "Exporter", "integer", "bytes",
     "overload", "diagnostics", "experimental", "FindBin", "English", NULL
 };
 
@@ -2601,6 +2601,18 @@ static pp_node *parse_use(pp_parser *P) {
         } else top->warnings = !is_no;
         expect_op(P, ";");
         return NULL;
+    }
+    if (cur_is_ident(P, "lib")) {   /* use lib LIST: unshift @INC, LIST (runs now, like every use) */
+        advance(P);
+        if (is_no || cur_is_op(P, ";")) { while (!cur_is_op(P, ";") && P->cur.type != T_EOF) advance(P); accept_op(P, ";"); return NULL; }
+        pp_node *u = node(P, N_BUILTIN);
+        u->op = (uint8_t)pp_builtin_id("unshift", 7, NULL);
+        pp_node *inc = node(P, N_VAR);
+        inc->sym = pp_intern(P->I, "@INC", 4);
+        node_add(u, inc);
+        take_children(u, wrap_list(P, parse_expr(P)));
+        expect_op(P, ";");
+        return u;
     }
     if (cur_is_ident(P, "vars") && !is_no) {   /* use vars qw($x @y %z): package globals, like `our` */
         advance(P);
