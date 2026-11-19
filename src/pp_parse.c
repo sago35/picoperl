@@ -634,6 +634,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
+        else if (c1 == ')') { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }                    /* sub f ($x, $): a nameless parameter */
         else perr(P, "unexpected character after '$'");
     }
     else if (c == '@' && (!L->prev_term || L->prev_brace)) {
@@ -2069,10 +2070,14 @@ static int skip_prototype(pp_parser *P) {
 }
 static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs) {
     if (noargs) *noargs = cur_is_op(P, ")");
-    if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0])) && !cur_is_op(P, ":")) {
+    /* a nameless '$' parameter reaches us as the variable "$," or "$)" (the comma or the
+       closing parenthesis swallowed by the lexer) */
+#define ANON_PARAM(P) (((P)->cur.type == T_VAR && (P)->cur.sigil == '$' && (P)->cur.len == 1 && ((P)->cur.s[0] == ',' || (P)->cur.s[0] == ')')) \
+                       || ((P)->cur.type == T_CAST && !strcmp((P)->cur.op, "$")))
+    if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0])) && !cur_is_op(P, ":") && !ANON_PARAM(P)) {
         while (!cur_is_op(P, ")") && P->cur.type != T_EOF) {   /* prototype: ignored */
             if (P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0]))
-                perr(P, "unsupported subroutine signature (anonymous '$' parameters are not supported)");
+                perr(P, "unsupported subroutine signature");
             advance(P);
         }
         expect_op(P, ")");
@@ -2086,9 +2091,19 @@ static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *
     else snprintf(full, sizeof full, "%s::%s", P->pkg[0] ? P->pkg : "main", subname);
     chk->a = const_str(P, full, (int)strlen(full));
     node_add(b, chk);
-    int idx = 0, min = -1, slurpy = 0, nstmt = 1;
+    int idx = 0, min = -1, slurpy = 0, nstmt = 1, closed = 0;
     pp_node *named = NULL;
     while (!cur_is_op(P, ")")) {
+        if (ANON_PARAM(P)) {                         /* ($, $x): an argument that is taken but not named */
+            int bare = P->cur.type == T_CAST;        /* a lone '$': the ',' or ')' is still to come */
+            closed = !bare && P->cur.s[0] == ')';
+            idx++;
+            if (!P->has_nxt) P->L.prev_term = 0;     /* what follows starts a term ("@rest") */
+            advance(P);
+            if (closed) break;
+            if (bare && !accept_op(P, ",")) break;
+            continue;
+        }
         if (cur_is_op(P, ":")) {                     /* :$name / :$name = default (5.44) */
             if (!named) {
                 named = node(P, N_NAMEDBIND);
@@ -2173,7 +2188,7 @@ static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *
         node_add(b, as); nstmt++;
         if (!accept_op(P, ",")) break;
     }
-    expect_op(P, ")");
+    if (!closed) expect_op(P, ")");
     chk->op = (uint8_t)(min >= 0 ? min : idx);
     chk->aux = (uint8_t)((slurpy || named) ? 255 : idx);
     chk->b = const_int(P, idx);
@@ -2481,7 +2496,11 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 8 && !memcmp(id, "__LINE__", 8)) { advance(P); return const_int(P, line); }
     if (len == 8 && !memcmp(id, "__FILE__", 8)) { advance(P); return const_str(P, P->file, (int)strlen(P->file)); }
     if (len == 11 && !memcmp(id, "__PACKAGE__", 11)) { advance(P); return parse_postfix(P, const_str(P, P->pkg, (int)strlen(P->pkg))); }
-    if (len == 2 && !memcmp(id, "my", 2)) { advance(P); return parse_var_decl_list(P, 'm'); }
+    if (len == 2 && !memcmp(id, "my", 2)) {
+        advance(P);
+        if (P->cur.type == T_IDENT && (peek(P)->type == T_VAR || is_op(peek(P), "("))) advance(P);   /* my Class $obj: the class name is only a note */
+        return parse_var_decl_list(P, 'm');
+    }
     if (len == 5 && !memcmp(id, "state", 5)) {
         pp_tok *nx1 = peek(P);
         if (nx1->type == T_VAR || (nx1->type == T_OP && !strcmp(nx1->op, "("))) {
@@ -2492,6 +2511,12 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 3 && !memcmp(id, "our", 3)) { advance(P); return parse_var_decl_list(P, 'o'); }
     if (len == 5 && !memcmp(id, "local", 5)) {
         advance(P);
+        if (cur_is_ident(P, "our")) {   /* local our ($x, @y): declare the package variables, then localize them */
+            advance(P);
+            pp_node *m = parse_var_decl_list(P, 'o');
+            m->op = 'l';
+            return m;
+        }
         if (P->cur.type == T_VAR && (P->cur.sigil == '$' || P->cur.sigil == '@')) {
             pp_tok *nx = peek(P);
             if (nx->type == T_OP && !nx->space_before && (!strcmp(nx->op, "{") || !strcmp(nx->op, "[") || !strcmp(nx->op, "->"))) {
@@ -3063,6 +3088,11 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             return w;
         }
 
+        if ((tok_is_ident(t, "my") || tok_is_ident(t, "our") || tok_is_ident(t, "state")) && tok_is_ident(nx, "sub")) {
+            /* my sub name { ... }: a lexical sub; here it is an ordinary sub of the package */
+            advance(P);
+            nx = peek(P);
+        }
         if (tok_is_ident(t, "sub") && nx->type == T_IDENT) {
             advance(P);
             pp_node *n = node(P, N_SUBDEF);

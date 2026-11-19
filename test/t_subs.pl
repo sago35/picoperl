@@ -195,3 +195,24 @@ print "done\n";
     sub def_next { return $dch = undef if $dat >= 3; $dch = substr($dtext, $dat++, 1) }
     my $dn = 0; while (defined(def_next())) { $dn++ } print "defined in while: $dn\n";
 }
+# my sub (レキシカルサブ)、local our (...)、my Class $obj
+{
+    use feature qw(lexical_subs signatures); no warnings;
+my sub ls_add ($x, $y) { $x + $y } my sub ls_twice { 2 * shift } print ls_add(2, 3), " ", ls_twice(4), "\n";
+{ package LS; my sub helper { "helper:@_" } sub pub { helper(shift) } } print LS::pub("x"), "\n";
+    package VdFoo; sub new { bless { v => 5 }, shift } package main;
+    my VdFoo $vobj = VdFoo->new; my VdFoo ($vo1, $vo2) = (VdFoo->new, 2); print "typed my: $vobj->{v} $vo1->{v} $vo2\n";
+    our ($vtopdir, $vtopdev) = ("orig", 1);
+    sub vshow { "$vtopdir/$vtopdev" }
+    sub vinner { local our ($vtopdir, $vtopdev) = ("local", 2); vshow() }
+    print "local our: ", vinner(), " ", vshow(), "\n";
+    { local our $vsingle = "s"; local our @varr = (1, 2); print "local our single: $vsingle @varr $main::vsingle\n"; } print "after: ", (defined $main::vsingle ? "still" : "restored"), " ", scalar(@main::varr), "\n";
+}
+# 名前のない引数を含むシグネチャ ($, @rest)
+{
+    use feature "signatures"; no warnings;
+sub sg_imp ($, @ops) { "ops=@ops" } sub sg_mid ($a, $, $c) { "$a$c" } sub sg_last ($x, $) { "x=$x" } sub sg_two ($, $) { "two" }
+print sg_imp("Class", 1, 2), " ", sg_mid(1, 2, 3), " ", sg_last(7, 8), " ", sg_two(1, 2), "\n";
+print eval { sg_mid(1, 2); 1 } ? "no error" : "too few: " . ($@ =~ /Too few arguments/ ? "ok" : $@), "\n";
+print eval { sg_last(1, 2, 3); 1 } ? "no error" : "too many: " . ($@ =~ /Too many arguments/ ? "ok" : $@), "\n";
+}

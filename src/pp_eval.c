@@ -3414,6 +3414,10 @@ pp_interp *pp_new(void) {
         pp_obj *irs = pp_global(I, pp_intern(I, "$/", 2));
         if (irs->u.scalar.t == PP_UNDEF) irs->u.scalar = pp_strn("\n", 1);
     }
+    {   /* $^H (compile-time hints) is a number; nothing here reads it, pragmas written in perl set bits in it */
+        pp_obj *hints = pp_global(I, pp_intern(I, "$^H", 3));
+        if (hints->u.scalar.t == PP_UNDEF) hints->u.scalar = pp_int(0);
+    }
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
     /* ${^NAME} variables scripts commonly read: no taint mode, no -C, and the main program is running */
     pp_global(I, pp_intern(I, "$^TAINT", 7))->u.scalar = pp_int(0);
