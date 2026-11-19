@@ -896,7 +896,7 @@ static pp_sym *sym_sigil(pp_parser *P, char sigil, const char *name, int len) {
             int n = pp_snprintf(buf, sizeof buf, "&%s::%.*s", P->pkg, len, name);
             return pp_intern(P->I, buf, n);
         }
-        for (int i = 0; i < P->nours; i++)
+        for (int i = P->nours - 1; i >= 0; i--)   /* newest first: a later `our` of the same name in another package wins */
             if (P->our_names[i][0] == sigil && (int)strlen(P->our_names[i]) == len + 1 && memcmp(P->our_names[i] + 1, name, len) == 0)
                 return P->our_syms[i];
     }
@@ -1074,6 +1074,10 @@ static int interp_extent(const char *s, int len, int i) {
     }
     else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
         return interp_extent(s, len, j);
+    }
+    else if (s[i] == '@' && s[j] == '$' && j + 1 < len && is_ident_start((unsigned char)s[j+1])) {   /* "@$ref" */
+        j++;
+        while (j < len && is_ident_char((unsigned char)s[j])) j++;
     }
     else if (s[i] == '$' && s[j] == '^' && j + 1 < len && isupper((unsigned char)s[j+1])) j += 2;   /* $^O */
     else if (s[i] == '$' && (s[j] == ']' || s[j] == '.')) return j + 1;                                /* $] and $. */

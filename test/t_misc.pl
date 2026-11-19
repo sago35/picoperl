@@ -138,3 +138,9 @@ print "done\n";
     print "not: ", join("|", map { $_ ? 1 : 0 } $na, $nb, $nc, @nl, $nh{not}, $ne, (not($nt) || 1), (not($nf) && 0), scalar(not($nt) + 5)), " $nd ", scalar(@nl), scalar(@nm), "\n";
     print "not stmt\n" if not NOT_NO and not $nb;
 }
+# 別のパッケージで同じ名前を our し直したら、新しい方を指す。文字列の中の "@$ref"
+{
+    package OurA; our @olog = ("a"); our $oy; $oy = 1; package OurB; our @olog; push @olog, "b"; our $oy; $oy = 2;
+    package main; print "our again: @OurA::olog | @OurB::olog | $OurA::oy $OurB::oy\n";
+    my @ia = (1, 2, 3); my $iar = \@ia; print "array ref in string: @$iar | @$iar[0,1] | a@$iar.\n";
+}
