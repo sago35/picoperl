@@ -2530,7 +2530,7 @@ static NOINLINE pp_val eval_anonsub(pp_interp *I, pp_node *n, int ctx, pp_list *
     pp_note_sub_file(I, n->a, I->file);
     code->u.code.env = I->env; if (I->env) pp_env_incref(I->env);
     code->u.code.name = n->sym ? n->sym->name : "__ANON__";   /* "Pkg::__ANON__" outside main */
-    code->u.code.block_proto = n->op == 1;
+    code->u.code.block_proto = n->op == 1; code->u.code.pscalar = n->aux;
     pp_val r = pp_ref(code); pp_obj_decref(code);
     return scalar_or_push(ctx, out, r);
 }
@@ -2937,7 +2937,7 @@ static NOINLINE pp_val eval_subdef(pp_interp *I, pp_node *n) {
     pp_note_sub_file(I, n->a, I->file);
     code->u.code.env = I->env; if (I->env) pp_env_incref(I->env);
     code->u.code.name = n->sym->name + 1;
-    code->u.code.block_proto = n->op == 1;
+    code->u.code.block_proto = n->op == 1; code->u.code.pscalar = n->aux;
     pp_define_sub(I, n->sym, code);
     return pp_undef();
 }
@@ -3353,7 +3353,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         pp_note_sub_file(I, d->a, I->file);
         code->u.code.env = env; pp_env_incref(env);
         code->u.code.name = d->sym->name + 1;
-        code->u.code.block_proto = d->op == 1;
+        code->u.code.block_proto = d->op == 1; code->u.code.pscalar = d->aux;
         pp_define_sub(I, d->sym, code);
     }
     I->nsubdefs = 0;

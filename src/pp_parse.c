@@ -86,6 +86,8 @@ struct pp_parser {
     int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
+    int proto_mask;                              /* '$' positions of the prototype skip_prototype just read */
+    unsigned char *declmask;                     /* per declared sub (decl[]): that mask */
     int argw;                                    /* the sub being parsed writes to $_[N] (or loops over @_) */
 };
 
@@ -816,7 +818,7 @@ static void predefine_subs(pp_parser *P) {
         pp_note_sub_file(I, d->a, P->file);
         code->u.code.env = I->pending_env; pp_env_incref(I->pending_env);
         code->u.code.name = d->sym->name + 1;
-        code->u.code.block_proto = d->op == 1;
+        code->u.code.block_proto = d->op == 1; code->u.code.pscalar = d->aux;
         pp_define_sub(I, d->sym, code);
     }
 }
@@ -973,7 +975,9 @@ static void declare_sub(pp_parser *P, pp_sym *s, int noargs) {
         P->capdecl = P->capdecl ? P->capdecl * 2 : 16;
         P->decl = pp_xrealloc(P->decl, P->capdecl * sizeof(pp_sym *));
         P->declnoargs = pp_xrealloc(P->declnoargs, P->capdecl);
+        P->declmask = pp_xrealloc(P->declmask, P->capdecl);
     }
+    P->declmask[P->ndecl] = 0;
     P->declnoargs[P->ndecl] = (unsigned char)noargs;
     P->decl[P->ndecl++] = s;
 }
@@ -983,6 +987,24 @@ static int is_block_proto(pp_parser *P, pp_sym *s) {
     for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return (P->declnoargs[i] & 4) != 0;
     pp_obj *c = pp_lookup_sub(P->I, s);
     return c && c->u.code.block_proto;
+}
+/* A '$' in a prototype gives its argument scalar context: is(grep(...), 1) compares a count,
+   ok($s =~ /re/, $name) passes one value even when the match fails. Arguments that are one
+   value anyway are left alone. */
+static void apply_proto(pp_parser *P, pp_node *n) {
+    int mask = -1;
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) mask = P->declmask[i];
+    if (mask < 0) { pp_obj *c = pp_lookup_sub(P->I, n->sym); mask = c ? c->u.code.pscalar : 0; }
+    for (int i = 0; i < n->n && i < 8 && mask; i++) {
+        pp_node *a = n->list[i];
+        if (!(mask & (1 << i))) continue;
+        int listy = (a->type == N_VAR && a->sym->name[0] != '$') || a->type == N_BUILTIN || a->type == N_CALL || a->type == N_CALLREF
+                    || a->type == N_METHOD || a->type == N_RV2AV || a->type == N_RV2HV || a->type == N_MATCH;
+        if (!listy) continue;
+        pp_node *sc = node(P, N_BUILTIN); sc->op = (uint8_t)pp_builtin_id("scalar", 6, NULL); sc->line = a->line;
+        node_add(sc, a);
+        n->list[i] = sc;
+    }
 }
 /* 0: unknown, 1: declared (list operator), 2: declared with no args */
 static int is_declared(pp_parser *P, pp_sym *s) {
@@ -2072,6 +2094,7 @@ static void skip_attributes(pp_parser *P) {
     }
 }
 static int skip_prototype(pp_parser *P) {
+    P->proto_mask = 0;
     if (P->has_nxt) return 0;
     pp_lex *L = &P->L;
     int i = L->pos, seen = 0;
@@ -2082,6 +2105,15 @@ static int skip_prototype(pp_parser *P) {
     }
     if (i >= L->len || !seen) return 0;
     int first = L->pos;
+    P->proto_mask = 0;
+    for (int j = L->pos, k = 0; j < i && k < 8; j++) {
+        char c = L->src[j];
+        if (c == ' ' || c == '\t' || c == ';') continue;
+        if (c == '@' || c == '%') break;                       /* the rest is a list */
+        if (c == '\\') { j++; if (j < i && L->src[j] == '[') while (j < i && L->src[j] != ']') j++; }
+        else if (c == '$' || c == '_') P->proto_mask |= 1 << k;
+        k++;
+    }
     while (L->src[first] == ' ' || L->src[first] == '\t') first++;
     L->pos = i;
     return L->src[first] == '&' ? 2 : 1;   /* 2: the first argument is a block */
@@ -2567,7 +2599,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
-        if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; n->aux = (uint8_t)P->proto_mask; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
         skip_attributes(P);
         parse_block_stmts(P, b);
         if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
@@ -2886,7 +2918,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = line;
-    if (cur_is_op(P, "(")) { parse_call_args(P, n); return parse_postfix(P, n); }
+    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); return parse_postfix(P, n); }
     if (cur_is_op(P, "{") && !P->has_nxt && is_block_proto(P, s)) {
         /* name { ... } LIST for a sub with a (&...) prototype: the block is `sub { ... }`.
            Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
@@ -2900,7 +2932,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
     int decl = is_declared(P, s);
     if (decl) {
         if (decl == 2) return parse_postfix(P, n);
-        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) parse_call_args(P, n);
+        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); }
         return parse_postfix(P, n);
     }
     n->flags |= 1;   /* bareword: call sub if it exists at runtime, else string */
@@ -3146,12 +3178,14 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             int noargs = 0, nsig = 0;
             if (cur_is_op(P, "(")) {
                 int proto = skip_prototype(P);
+                n->aux = (uint8_t)P->proto_mask;
                 advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs);
                 if (proto) noargs = 0;   /* a non-empty prototype takes arguments */
                 if (proto == 2) { n->op = 1; noargs |= 4; }
             }
             skip_attributes(P);
             declare_sub(P, n->sym, noargs);
+            for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) P->declmask[i] = n->aux;
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
                 advance(P);
                 scope_pop(P); scope_pop(P);
@@ -3418,7 +3452,7 @@ static void parser_init(pp_parser *P, pp_interp *I, const char *file, const char
     P->I = I; P->file = file;
     strcpy(P->pkg, parent ? parent->pkg : "main");
     P->L.src = src; P->L.len = len; P->L.pos = 0; P->L.line = line;
-    if (parent) { P->sc = parent->sc; P->decl = parent->decl; P->ndecl = parent->ndecl; P->declnoargs = parent->declnoargs; P->our_names = parent->our_names; P->our_syms = parent->our_syms; P->nours = parent->nours; }
+    if (parent) { P->sc = parent->sc; P->decl = parent->decl; P->ndecl = parent->ndecl; P->declnoargs = parent->declnoargs; P->declmask = parent->declmask; P->our_names = parent->our_names; P->our_syms = parent->our_syms; P->nours = parent->nours; }
     else { P->sc = pp_xmalloc(sizeof(pscopes)); memset(P->sc, 0, sizeof(pscopes)); P->sc->arena = I->arena; P->owns_sc = 1; }
 }
 static void parser_free(pp_parser *P) {
@@ -3427,6 +3461,7 @@ static void parser_free(pp_parser *P) {
     if (P->owns_sc) {
         free(P->decl);
         free(P->declnoargs);
+        free(P->declmask);
         for (int i = 0; i < P->nours; i++) free(P->our_names[i]);
         free(P->our_names); free(P->our_syms);
         pscopes *S = P->sc;

@@ -81,6 +81,7 @@ struct pp_obj {
             pp_native  native;
             pp_val     constval;   /* for `use constant` */
             uint8_t    is_const;
+            uint8_t    pscalar;       /* prototype: bit N set = parameter N is a '$' (its argument is evaluated in scalar context) */
             uint8_t    block_proto;   /* declared with a (&...) prototype: `name { ... } LIST` passes the block as a sub */
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
