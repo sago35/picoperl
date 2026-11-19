@@ -124,7 +124,12 @@ static pp_pos_ent *pos_entry(pp_interp *I, pp_obj *cell, pp_str *s, int create) 
     for (int i = 0; i < 4; i++) {
         pp_pos_ent *e = &I->pos_tab[i];
         if (e->cell != cell) continue;
-        if (!same_text(e->s, s)) {           /* the variable was assigned since: pos resets */
+        /* The position belongs to one string value. A string variable hands out the same
+           string object every time, so the object itself is compared: after an assignment, or
+           when a new variable happens to sit where a freed one was, it is another object and
+           the position starts over. Only a value that is not a string (a number, converted
+           afresh each time; then nobody else holds s) is compared by its text. */
+        if (!(e->s == s || (s->refcnt == 1 && same_text(e->s, s)))) {
             if (!create) return NULL;
             pp_str_decref(e->s); e->s = s; s->refcnt++; e->pos = 0; e->empty = 0;
         }

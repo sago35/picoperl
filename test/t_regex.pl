@@ -171,3 +171,11 @@ print "posix ascii: ", join("", map { $_ ? 1 : 0 } "abc" =~ /^[[:ascii:]]+$/, "a
     my $pr = \$ps; $$pr =~ /b/g;
     print "pos of non-variables: ", pos_scan("a1b2c3"), " | $pn ", (defined pos($pa[0]) ? "def" : "undef"), " | @pp | ", pos($$pr), " ", pos($ps), "\n";
 }
+# pos は 1 つの文字列の値に付く: 代入し直せば消え、コピーには引き継がれない
+{
+my $x = "aXbXc"; $x =~ /X/g; print pos($x), " "; $x = "aXbXc"; print defined pos($x) ? "kept" : "reset", " "; my @p; while ($x =~ /X/g) { push @p, pos($x) } print "@p\n";
+my $n = 12345; my $c = 0; while ($n =~ /\d/g) { $c++; last if $c > 9 } print "$c\n";
+sub mk { my $t = "bjorn-text"; $t =~ /o/g; return } mk() for 1 .. 3; sub chk { my $u = "bjorn" . "-text"; my @all = $u =~ /(.)/g; scalar @all } print chk(), "\n";
+my %h = (k => "p9q8"); my @q; while ($h{k} =~ /(\d)/g) { push @q, $1; last if @q > 9 } print "@q\n";
+my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos($copy) ? "copy has pos" : "copy fresh"), "\n";
+}
