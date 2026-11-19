@@ -82,7 +82,7 @@ struct pp_obj {
             uint8_t    block_proto;   /* declared with a (&...) prototype: `name { ... } LIST` passes the block as a sub */
         } code;
         struct pp_regex *re;   /* PP_OREGEX (qr//) */
-        struct { void *fp; uint8_t writable; } file;   /* PP_OFILE (open my $fh, ...) */
+        struct { void *fp; uint8_t writable; int lines; } file;   /* lines: read so far, for $. */   /* PP_OFILE (open my $fh, ...) */
         /* PP_OGLOB: what \*name points to, one per name. name: the string "*main::name" (the
            value of *name itself stays that string); io: the file opened under this name */
         struct { pp_val name; pp_obj *io; } glob;
@@ -295,6 +295,8 @@ struct pp_interp {
     pp_obj  *g_a, *g_b;          /* $a, $b for sort */
     pp_obj  *g_at;               /* $@ */
     pp_obj  *g_argv;             /* @ARGV */
+    void    *last_read;          /* the file a line was last read from (for $.; only ever compared) */
+    int      stdin_lines;        /* lines read from STDIN */
     pp_obj  *g_ofs, *g_ors;      /* $, and $\ : what print puts between its arguments and after them */
     pp_node **subdefs; int nsubdefs;   /* named subs collected while parsing */
     pp_node **units; char **unit_files; int nunits;   /* parsed files, freed by pp_free */

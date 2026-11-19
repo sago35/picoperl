@@ -115,4 +115,16 @@ close BW;
     print "still open after close(\$dup)\n";
 }
 { package IoPkg; print "std handles belong to main: ", *STDOUT, " ", *STDERR{PACKAGE}, "\n"; }
+# $. : 最後に読んだハンドルの行番号
+{
+    open(my $ln, '<', 'test/t_io_data.txt') or die "open: $!";
+    my $first = <$ln>; my $n1 = $.;
+    my $second = <$ln>; print "line numbers: $n1 $. at line $.\n";
+    my $w = ""; while (<$ln>) { $w .= "$. " } print "in while: $w/ after eof: $.\n";
+    open(my $other, '<', 'test/t_io_data.txt') or die; my $o = <$other>; print "another handle: $.\n";
+    close($other); print "after close: $. ", $. + 1, "\n";
+    close($ln);
+    open($ln, '<', 'test/t_io_data.txt') or die; my @all = <$ln>; print "list read: ", ($. == @all ? "counts every line" : "differs: $."), "\n"; close($ln);
+    print "not in a regex: ", ("ab" =~ /a$./ ? "interpolated" : "anchor"), "\n";
+}
 

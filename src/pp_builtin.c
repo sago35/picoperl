@@ -431,6 +431,22 @@ static pp_obj *glob_of(pp_interp *I, pp_val v) {
     return NULL;
 }
 
+/* $. : the number of lines read from the handle that was read last */
+static void set_line_no(pp_interp *I, void *handle, int lines) {
+    I->last_read = handle;
+    pp_obj *c = pp_global(I, pp_intern(I, "$.", 2));
+    pp_release(c->u.scalar);
+    c->u.scalar = pp_int(lines);
+}
+static pp_val read_stdin_line(pp_interp *I) {
+    char *line = pp_host_read_line();
+    if (line) I->stdin_lines++;
+    set_line_no(I, I, I->stdin_lines);
+    if (!line) return pp_undef();
+    pp_val r = pp_cstr(line);
+    free(line);
+    return r;
+}
 static pp_val read_fline(pp_obj *f) {
     if (!f->u.file.fp) return pp_undef();
     pp_str *s = pp_str_new(NULL, 0);
@@ -442,6 +458,7 @@ static pp_val read_fline(pp_obj *f) {
     }
     if (s->len == 0) { pp_str_decref(s); return pp_undef(); }
     s->d[s->len] = 0;
+    f->u.file.lines++;
     return pp_str_val(s);
 }
 
@@ -1136,13 +1153,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     }
     case B_READLINE: {
         check_irs(I);
-        if (n->n == 0) {   /* <STDIN> */
-            char *line = pp_host_read_line();
-            if (!line) return ret(ctx, out, pp_undef());
-            pp_val r = pp_cstr(line);
-            free(line);
-            return ret(ctx, out, r);
-        }
+        if (n->n == 0) return ret(ctx, out, read_stdin_line(I));   /* <STDIN> */
         pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
         int hfd;
@@ -1150,22 +1161,20 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (!f && hfd == 0) {              /* <STDIN> through a glob: readline(*STDIN), <$in> */
             pp_release(hv);
             if (ctx == CTX_LIST && out) {
-                for (;;) { char *line = pp_host_read_line(); if (!line) break; pp_list_push(out, pp_cstr(line)); free(line); }
+                for (;;) { pp_val l = read_stdin_line(I); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
                 return pp_undef();
             }
-            char *line = pp_host_read_line();
-            if (!line) return ret(ctx, out, pp_undef());
-            pp_val r = pp_cstr(line);
-            free(line);
-            return ret(ctx, out, r);
+            return ret(ctx, out, read_stdin_line(I));
         }
         if (!f) { pp_release(hv); return pp_die(I, "readline: not a filehandle (expected a handle from open)"); }
         if (ctx == CTX_LIST && out) {
             for (;;) { pp_val l = read_fline(f); if (l.t == PP_UNDEF) break; pp_list_push(out, l); }
+            set_line_no(I, f, f->u.file.lines);
             pp_release(hv);
             return pp_undef();
         }
         pp_val r = read_fline(f);
+        set_line_no(I, f, f->u.file.lines);
         pp_release(hv);
         return ret(ctx, out, r);
     }
@@ -1178,6 +1187,8 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (!f) { pp_release(hv); return pp_die(I, "close: not a filehandle (expected a handle from open)"); }
         int r = f->u.file.fp ? pp_host_fclose(f->u.file.fp) == 0 : 0;
         f->u.file.fp = NULL;
+        f->u.file.lines = 0;                       /* close starts the count again */
+        if (I->last_read == f) set_line_no(I, f, 0);
         pp_release(hv);
         return ret(ctx, out, r ? pp_int(1) : pp_strn("", 0));
     }
