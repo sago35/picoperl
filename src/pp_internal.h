@@ -38,6 +38,20 @@ void    pp_hash_set(pp_obj *h, const char *k, int klen, pp_val v);  /* takes own
 int     pp_hash_delete(pp_obj *h, const char *k, int klen, pp_val *out);
 void    pp_hash_clear(pp_obj *h);
 
+/* tie: which object a variable (or glob) is tied to. The variable carries only the `tied`
+   flag; the object lives in a table, so untied variables pay nothing for it. */
+void    pp_tie_set(pp_obj *var, pp_val obj);       /* takes ownership of obj; replaces an old tie */
+pp_val *pp_tie_find(pp_obj *var);                  /* borrowed, NULL when not tied */
+void    pp_tie_remove(pp_obj *var);
+void    pp_tie_flush(pp_interp *I);                /* run the STOREs that are still owed */
+void    pp_tie_writeback(pp_interp *I, pp_obj *o);    /* a tied array / hash was rewritten: CLEAR + STORE */
+void    pp_tie_sync(pp_interp *I, pp_obj *o);         /* fill a tied array / hash from its object */
+pp_obj *pp_get_array_raw(pp_interp *I, pp_node *n, int vivify);   /* like pp_get_array, without filling a tied one */
+pp_obj *pp_get_hash_raw(pp_interp *I, pp_node *n, int vivify);
+extern int pp_tie_count;                           /* how many ties exist (0: nothing to look up) */
+/* call METHOD on a tie object (or a class name) with args; must: die when there is no such method */
+pp_val  pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must);
+
 /* symbols / env */
 pp_sym *pp_intern(pp_interp *I, const char *name, int len);
 pp_env *pp_env_new(pp_env *parent, int nslots);

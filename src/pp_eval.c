@@ -224,6 +224,8 @@ pp_sym *pp_symref(pp_interp *I, pp_node *n, pp_val v, char sigil, int strict) {
 }
 /* the sub a string names (&{"name"}, \&$name); dies if there is none */
 static pp_val *lvalue_or_null(pp_interp *I, pp_node *n);
+
+
 static pp_obj *symref_code(pp_interp *I, pp_node *n, pp_val v) {
     pp_sym *sym = pp_symref(I, n, v, '&', 1);
     if (!sym) return NULL;
@@ -701,8 +703,7 @@ static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
 static int  declare_my(pp_interp *I, pp_node *m);
 
 /* Returns an owned reference to the array designated by node n. */
-pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
-    (void)unused;
+NOINLINE pp_obj *pp_get_array_raw(pp_interp *I, pp_node *n, int vivify) {
     switch (n->type) {
     case N_VAR: {
         if (n->sym->name[0] != '@') break;
@@ -778,8 +779,16 @@ static pp_obj *stash_fill(pp_interp *I, pp_sym *hs) {
 }
 static int is_stash_name(const char *name) { size_t l = strlen(name); return l >= 3 && name[l - 1] == ':' && name[l - 2] == ':'; }
 
-pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
+/* the array an expression names. A tied one is first filled from its object (FETCHSIZE /
+   FETCH), so that everything reading the whole array works on plain data; element access
+   uses pp_get_array_raw and calls FETCH / STORE for the one element. */
+pp_obj *pp_get_array(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
     (void)unused;
+    pp_obj *o = pp_get_array_raw(I, n, vivify);
+    if (o && o->tied) pp_tie_sync(I, o);
+    return o;
+}
+NOINLINE pp_obj *pp_get_hash_raw(pp_interp *I, pp_node *n, int vivify) {
     switch (n->type) {
     case N_VAR: {
         if (n->sym->name[0] != '%') break;
@@ -837,6 +846,157 @@ static pp_str *eval_key(pp_interp *I, pp_node *n) {
 /* Returns a pointer to a scalar slot, or NULL (with ctl set on error). */
 /* the slot of a reference-holding expression, or NULL when the expression cannot be assigned to
    (@{"name"}, @{ $pkg . "::ISA" }, @{ f() }): those are evaluated as plain values instead */
+/* ------------------------------------------------------------------ */
+/* tied variables                                                      */
+/* ------------------------------------------------------------------ */
+/* Reads call FETCH on the spot. Writes go through pp_lvalue(), whose callers store into the
+   slot they get; for a tied variable that slot is remembered here and STORE is called once
+   the write has happened: after the assignment, at the end of the statement at the latest,
+   and before the next FETCH. */
+struct pp_tiepend { struct pp_tiepend *next; pp_obj *var; pp_val key, val; uint8_t keyed; };
+
+static pp_val tie_var_call(pp_interp *I, pp_obj *var, const char *m, pp_list *args, int ctx, pp_list *out) {
+    pp_val *t = pp_tie_find(var);
+    if (!t) { if (args) pp_list_free(args); return pp_undef(); }
+    pp_val o = pp_copy(*t);
+    pp_val r = pp_tie_call(I, o, m, args, ctx, out, 1);
+    pp_release(o);
+    return r;
+}
+void pp_tie_flush(pp_interp *I) {
+    struct pp_tiepend *p = I->tie_pend, *rev = NULL;
+    I->tie_pend = NULL;
+    while (p) { struct pp_tiepend *nx = p->next; p->next = rev; rev = p; p = nx; }   /* oldest first */
+    while (rev) {
+        p = rev; rev = p->next;
+        if (!I->ctl && p->var->tied) {
+            pp_list a = {0};
+            if (p->keyed) pp_list_push(&a, pp_copy(p->key));
+            pp_list_push(&a, pp_copy(p->keyed ? p->val : p->var->u.scalar));
+            pp_release(tie_var_call(I, p->var, "STORE", &a, CTX_SCALAR, NULL));
+        }
+        pp_release(p->key); pp_release(p->val);
+        pp_obj_decref(p->var);
+        free(p);
+    }
+}
+static int tie_key_eq(pp_val a, pp_val b) {
+    if (a.t != b.t) return 0;
+    if (a.t == PP_INT) return a.u.i == b.u.i;
+    return a.t == PP_STR && a.u.s->len == b.u.s->len && !memcmp(a.u.s->d, b.u.s->d, (size_t)a.u.s->len);
+}
+/* forget the newest owed STORE (the lvalue was looked at but not written) */
+static void tie_unowe(pp_interp *I) {
+    struct pp_tiepend *p = I->tie_pend;
+    I->tie_pend = p->next;
+    pp_release(p->key); pp_release(p->val);
+    pp_obj_decref(p->var);
+    free(p);
+}
+/* the slot to write for tied `var` (keyed: its element `key`, which is consumed) */
+static NOINLINE pp_val *tie_lv(pp_interp *I, pp_obj *var, pp_val key, int keyed) {
+    int noread = I->tie_noread;
+    I->tie_noread = 0;
+    for (struct pp_tiepend *p = I->tie_pend; p; p = p->next)
+        if (p->var == var && p->keyed == keyed && (!keyed || tie_key_eq(p->key, key))) { pp_release(key); return keyed ? &p->val : &var->u.scalar; }
+    pp_val cur = pp_undef();
+    if (!noread) {   /* .= ++ s/// and friends start from the current value */
+        pp_list a = {0};
+        if (keyed) pp_list_push(&a, pp_copy(key));
+        cur = tie_var_call(I, var, "FETCH", &a, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(cur); pp_release(key); return NULL; }
+    }
+    struct pp_tiepend *p = pp_xmalloc(sizeof *p);
+    p->var = var; var->refcnt++;
+    p->key = key; p->keyed = (uint8_t)keyed; p->val = pp_undef();
+    if (keyed) p->val = cur;
+    else if (!noread) { pp_release(var->u.scalar); var->u.scalar = cur; }
+    p->next = I->tie_pend; I->tie_pend = p;
+    return keyed ? &p->val : &var->u.scalar;
+}
+/* read a tied scalar: FETCH (the value is also left in the cell) */
+static NOINLINE pp_val tie_fetch_scalar(pp_interp *I, pp_obj *c) {
+    if (I->tie_pend) pp_tie_flush(I);
+    pp_val v = tie_var_call(I, c, "FETCH", NULL, CTX_SCALAR, NULL);
+    if (I->ctl) { pp_release(v); return pp_undef(); }
+    pp_release(c->u.scalar); c->u.scalar = pp_copy(v);
+    return v;
+}
+
+pp_obj *pp_get_hash(pp_interp *I, pp_node *n, int vivify, pp_obj **unused) {
+    (void)unused;
+    pp_obj *o = pp_get_hash_raw(I, n, vivify);
+    if (o && o->tied) pp_tie_sync(I, o);
+    return o;
+}
+/* fill a tied array / hash from its object */
+NOINLINE void pp_tie_sync(pp_interp *I, pp_obj *o) {
+    if (o->tied != 1 || I->ctl) return;
+    if (I->tie_pend) pp_tie_flush(I);
+    o->tied = 2;                        /* being filled: a nested read uses what is there */
+    o->refcnt++;
+    if (o->kind == PP_OARRAY) {
+        pp_val nv = tie_var_call(I, o, "FETCHSIZE", NULL, CTX_SCALAR, NULL);
+        int64_t n = I->ctl ? 0 : pp_to_int(nv); pp_release(nv);
+        if (!I->ctl) pp_array_clear(o);
+        for (int64_t i = 0; i < n && !I->ctl; i++) {
+            pp_list a = {0}; pp_list_push(&a, pp_int(i));
+            pp_val v = tie_var_call(I, o, "FETCH", &a, CTX_SCALAR, NULL);
+            if (I->ctl) { pp_release(v); break; }
+            pp_array_push(o, v);
+        }
+    } else if (o->kind == PP_OHASH) {
+        pp_val k = tie_var_call(I, o, "FIRSTKEY", NULL, CTX_SCALAR, NULL);
+        if (!I->ctl) pp_hash_clear(o);
+        while (!I->ctl && k.t != PP_UNDEF) {
+            pp_str *ks = pp_to_str(k);
+            pp_list a = {0}; pp_list_push(&a, pp_copy(k));
+            pp_val v = tie_var_call(I, o, "FETCH", &a, CTX_SCALAR, NULL);
+            if (!I->ctl) pp_hash_set(o, ks->d, ks->len, v); else pp_release(v);
+            pp_str_decref(ks);
+            if (I->ctl) break;
+            pp_list b = {0}; pp_list_push(&b, k);
+            k = tie_var_call(I, o, "NEXTKEY", &b, CTX_SCALAR, NULL);
+        }
+        pp_release(k);
+    }
+    if (o->tied == 2) o->tied = 1;
+    pp_obj_decref(o);
+}
+/* a tied array / hash was rewritten as a whole (list assignment, push, splice ...): hand the
+   new contents to its object with CLEAR and STORE */
+void pp_tie_writeback(pp_interp *I, pp_obj *o) {
+    if (o->tied != 1 || I->ctl) return;
+    o->tied = 2;
+    o->refcnt++;
+    pp_release(tie_var_call(I, o, "CLEAR", NULL, CTX_SCALAR, NULL));
+    if (o->kind == PP_OARRAY) {
+        for (int i = 0; i < o->u.arr.n && !I->ctl; i++) {
+            pp_list a = {0}; pp_list_push(&a, pp_int(i)); pp_list_push(&a, pp_copy(o->u.arr.v[i]));
+            pp_release(tie_var_call(I, o, "STORE", &a, CTX_SCALAR, NULL));
+        }
+    } else {
+        for (int i = 0; i < o->u.hash.n && !I->ctl; i++) if (o->u.hash.e[i].klen >= 0) {
+            pp_list a = {0}; pp_list_push(&a, pp_strn(o->u.hash.e[i].key, o->u.hash.e[i].klen)); pp_list_push(&a, pp_copy(o->u.hash.e[i].v));
+            pp_release(tie_var_call(I, o, "STORE", &a, CTX_SCALAR, NULL));
+        }
+    }
+    if (o->tied == 2) o->tied = 1;
+    pp_obj_decref(o);
+}
+/* one element of a tied array / hash: FETCH */
+static NOINLINE pp_val tie_fetch_elem(pp_interp *I, pp_obj *o, pp_val key) {
+    if (I->tie_pend) pp_tie_flush(I);
+    pp_list a = {0}; pp_list_push(&a, key);
+    return tie_var_call(I, o, "FETCH", &a, CTX_SCALAR, NULL);
+}
+
+/* one element of a tied array / hash: STORE (key and value are consumed) */
+static void tie_store_elem(pp_interp *I, pp_obj *o, pp_val key, pp_val val) {
+    pp_list a = {0}; pp_list_push(&a, key); pp_list_push(&a, val);
+    pp_release(tie_var_call(I, o, "STORE", &a, CTX_SCALAR, NULL));
+}
+
 static pp_val *lvalue_or_null(pp_interp *I, pp_node *n) {
     switch (n->type) {
     case N_VAR: case N_MY: case N_AELEM: case N_HELEM: case N_RV2SV: case N_TERNARY: case N_ASSIGN:
@@ -848,7 +1008,7 @@ static pp_val *lvalue_or_null(pp_interp *I, pp_node *n) {
 pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
     switch (n->type) {
     case N_VAR:
-        if (n->sym->name[0] == '$') return &var_cell(I, n)->u.scalar;
+        if (n->sym->name[0] == '$') { pp_obj *c = var_cell(I, n); return c->tied ? tie_lv(I, c, pp_undef(), 0) : &c->u.scalar; }
         break;
     case N_MY:
         declare_my(I, n);
@@ -861,9 +1021,10 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
         pp_val iv = pp_eval(I, n->b, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(iv); return NULL; }
         int64_t idx = pp_to_int(iv); pp_release(iv);
-        pp_obj *arr = pp_get_array(I, n->a, 1, NULL);
+        pp_obj *arr = pp_get_array_raw(I, n->a, 1);
         if (!arr) return NULL;
         hold(I, arr); pp_obj_decref(arr);
+        if (arr->tied == 1) return tie_lv(I, arr, pp_int(idx), 1);
         pp_val *slot = pp_array_slot(arr, (int)idx);
         if (!slot) { pp_die(I, "Modification of non-creatable array value attempted, subscript %lld", (long long)idx); return NULL; }
         return slot;
@@ -871,9 +1032,10 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
     case N_HELEM: {
         pp_str *k = eval_key(I, n->b);
         if (!k) return NULL;
-        pp_obj *h = pp_get_hash(I, n->a, 1, NULL);
+        pp_obj *h = pp_get_hash_raw(I, n->a, 1);
         if (!h) { pp_str_decref(k); return NULL; }
         hold(I, h); pp_obj_decref(h);
+        if (h->tied == 1) return tie_lv(I, h, (pp_val){ .t = PP_STR, .u.s = k }, 1);
         pp_val *slot = pp_hash_slot(h, k->d, k->len);
         pp_str_decref(k);
         return slot;
@@ -883,14 +1045,14 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
         if (I->ctl) return NULL;
         if (inner) {
             if (inner->t == PP_UNDEF) { pp_obj *s = pp_obj_new(PP_OSCALAR); *inner = pp_ref(s); pp_obj_decref(s); return &s->u.scalar; }
-            if (inner->t == PP_REF && inner->u.o->kind == PP_OSCALAR) return &inner->u.o->u.scalar;
+            if (inner->t == PP_REF && inner->u.o->kind == PP_OSCALAR) return inner->u.o->tied ? tie_lv(I, inner->u.o, pp_undef(), 0) : &inner->u.o->u.scalar;
             if (is_symname(*inner)) { pp_sym *s = pp_symref(I, n, *inner, '$', 1); return s ? &pp_global(I, s)->u.scalar : NULL; }
             pp_die(I, "Not a SCALAR reference");
             return NULL;
         }
         pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(v); return NULL; }
-        if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { hold(I, v.u.o); pp_release(v); return &I->lv_hold->u.scalar; }
+        if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { hold(I, v.u.o); pp_release(v); return I->lv_hold->tied ? tie_lv(I, I->lv_hold, pp_undef(), 0) : &I->lv_hold->u.scalar; }
         if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v); return s ? &pp_global(I, s)->u.scalar : NULL; }
         pp_release(v);
         pp_die(I, "Not a SCALAR reference");
@@ -996,9 +1158,10 @@ static int is_list_lhs(pp_node *a) {
     }
 }
 
-static void assign_array(pp_obj *arr, pp_list *src, int from) {
+static void assign_array(pp_interp *I, pp_obj *arr, pp_list *src, int from) {
     pp_array_clear(arr);
     for (int i = from; i < src->n; i++) pp_array_push(arr, pp_copy(src->v[i]));
+    if (arr->tied) pp_tie_writeback(I, arr);
 }
 static void assign_hash(pp_interp *I, pp_obj *h, pp_list *src, int from) {
     if (I->warn_on && ((src->n - from) & 1)) pp_warn(I, "Odd number of elements in hash assignment");
@@ -1009,6 +1172,7 @@ static void assign_hash(pp_interp *I, pp_obj *h, pp_list *src, int from) {
         pp_hash_set(h, k->d, k->len, v);
         pp_str_decref(k);
     }
+    if (h->tied) pp_tie_writeback(I, h);
 }
 
 /* assign values (owned by src) to the list lvalue a */
@@ -1023,9 +1187,9 @@ static void assign_list(pp_interp *I, pp_node *a, pp_list *src) {
         pp_node *t = targets[i];
         if (t->type == N_MY && !(t->flags & 1)) { declare_my(I, t); t = t->list[0]; }
         if (t->type == N_NOP) { pos++; continue; }
-        if (t->type == N_VAR && t->sym->name[0] == '@') { assign_array(var_cell(I, t), src, pos); pos = src->n; continue; }
+        if (t->type == N_VAR && t->sym->name[0] == '@') { assign_array(I, var_cell(I, t), src, pos); pos = src->n; continue; }
         if (t->type == N_VAR && t->sym->name[0] == '%') { assign_hash(I, var_cell(I, t), src, pos); pos = src->n; continue; }
-        if (t->type == N_RV2AV) { pp_obj *arr = pp_get_array(I, t, 1, NULL); if (arr) { assign_array(arr, src, pos); pp_obj_decref(arr); } pos = src->n; continue; }
+        if (t->type == N_RV2AV) { pp_obj *arr = pp_get_array(I, t, 1, NULL); if (arr) { assign_array(I, arr, src, pos); pp_obj_decref(arr); } pos = src->n; continue; }
         if (t->type == N_RV2HV) { pp_obj *h = pp_get_hash(I, t, 1, NULL); if (h) { assign_hash(I, h, src, pos); pp_obj_decref(h); } pos = src->n; continue; }
         if (t->type == N_ASLICE || t->type == N_HSLICE) {
             pp_list idx = {0};
@@ -1033,17 +1197,35 @@ static void assign_list(pp_interp *I, pp_node *a, pp_list *src) {
             if (I->ctl) { pp_list_free(&idx); return; }
             if (t->type == N_ASLICE) {
                 pp_obj *arr = pp_get_array(I, t->a, 1, NULL);
-                if (arr) { for (int k = 0; k < idx.n; k++) pp_array_set(arr, (int)pp_to_int(idx.v[k]), pos < src->n ? pp_copy(src->v[pos++]) : pp_undef()); pp_obj_decref(arr); }
+                if (arr) {
+                    for (int k = 0; k < idx.n; k++) {
+                        pp_val nv = pos < src->n ? pp_copy(src->v[pos++]) : pp_undef();
+                        if (arr->tied == 1) tie_store_elem(I, arr, pp_int(pp_to_int(idx.v[k])), nv);
+                        else pp_array_set(arr, (int)pp_to_int(idx.v[k]), nv);
+                    }
+                    pp_obj_decref(arr);
+                }
             } else {
                 pp_obj *h = pp_get_hash(I, t->a, 1, NULL);
-                if (h) { for (int k = 0; k < idx.n; k++) { pp_str *ks = pp_to_str(idx.v[k]); pp_hash_set(h, ks->d, ks->len, pos < src->n ? pp_copy(src->v[pos++]) : pp_undef()); pp_str_decref(ks); } pp_obj_decref(h); }
+                if (h) {
+                    for (int k = 0; k < idx.n; k++) {
+                        pp_str *ks = pp_to_str(idx.v[k]);
+                        pp_val nv = pos < src->n ? pp_copy(src->v[pos++]) : pp_undef();
+                        if (h->tied == 1) { ks->refcnt++; tie_store_elem(I, h, (pp_val){ .t = PP_STR, .u.s = ks }, nv); }
+                        else pp_hash_set(h, ks->d, ks->len, nv);
+                        pp_str_decref(ks);
+                    }
+                    pp_obj_decref(h);
+                }
             }
             pp_list_free(&idx);
             continue;
         }
         pp_val v = pos < src->n ? pp_copy(src->v[pos]) : pp_undef();
         pos++;
+        I->tie_noread = 1;
         pp_val *slot = pp_lvalue(I, t);
+        I->tie_noread = 0;
         if (!slot) { pp_release(v); return; }
         pp_release(*slot);
         *slot = v;
@@ -1129,10 +1311,15 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
         return pp_int(count);
     }
     if (n->op == OP_LOGOR || n->op == OP_LOGAND || n->op == OP_DEFOR) {
+        struct pp_tiepend *owed = I->tie_pend;
         pp_val *slot = pp_lvalue(I, a);
         if (!slot) return pp_undef();
         int keep = n->op == OP_LOGOR ? pp_truth(*slot) : n->op == OP_LOGAND ? !pp_truth(*slot) : slot->t != PP_UNDEF;
-        if (keep) return ctx == CTX_VOID ? pp_undef() : pp_copy(*slot);
+        if (keep) {
+            pp_val kept = ctx == CTX_VOID ? pp_undef() : pp_copy(*slot);
+            if (I->tie_pend != owed) tie_unowe(I);   /* nothing was written: a tied variable gets no STORE */
+            return kept;
+        }
         pp_val v = pp_eval(I, b, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(v); return pp_undef(); }
         slot = pp_lvalue(I, a);
@@ -1154,7 +1341,9 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
     if (n->op != OP_NONE && is_list_lhs(a)) return pp_die(I, "Can't modify array/hash in compound assignment");
     pp_val v = pp_eval(I, b, CTX_SCALAR, NULL);
     if (I->ctl) { pp_release(v); return pp_undef(); }
+    I->tie_noread = n->op == OP_NONE;
     pp_val *slot = pp_lvalue(I, a);
+    I->tie_noread = 0;
     if (!slot) { pp_release(v); return pp_undef(); }
     if (n->op != OP_NONE) {
         if (I->warn_on) {
@@ -1172,6 +1361,14 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
     }
     pp_release(*slot);
     *slot = v;
+    if (I->tie_pend) {
+        /* a tied target: STORE now; the value of the assignment is what FETCH then gives */
+        v = pp_copy(v);
+        pp_tie_flush(I);
+        if (ctx == CTX_VOID || I->ctl) { pp_release(v); return pp_undef(); }
+        if (a->type == N_VAR && a->sym->name[0] == '$' && var_cell(I, a)->tied) { pp_release(v); return pp_eval(I, a, CTX_SCALAR, NULL); }
+        return v;
+    }
     if (ctx == CTX_VOID) return pp_undef();
     return pp_copy(v);
 }
@@ -1336,6 +1533,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         int is_last = i == blk->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
+        if (I->tie_pend) pp_tie_flush(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(blk, I->ctl_label);
             if (j >= 0) {                        /* the label is here: go on from it */
@@ -1565,8 +1763,8 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
         declare_my(I, a);
         if (a->n == 1) return make_ref(I, a->list[0], ctx, out);
         break;
-    case N_RV2AV: { pp_obj *o = pp_get_array(I, a, 1, NULL); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
-    case N_RV2HV: { pp_obj *o = pp_get_hash(I, a, 1, NULL); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
+    case N_RV2AV: { pp_obj *o = pp_get_array_raw(I, a, 1); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
+    case N_RV2HV: { pp_obj *o = pp_get_hash_raw(I, a, 1); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
     case N_CALL:
         if (a->n == 0) {
             pp_obj *code = pp_resolve_sub(I, a->sym);
@@ -2219,12 +2417,15 @@ static NOINLINE pp_val eval_var(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     pp_obj *c = var_cell(I, n);
     switch (n->sym->name[0]) {
     case '$':
+        if (c->tied) return scalar_or_push(ctx, out, tie_fetch_scalar(I, c));
         if (n->flags & PP_VAR_ERRNO) return scalar_or_push(ctx, out, eval_errno(n, c->u.scalar));
         return scalar_or_push(ctx, out, pp_copy(c->u.scalar));
     case '@':
+        if (c->tied) pp_tie_sync(I, c);
         if (ctx == CTX_LIST && out) { for (int i = 0; i < c->u.arr.n; i++) pp_list_push(out, pp_copy(c->u.arr.v[i])); return pp_undef(); }
         return pp_int(c->u.arr.n);
     case '%':
+        if (c->tied) pp_tie_sync(I, c);
         if (ctx == CTX_LIST && out) {
             for (int i = 0; i < c->u.hash.n; i++) if (c->u.hash.e[i].klen >= 0) { pp_list_push(out, pp_strn(c->u.hash.e[i].key, c->u.hash.e[i].klen)); pp_list_push(out, pp_copy(c->u.hash.e[i].v)); }
             return pp_undef();
@@ -2246,17 +2447,19 @@ static NOINLINE pp_val eval_elem(pp_interp *I, pp_node *n, int ctx, pp_list *out
         pp_val iv = pp_eval(I, n->b, CTX_SCALAR, NULL);
         if (I->ctl) return pp_undef();
         int64_t idx = pp_to_int(iv); pp_release(iv);
-        pp_obj *arr = pp_get_array(I, n->a, 0, NULL);
+        pp_obj *arr = pp_get_array_raw(I, n->a, 0);
         if (!arr) return pp_undef();
-        pp_val v = pp_array_get(arr, (int)idx);
+        pp_val v = arr->tied == 1 ? tie_fetch_elem(I, arr, pp_int(idx)) : pp_array_get(arr, (int)idx);
         pp_obj_decref(arr);
         return scalar_or_push(ctx, out, v);
     }
     pp_str *k = eval_key(I, n->b);
     if (!k) return pp_undef();
-    pp_obj *h = pp_get_hash(I, n->a, 0, NULL);
+    pp_obj *h = pp_get_hash_raw(I, n->a, 0);
     if (!h) { pp_str_decref(k); return pp_undef(); }
-    pp_val v = pp_hash_get(h, k->d, k->len);
+    pp_val v;
+    if (h->tied == 1) { k->refcnt++; v = tie_fetch_elem(I, h, (pp_val){ .t = PP_STR, .u.s = k }); }
+    else v = pp_hash_get(h, k->d, k->len);
     pp_obj_decref(h); pp_str_decref(k);
     return scalar_or_push(ctx, out, v);
 }
@@ -2284,7 +2487,7 @@ static NOINLINE pp_val eval_rv2(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     }
     pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
-    if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { pp_val r = pp_copy(v.u.o->u.scalar); pp_release(v); return scalar_or_push(ctx, out, r); }
+    if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { pp_val r = v.u.o->tied ? tie_fetch_scalar(I, v.u.o) : pp_copy(v.u.o->u.scalar); pp_release(v); return scalar_or_push(ctx, out, r); }
     if (is_globref(v)) { pp_val r = pp_copy(v.u.o->u.glob.name); pp_release(v); return scalar_or_push(ctx, out, r); }   /* $$globref is the glob */
     if (is_symname(v)) {
         pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v);
@@ -2389,6 +2592,30 @@ static int class_isa(pp_interp *I, const char *cls, const char *want, int depth)
         if (r) return 1;
     }
     return 0;
+}
+
+/* tie support: obj->METHOD(args) where obj is a tie object, or CLASS->METHOD(args) for a
+   class name. The args are consumed. Without the method: an error when `must`, else undef
+   with *args left alone (the caller falls back to its own default). */
+pp_val pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must) {
+    pp_str *cs = (obj.t == PP_REF && obj.u.o->class) ? NULL : pp_to_str(obj);
+    const char *cls = cs ? cs->d : obj.u.o->class->name;
+    pp_obj *code = find_method(I, cls, method, 0);
+    if (!code) {
+        pp_val e = must ? pp_die(I, "Can't locate object method \"%s\" via package \"%s\"", method, cls) : pp_undef();
+        if (cs) pp_str_decref(cs);
+        if (must && args) pp_list_free(args);
+        return e;
+    }
+    if (cs) pp_str_decref(cs);
+    pp_list full = {0};
+    pp_list_push(&full, pp_copy(obj));
+    if (args) { for (int i = 0; i < args->n; i++) pp_list_push(&full, args->v[i]); args->n = 0; pp_list_free(args); }
+    code->refcnt++;
+    pp_val r = pp_call(I, code, &full, ctx, out);
+    pp_list_free(&full);
+    pp_obj_decref(code);
+    return r;
 }
 
 static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
@@ -2736,6 +2963,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         int is_last = i == unit->n - 1;
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
+        if (I->tie_pend) pp_tie_flush(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(unit, I->ctl_label);
             if (j >= 0) {

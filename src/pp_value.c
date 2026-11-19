@@ -335,7 +335,34 @@ pp_obj *pp_obj_new(int kind) {
     return o;
 }
 void pp_obj_incref(pp_obj *o) { o->refcnt++; }
+/* the tie table: a handful of entries at most, searched only for variables with the flag set */
+static struct tie_ent { pp_obj *var; pp_val obj; } *tie_tab;
+static int tie_cap;
+int pp_tie_count;
+#define tie_n pp_tie_count
+pp_val *pp_tie_find(pp_obj *var) {
+    if (!var->tied) return NULL;
+    for (int i = 0; i < tie_n; i++) if (tie_tab[i].var == var) return &tie_tab[i].obj;
+    return NULL;
+}
+void pp_tie_remove(pp_obj *var) {
+    var->tied = 0;
+    for (int i = 0; i < tie_n; i++) if (tie_tab[i].var == var) {
+        pp_val old = tie_tab[i].obj;
+        tie_tab[i] = tie_tab[--tie_n];
+        if (!tie_n) { free(tie_tab); tie_tab = NULL; tie_cap = 0; }
+        pp_release(old);
+        return;
+    }
+}
+void pp_tie_set(pp_obj *var, pp_val obj) {
+    pp_tie_remove(var);
+    if (tie_n == tie_cap) { tie_cap = tie_cap ? tie_cap * 2 : 4; tie_tab = pp_xrealloc(tie_tab, tie_cap * sizeof *tie_tab); }
+    tie_tab[tie_n].var = var; tie_tab[tie_n].obj = obj; tie_n++;
+    var->tied = 1;
+}
 static void obj_free(pp_obj *o) {
+    if (o->tied) pp_tie_remove(o);
     switch (o->kind) {
     case PP_OSCALAR: pp_release(o->u.scalar); break;
     case PP_OARRAY:

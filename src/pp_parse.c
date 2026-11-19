@@ -2454,6 +2454,21 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *v = node(P, N_VAR); v->sym = pp_intern(P->I, "$\002stat", 6); v->line = line;
         return v;
     }
+    if (((len == 3 && !memcmp(id, "tie", 3)) || (len == 4 && !memcmp(id, "tied", 4)) || (len == 5 && !memcmp(id, "untie", 5)))
+        && !(nx->type == T_OP && !strcmp(nx->op, "=>")) && !is_declared(P, sym_sigil(P, '&', id, len))) {
+        /* tie VAR, CLASS, LIST / tied VAR / untie VAR: calls __tie(\VAR, CLASS, LIST) etc., so
+           the function gets the variable itself (a glob for a handle) */
+        advance(P);
+        pp_node *c = node(P, N_CALL); c->line = line;
+        c->sym = pp_intern(P->I, len == 3 ? "&__tie" : len == 4 ? "&__tied" : "&__untie", len + 3);
+        if (len == 3) parse_call_args(P, c);
+        else if (accept_op(P, "(")) { node_add(c, parse_assign(P)); expect_op(P, ")"); }
+        else node_add(c, parse_unary(P));
+        if (c->n < 1) perr(P, "Not enough arguments for %.*s", len, id);
+        pp_node *r = node(P, N_REF); r->a = c->list[0]; r->line = line;
+        c->list[0] = r;
+        return len == 3 ? c : parse_postfix(P, c);
+    }
     if (len == 7 && !memcmp(id, "opendir", 7) && !is_declared(P, sym_sigil(P, '&', id, len))) {
         /* opendir(my $dh, $path) is $dh = __opendir($path) (the handle, or undef);
            opendir(DH, $path) is __opendir_named("*Pkg::DH", $path) */

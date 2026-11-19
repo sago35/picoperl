@@ -67,6 +67,7 @@ typedef pp_val (*pp_native)(pp_interp *I, pp_list *args, int ctx, pp_list *out);
 struct pp_obj {
     int     refcnt;
     uint8_t kind;
+    uint8_t tied;           /* tie'd: the object it is tied to is in the tie table (pp_tie_find) */
     pp_sym *class;          /* package name when blessed, else NULL */
     union {
         pp_val scalar;
@@ -306,6 +307,8 @@ struct pp_interp {
     int      in_sub;
     int      warn_on;            /* `use warnings` in effect for the running statement */
     pp_obj  *lv_hold;            /* keeps a container alive while an lvalue slot is in use */
+    struct pp_tiepend *tie_pend; /* tied variables that were handed out as lvalues: STORE is still owed */
+    uint8_t  tie_noread;         /* the next lvalue is only written (plain =): a tied one skips its FETCH */
     /* `local` save stack. kind 0: a scalar cell. kind 1/2: one hash / array element of `cell`
        (key / idx), where `existed` says whether a hash key was there before. */
     struct { pp_obj *cell; pp_val saved; pp_str *key; pp_sym *sym; int idx; uint8_t kind, existed; } *locals; int nlocals, caplocals;

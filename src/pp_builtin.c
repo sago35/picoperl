@@ -416,6 +416,40 @@ static pp_obj *handle_of(pp_interp *I, pp_val v, int *fd) {
     else if (!strcmp(gs->name, "*STDERR")) *fd = 2;
     return NULL;
 }
+/* the object a handle value (\*FH, *FH, "FH") is tied to, or NULL (borrowed) */
+static pp_val *tied_handle(pp_interp *I, pp_val v) {
+    if (!pp_tie_count) return NULL;
+    pp_obj *g = NULL;
+    if (v.t == PP_REF) g = v.u.o->kind == PP_OGLOB ? v.u.o : NULL;
+    else if (v.t == PP_INT && (v.u.i == 1 || v.u.i == 2)) { pp_sym *gs = pp_glob_named(I, v.u.i == 1 ? "STDOUT" : "STDERR"); g = gs ? gs->gcell : NULL; if (g && g->kind != PP_OGLOB) g = NULL; }
+    else if (v.t == PP_STR && v.u.s->len > 0) { pp_sym *gs = pp_glob_named(I, v.u.s->d); g = gs && gs->gcell && gs->gcell->kind == PP_OGLOB ? gs->gcell : NULL; }
+    return g ? pp_tie_find(g) : NULL;
+}
+/* HANDLE is tied: call METHOD on its object with the handle value consumed; *done = 1 */
+static pp_val tied_handle_call(pp_interp *I, pp_val hv, const char *method, pp_list *args, int ctx, pp_list *out, int *done) {
+    pp_val *t = tied_handle(I, hv);
+    *done = t != NULL;
+    if (!t) return pp_undef();
+    pp_val obj = pp_copy(*t);
+    pp_release(hv);
+    pp_val r = pp_tie_call(I, obj, method, args, ctx, out, 1);
+    pp_release(obj);
+    return r;
+}
+/* EXISTS / DELETE on a tied hash: key is consumed; returns the truth of the result, the result
+   itself in *res when asked for */
+static int tied_elem_call(pp_interp *I, pp_obj *h, const char *m, pp_val key, pp_val *res) {
+    pp_val *t = pp_tie_find(h);
+    if (!t) { pp_release(key); return 0; }
+    pp_tie_flush(I);
+    pp_val o = pp_copy(*t);
+    pp_list a = {0}; pp_list_push(&a, key);
+    pp_val r = pp_tie_call(I, o, m, &a, CTX_SCALAR, NULL, 1);
+    pp_release(o);
+    int truth = !I->ctl && pp_truth(r);
+    if (res && !I->ctl) *res = r; else pp_release(r);
+    return truth;
+}
 /* evaluated argument -> the PP_OFILE object (borrowed) or NULL + die */
 static pp_obj *file_of(pp_interp *I, pp_val v, const char *what) {
     int fd;
@@ -579,9 +613,22 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
 static pp_val do_print(pp_interp *I, pp_node *n, int id) {
     int fd = 1;
     pp_obj *fh = NULL;
+    pp_val f = pp_undef();
+    if (n->a) { f = pp_eval(I, n->a, CTX_SCALAR, NULL); if (I->ctl) { pp_release(f); return pp_undef(); } }
+    if (pp_tie_count) {   /* print {$tied} LIST is $obj->PRINT(LIST); say adds the newline. No handle: STDOUT */
+        pp_val probe = n->a ? pp_copy(f) : pp_int(1);
+        if (tied_handle(I, probe)) {
+            pp_release(f);
+            pp_list targs = {0};
+            if (n->n == 0 && id != B_PRINTF) pp_list_push(&targs, pp_copy(I->g_underscore->u.scalar));
+            else if (!eval_args(I, n, 0, &targs)) { pp_list_free(&targs); pp_release(probe); return pp_undef(); }
+            if (id == B_SAY) pp_list_push(&targs, pp_strn("\n", 1));
+            int done;
+            return tied_handle_call(I, probe, id == B_PRINTF ? "PRINTF" : "PRINT", &targs, CTX_SCALAR, NULL, &done);
+        }
+        pp_release(probe);
+    }
     if (n->a) {
-        pp_val f = pp_eval(I, n->a, CTX_SCALAR, NULL);
-        if (I->ctl) return pp_undef();
         int hfd;
         pp_obj *hf = handle_of(I, f, &hfd);
         if (hf) {
@@ -645,6 +692,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         else { for (int i = vals.n - 1; i >= 0; i--) pp_array_unshift(arr, vals.v[i]); }
         vals.n = 0; pp_list_free(&vals);
         int len = arr->u.arr.n;
+        if (arr->tied) pp_tie_writeback(I, arr);
         pp_obj_decref(arr);
         return ret(ctx, out, pp_int(len));
     }
@@ -654,7 +702,9 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         else arr = arg_container(I, n->list[0], 0);
         if (!arr) return pp_undef();
         if (arr->kind != PP_OARRAY) { pp_obj_decref(arr); return pp_die(I, "Not an ARRAY reference"); }
+        if (arr->tied) pp_tie_sync(I, arr);
         pp_val v = n->op == B_POP ? pp_array_pop(arr) : pp_array_shift(arr);
+        if (arr->tied) pp_tie_writeback(I, arr);
         pp_obj_decref(arr);
         return ret(ctx, out, v);
     }
@@ -681,6 +731,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         memmove(arr->u.arr.v + off + nins, arr->u.arr.v + off + cnt, (len - off - cnt) * sizeof(pp_val));
         for (int i = 0; i < nins; i++) arr->u.arr.v[off + i] = pp_copy(vals.v[2 + i]);
         arr->u.arr.n = newlen;
+        if (arr->tied) pp_tie_writeback(I, arr);
         pp_obj_decref(arr);
         pp_list_free(&vals);
         return ret_list(ctx, out, &removed);
@@ -967,9 +1018,11 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             pp_val k = pp_eval(I, a->b, CTX_SCALAR, NULL);
             if (I->ctl) return pp_undef();
             pp_str *ks = pp_to_str(k); pp_release(k);
-            pp_obj *h = pp_get_hash(I, a->a, 0, NULL);
-            if (h) { e = pp_hash_find(h, ks->d, ks->len) != NULL; pp_obj_decref(h); }
-            pp_str_decref(ks);
+            pp_obj *h = pp_get_hash_raw(I, a->a, 0);
+            if (h && h->tied == 1) e = tied_elem_call(I, h, "EXISTS", (pp_val){ .t = PP_STR, .u.s = ks }, NULL), ks = NULL;
+            else if (h) e = pp_hash_find(h, ks->d, ks->len) != NULL;
+            if (h) pp_obj_decref(h);
+            if (ks) pp_str_decref(ks);
         } else if (a->type == N_AELEM) {
             pp_val k = pp_eval(I, a->b, CTX_SCALAR, NULL);
             if (I->ctl) return pp_undef();
@@ -989,10 +1042,12 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             pp_val k = pp_eval(I, a->b, CTX_SCALAR, NULL);
             if (I->ctl) return pp_undef();
             pp_str *ks = pp_to_str(k); pp_release(k);
-            pp_obj *h = pp_get_hash(I, a->a, 0, NULL);
+            pp_obj *h = pp_get_hash_raw(I, a->a, 0);
             pp_val r = pp_undef();
-            if (h) { pp_hash_delete(h, ks->d, ks->len, &r); pp_obj_decref(h); }
-            pp_str_decref(ks);
+            if (h && h->tied == 1) tied_elem_call(I, h, "DELETE", (pp_val){ .t = PP_STR, .u.s = ks }, &r), ks = NULL;
+            else if (h) pp_hash_delete(h, ks->d, ks->len, &r);
+            if (h) pp_obj_decref(h);
+            if (ks) pp_str_decref(ks);
             if (I->ctl) { pp_release(r); return pp_undef(); }
             return ret(ctx, out, r);
         }
@@ -1156,6 +1211,8 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (n->n == 0) return ret(ctx, out, read_stdin_line(I));   /* <STDIN> */
         pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
+        { int done; pp_val r = tied_handle_call(I, hv, "READLINE", NULL, ctx == CTX_LIST && out ? CTX_LIST : CTX_SCALAR, out, &done);
+          if (done) return I->ctl || (ctx == CTX_LIST && out) ? r : ret(ctx, out, r); }
         int hfd;
         pp_obj *f = handle_of(I, hv, &hfd);
         if (!f && hfd == 0) {              /* <STDIN> through a glob: readline(*STDIN), <$in> */
@@ -1181,6 +1238,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_CLOSE: {
         pp_val hv = unary_arg(I, n);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
+        { int done; pp_val r = tied_handle_call(I, hv, "CLOSE", NULL, CTX_SCALAR, NULL, &done); if (done) return I->ctl ? r : ret(ctx, out, r); }
         int hfd;
         pp_obj *f = handle_of(I, hv, &hfd);
         if (!f && hfd >= 0) { pp_release(hv); return ret(ctx, out, pp_int(1)); }   /* close(STDOUT): stays open here */
@@ -1195,6 +1253,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_EOF: {
         pp_val hv = unary_arg(I, n);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
+        { int done; pp_val r = tied_handle_call(I, hv, "EOF", NULL, CTX_SCALAR, NULL, &done); if (done) return I->ctl ? r : ret(ctx, out, r); }
         pp_obj *f = file_of(I, hv, "eof");
         if (!f) { pp_release(hv); return pp_undef(); }
         int e = f->u.file.fp ? pp_host_feof(f->u.file.fp) : 1;
@@ -1237,6 +1296,14 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_BINMODE: case B_SELECT: {
         pp_list args = {0};
         eval_args(I, n, 0, &args);
+        if (n->op == B_BINMODE && args.n > 0 && tied_handle(I, args.v[0])) {   /* $obj->BINMODE(LAYER) */
+            pp_val hv = args.v[0];
+            for (int i = 1; i < args.n; i++) args.v[i - 1] = args.v[i];
+            args.n--;
+            int done;
+            pp_val r = tied_handle_call(I, hv, "BINMODE", &args, CTX_SCALAR, NULL, &done);
+            return I->ctl ? r : ret(ctx, out, r);
+        }
         if (n->op == B_BINMODE && args.n > 1 && !(I->compat_warn & 16)) {
             I->compat_warn |= 16;
             pp_warn(I, "picoperl: IO layers are ignored, files are bytes");
@@ -1894,6 +1961,7 @@ static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)ctx; (void)out;
     if (a->n < 1) return pp_undef();
     int fd;
+    if (tied_handle(I, a->v[0])) { int done; return tied_handle_call(I, pp_copy(a->v[0]), "FILENO", NULL, CTX_SCALAR, NULL, &done); }
     pp_obj *f = handle_of(I, a->v[0], &fd);
     if (f) return f->u.file.fp ? pp_int(3) : pp_undef();
     return fd >= 0 ? pp_int(fd) : pp_undef();
@@ -1906,7 +1974,35 @@ static pp_val n_isatty(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (a->n < 1 || handle_of(I, a->v[0], &fd) || fd < 0) return fd < 0 && !(a->n && a->v[0].t == PP_REF && a->v[0].u.o->kind == PP_OFILE) ? pp_undef() : pp_strn("", 0);
     return pp_host_isatty(fd) ? pp_int(1) : pp_strn("", 0);
 }
+/* tie VAR, CLASS, LIST / tied VAR / untie VAR: the parser passes \VAR (a glob for a handle) */
+static pp_val n_tie(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2 || a->v[0].t != PP_REF) return pp_die(I, "Can't modify constant item in tie");
+    pp_obj *var = a->v[0].u.o;
+    const char *m = var->kind == PP_OARRAY ? "TIEARRAY" : var->kind == PP_OHASH ? "TIEHASH" : var->kind == PP_OGLOB ? "TIEHANDLE" : "TIESCALAR";
+    pp_list rest = {0};
+    for (int i = 2; i < a->n; i++) pp_list_push(&rest, pp_copy(a->v[i]));
+    var->refcnt++;                        /* the constructor may drop the last reference to it */
+    pp_val obj = pp_tie_call(I, a->v[1], m, &rest, CTX_SCALAR, NULL, 1);
+    if (I->ctl) { pp_obj_decref(var); pp_release(obj); return pp_undef(); }
+    pp_tie_set(var, pp_copy(obj));
+    pp_obj_decref(var);
+    return obj;
+}
+static pp_val n_tied(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_val *t = a->n && a->v[0].t == PP_REF ? pp_tie_find(a->v[0].u.o) : NULL;
+    return t ? pp_copy(*t) : pp_undef();
+}
+static pp_val n_untie(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n && a->v[0].t == PP_REF && a->v[0].u.o->tied) pp_tie_remove(a->v[0].u.o);
+    return pp_int(1);
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "__tie", n_tie);
+    pp_register(I, "__tied", n_tied);
+    pp_register(I, "__untie", n_untie);
     pp_register(I, "__isatty", n_isatty);
     pp_register(I, "fileno", n_fileno);
     pp_register(I, "mkdir", n_mkdir);

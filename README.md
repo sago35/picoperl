@@ -510,6 +510,15 @@ perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `p
 `foreach` 変数の書き戻し (単一配列を回すときだけ反映)。比較演算子は perl と同じく非結合で、
 `0 < $x < 3` は構文エラーになります。
 
+**tie** (`tie` / `tied` / `untie`) はスカラー・配列・ハッシュ・ファイルハンドルに対応しています。
+tie した変数の読み書きは `FETCH` / `STORE` (ハッシュは `EXISTS` `DELETE` `CLEAR` `FIRSTKEY` `NEXTKEY`、
+配列は `FETCHSIZE`、ハンドルは `PRINT` `PRINTF` `READLINE` `CLOSE` `EOF` `BINMODE` `FILENO`) の呼び出しになります。
+tie していない変数の速度と RAM は変わりません (変数ごとのフラグを 1 バイト見るだけ)。perl との違い:
+`keys` やリストとしての展開など全体を読む操作は、その都度 `FIRSTKEY` / `NEXTKEY` / `FETCH` (配列は `FETCHSIZE` / `FETCH`) で
+中身を取り直してから行う。`push` `pop` `shift` `unshift` `splice` と全体への代入は `PUSH` などではなく `CLEAR` と `STORE` で書き戻す。
+`STORE` は代入の直後か、遅くとも文の終わりに呼ばれる。`local` した tie 変数、要素の tie (`tie $h{x}, ...`)、
+`UNTIE` / `DESTROY` の呼び出し、`select` での出力先の切り替えは未対応。`Tie::Hash` などの基底クラスは `lib/` に入れていません。
+
 **正規表現** は独自のバックトラックエンジン (`src/pp_regex.c`) で動きます:
 `m//` (`//`)、`s///`、`tr///` (`y///`)、`qr//`、`=~` / `!~`、`split /re/`、修飾子 `i m s x g e r` (`tr` は `c d s r`)、
 `$1`.. と `$&`、名前付きキャプチャ `(?<name>...)` と `%+`、`@-` / `@+` / `$+`、
