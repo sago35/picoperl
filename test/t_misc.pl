@@ -53,4 +53,17 @@ print "negative modulo: ", -7 % 3, " ", 7 % -3, " ", -7 % -3, "\n";
 print "big ints: ", 2 ** 62, " ", 2 ** 63, " ", 9007199254740993, " ", -2 ** 63, "\n";
 print "float fmt: ", 1e100, " ", 1.23456789012345678, " ", 100 * 1.1, " ", 3.0, " ", 2.50, "\n";
 print "inc float: ", do { my $f = 1.5; $f++; $f }, "\n";
+# $] / $^O / use vars
+print "version var: ", ($] >= 5.010 ? "new" : "old"), " ", ($] =~ /^5\.\d{6}$/ ? "fmt ok" : "fmt ng"), " ", ($] lt "5.008" ? "lt" : "ge"), " ", ("v[$]]" eq "v[" . $] . "]" ? "interp ok" : "interp ng"), "\n";
+print "osname: ", (length($^O) > 0 ? "set" : "empty"), " ", ("$^O" eq $^O ? "interp ok" : "interp ng"), " ", ($^O eq 'VMS' ? "vms" : "not vms"), "\n";
+{
+    package VarsDemo;
+    use strict;
+    use vars qw($VERSION @ISA %opt);
+    $VERSION = '1.02';
+    @ISA = ();
+    %opt = (a => 1);
+    sub version { $VERSION }
+}
+print "use vars: $VarsDemo::VERSION ", VarsDemo::version(), " ", scalar(@VarsDemo::ISA), " $VarsDemo::opt{a}\n";
 print "done\n";

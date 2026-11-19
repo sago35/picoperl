@@ -160,12 +160,13 @@ static void scope_finalize(pp_parser *P, int from, int min_target) {
 static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
         char c = name[0];
-        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^')) return 1;
+        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '|' || c == '^' || c == ']')) return 1;
         if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
         if (sigil == '%' && c == '+') return 1;
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
     }
     if (sigil == '$' && len >= 1 && isdigit((unsigned char)name[0])) return 1;   /* $1 .. */
+    if (sigil == '$' && len == 2 && name[0] == '^') return 1;                     /* $^O $^W .. */
     if (sigil == '%' && len == 3 && !memcmp(name, "SIG", 3)) return 1;
     if (sigil == '$' && ((len == 6 && !memcmp(name, "STDOUT", 6)) || (len == 6 && !memcmp(name, "STDERR", 6)) || (len == 5 && !memcmp(name, "STDIN", 5)))) return 1;
     if (sigil == '$' && len > 0 && name[0] >= '1' && name[0] <= '9') return 1;
@@ -528,7 +529,10 @@ static void lex_next(pp_parser *P, pp_tok *t) {
                 L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0;
             }
         }
-        else if (c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-') {
+        else if (c1 == '^' && isupper(peekc(L, 2))) {   /* $^O, $^W, ...: the name is "^O" */
+            L->pos += 3; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
+        }
+        else if (c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-') {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
@@ -890,6 +894,8 @@ static int interp_extent(const char *s, int len, int i) {
     else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
         return interp_extent(s, len, j);
     }
+    else if (s[i] == '$' && s[j] == '^' && j + 1 < len && isupper((unsigned char)s[j+1])) j += 2;   /* $^O */
+    else if (s[i] == '$' && s[j] == ']') return j + 1;                                                /* $] */
     else if (s[i] == '$' && (isdigit((unsigned char)s[j]) || s[j] == '@' || s[j] == '!' || s[j] == '&' || s[j] == '+' || s[j] == '-')) {
         j++;
         while (isdigit((unsigned char)s[j-1]) && j < len && isdigit((unsigned char)s[j])) j++;
@@ -2169,7 +2175,7 @@ static pp_node *parse_cond_block(pp_parser *P, int is_unless) {
 }
 
 static const char *ignored_modules[] = {
-    "utf8", "feature", "lib", "Exporter", "vars", "integer", "bytes",
+    "utf8", "feature", "lib", "Exporter", "integer", "bytes",
     "overload", "diagnostics", "experimental", "Carp", "FindBin", "English", NULL
 };
 
@@ -2227,6 +2233,20 @@ static pp_node *parse_use(pp_parser *P) {
             if (vars) top->strict_vars = !is_no;
             if (subs) top->strict_subs = !is_no;
         } else top->warnings = !is_no;
+        expect_op(P, ";");
+        return NULL;
+    }
+    if (cur_is_ident(P, "vars") && !is_no) {   /* use vars qw($x @y %z): package globals, like `our` */
+        advance(P);
+        if (!cur_is_op(P, ";")) {
+            pp_node *l = wrap_list(P, parse_expr(P));
+            for (int i = 0; i < l->n; i++) {
+                if (l->list[i]->type != N_CONST || l->list[i]->val.t != PP_STR) continue;
+                const char *w = l->list[i]->val.u.s->d; int wl = (int)l->list[i]->val.u.s->len;
+                if (wl >= 2 && (w[0] == '$' || w[0] == '@' || w[0] == '%')) declare_our(P, w[0], w + 1, wl - 1);
+            }
+            pp_free_ast(l);
+        }
         expect_op(P, ";");
         return NULL;
     }

@@ -3,6 +3,20 @@
 #include <math.h>
 #include <ctype.h>
 
+/* $^O: the host OS on a PC build (so scripts see what perl would report there),
+   "picoperl" on the board and in the browser */
+#ifndef PP_OSNAME
+#if defined(__linux__)
+#define PP_OSNAME "linux"
+#elif defined(__APPLE__)
+#define PP_OSNAME "darwin"
+#elif defined(_WIN32)
+#define PP_OSNAME "MSWin32"
+#else
+#define PP_OSNAME "picoperl"
+#endif
+#endif
+
 #define NOINLINE __attribute__((noinline))
 
 /* ------------------------------------------------------------------ */
@@ -2008,6 +2022,9 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "$,", 2));
     pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
+    /* $]: the perl version picoperl follows (a string, like perl's "5.044000") */
+    pp_global(I, pp_intern(I, "$]", 2))->u.scalar = pp_strn("5.044000", 8);
+    pp_global(I, pp_intern(I, "$^O", 3))->u.scalar = pp_strn(PP_OSNAME, (int)strlen(PP_OSNAME));
     pp_core_natives_register(I);
     pp_host_register(I);
     return I;
