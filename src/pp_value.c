@@ -151,6 +151,7 @@ static const char *ref_name(pp_obj *o) {
     }
 }
 
+int (*pp_ovl_hook)(pp_val v, int kind, pp_val *out);
 pp_str *pp_to_str(pp_val v) {
     char buf[64];
     switch (v.t) {
@@ -177,6 +178,8 @@ pp_str *pp_to_str(pp_val v) {
             return r;
         }
         if (v.u.o->class) {   /* a blessed reference: Class=HASH(0x...) */
+            pp_val ov;
+            if (pp_ovl_hook && pp_ovl_hook(v, 's', &ov)) { pp_str *r = pp_to_str(ov); pp_release(ov); return r; }
             char big[192];
             int n = pp_snprintf(big, sizeof big, "%s=%s(0x%lx)", v.u.o->class->name, ref_name(v.u.o), (unsigned long)(uintptr_t)v.u.o);
             return pp_str_new(big, n >= (int)sizeof big ? (int)sizeof big - 1 : n);
@@ -255,7 +258,11 @@ pp_val pp_numify(pp_val v) {
     switch (v.t) {
     case PP_INT: case PP_NUM: return v;
     case PP_STR: return pp_str_to_num(v.u.s->d, v.u.s->len);
-    case PP_REF: return pp_int((int64_t)(uintptr_t)v.u.o);
+    case PP_REF: {
+        pp_val ov;
+        if (pp_ovl_hook && v.u.o->class && pp_ovl_hook(v, 'n', &ov)) { pp_val r = pp_numify(ov); pp_release(ov); return r; }
+        return pp_int((int64_t)(uintptr_t)v.u.o);
+    }
     default: return pp_int(0);
     }
 }
@@ -277,6 +284,11 @@ int pp_truth(pp_val v) {
     case PP_INT: return v.u.i != 0;
     case PP_NUM: return v.u.n != 0;
     case PP_STR: return !(v.u.s->len == 0 || (v.u.s->len == 1 && v.u.s->d[0] == '0'));
+    case PP_REF: {
+        pp_val ov;
+        if (pp_ovl_hook && v.u.o->class && pp_ovl_hook(v, 'b', &ov)) { int t = pp_truth(ov); pp_release(ov); return t; }
+        return 1;
+    }
     default: return 1;
     }
 }

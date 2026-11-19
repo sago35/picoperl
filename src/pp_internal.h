@@ -52,6 +52,14 @@ extern int pp_tie_count;                           /* how many ties exist (0: no
 /* call METHOD on a tie object (or a class name) with args; must: die when there is no such method */
 pp_val  pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must);
 
+/* operator overloading. The conversions (pp_to_str, pp_numify, pp_truth) ask this hook about a
+   blessed reference: kind 's' string, 'n' number, 'b' truth; 1 with the result in *out when
+   the class has a conversion. NULL until `use overload` runs, so nothing else pays for it. */
+extern int (*pp_ovl_hook)(pp_val v, int kind, pp_val *out);
+void    pp_ovl_enable(pp_interp *I);
+/* a unary operator or function ("neg", "abs", "sqrt" ...) on v: 1 with *out when overloaded */
+int     pp_ovl_unary(pp_interp *I, pp_val v, const char *name, pp_val *out);
+
 /* symbols / env */
 pp_sym *pp_intern(pp_interp *I, const char *name, int len);
 pp_env *pp_env_new(pp_env *parent, int nslots);

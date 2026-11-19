@@ -510,6 +510,16 @@ perl と挙動が違う箇所は、スクリプト実行ごとに初回だけ `p
 `foreach` 変数の書き戻し (単一配列を回すときだけ反映)。比較演算子は perl と同じく非結合で、
 `0 < $x < 3` は構文エラーになります。
 
+**演算子オーバーロード** (`use overload`、`lib/overload.pm`) に対応しています: 算術 (`+ - * / % **`)、ビット (`<< >> & | ^`)、
+比較 (`== != < > <= >= <=>`、`eq ne lt gt le ge cmp`)、`.` と `x`、それぞれの代入形 (`+=` など)、変換 (`""` `0+` `bool`)、
+`neg` `!` `abs` `++` `--`、関数 `abs int sqrt sin cos exp log`。ハンドラは `handler($a, $b, $swapped)` で呼ばれ、継承もされます。
+値にはコード参照のほかメソッド名の文字列も書けます。`overload::StrVal` `overload::Overloaded` `overload::Method` もあります。
+オーバーロードを使わないスクリプトの速度は変わりません (演算の対象が bless された参照のときだけ調べます)。perl との違い:
+`fallback` の値は見ず、常に「代用できるものは代用する」として扱う (比較は `<=>` / `cmp` から、足りない演算は `0+` や `""` で
+変換してから計算。perl が `no method found` で die する場面でも計算される)。`=` (コピーコンストラクタ) は呼ばないので、
+`++` や `+=` のハンドラがオブジェクトを書き換えるクラスでは、代入しただけの別の変数も一緒に変わる。
+参照外し (`@{}` `%{}` `&{}` `${}`)、`<>`、`-X`、`~~`、`qr`、`nomethod`、`atan2`、`overload::constant` は未対応。
+
 **tie** (`tie` / `tied` / `untie`) はスカラー・配列・ハッシュ・ファイルハンドルに対応しています。
 tie した変数の読み書きは `FETCH` / `STORE` (ハッシュは `EXISTS` `DELETE` `CLEAR` `FIRSTKEY` `NEXTKEY`、
 配列は `FETCHSIZE`、ハンドルは `PRINT` `PRINTF` `READLINE` `CLOSE` `EOF` `BINMODE` `FILENO`) の呼び出しになります。

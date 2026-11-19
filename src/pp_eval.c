@@ -628,7 +628,101 @@ static void warn_operand(pp_interp *I, int op, pp_val v, const char *var) {
         pp_warn(I, "Argument \"%s\" isn't numeric in %s", v.u.s->d, binop_name(op));
 }
 
+/* ------------------------------------------------------------------ */
+/* operator overloading                                                */
+/* ------------------------------------------------------------------ */
+/* `use overload '+' => CODE` defines the sub "(+" in the class (lib/overload.pm), so a handler
+   is found like any method, inheritance included. All of this is reached only for blessed
+   references, and only once some `use overload` has run. */
+static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
+static pp_interp *ovl_I;
+static uint8_t ovl_assign;       /* the operation in progress is OP= (try "(OP=" first) */
+
+static pp_obj *ovl_find(pp_interp *I, pp_val v, const char *op) {
+    if (v.t != PP_REF || !v.u.o->class) return NULL;
+    char name[16];
+    pp_snprintf(name, sizeof name, "(%s", op);
+    return find_method(I, v.u.o->class->name, name, 0);
+}
+/* handler(x, y, swapped) in scalar context */
+static pp_val ovl_call(pp_interp *I, pp_obj *code, pp_val x, pp_val y, int swapped) {
+    pp_list args = {0};
+    pp_list_push(&args, pp_copy(x)); pp_list_push(&args, pp_copy(y)); pp_list_push(&args, swapped ? pp_int(1) : pp_strn("", 0));
+    code->refcnt++;
+    pp_val r = pp_call(I, code, &args, CTX_SCALAR, NULL);
+    pp_list_free(&args);
+    pp_obj_decref(code);
+    return r;
+}
+static int ovl_conv(pp_val v, int kind, pp_val *out) {
+    pp_interp *I = ovl_I;
+    if (!I || I->ctl) return 0;
+    /* each conversion stands in for the others, in perl's order */
+    static const char *const order[3][3] = { { "\"\"", "0+", "bool" }, { "0+", "\"\"", "bool" }, { "bool", "0+", "\"\"" } };
+    const char *const *try = order[kind == 's' ? 0 : kind == 'n' ? 1 : 2];
+    for (int i = 0; i < 3; i++) {
+        pp_obj *code = ovl_find(I, v, try[i]);
+        if (!code) continue;
+        *out = ovl_call(I, code, v, pp_undef(), 0);
+        if (out->t == PP_REF && out->u.o == v.u.o) { pp_release(*out); return 0; }   /* returned itself: the plain conversion */
+        return 1;
+    }
+    return 0;
+}
+void pp_ovl_enable(pp_interp *I) { ovl_I = I; pp_ovl_hook = ovl_conv; }
+int pp_ovl_unary(pp_interp *I, pp_val v, const char *name, pp_val *out) {
+    if (!pp_ovl_hook || I->ctl) return 0;
+    pp_obj *code = ovl_find(I, v, name);
+    if (!code) return 0;
+    *out = ovl_call(I, code, v, pp_undef(), 0);
+    return 1;
+}
+static const char *ovl_opname(int op) {
+    static const char *const names[] = {
+        [OP_ADD] = "+", [OP_SUB] = "-", [OP_MUL] = "*", [OP_DIV] = "/", [OP_MOD] = "%", [OP_POW] = "**", [OP_CONCAT] = ".",
+        [OP_SHL] = "<<", [OP_SHR] = ">>", [OP_BAND] = "&", [OP_BOR] = "|", [OP_BXOR] = "^",
+        [OP_NUM_EQ] = "==", [OP_NUM_NE] = "!=", [OP_NUM_LT] = "<", [OP_NUM_GT] = ">", [OP_NUM_LE] = "<=", [OP_NUM_GE] = ">=", [OP_NUM_CMP] = "<=>",
+        [OP_STR_EQ] = "eq", [OP_STR_NE] = "ne", [OP_STR_LT] = "lt", [OP_STR_GT] = "gt", [OP_STR_LE] = "le", [OP_STR_GE] = "ge", [OP_STR_CMP] = "cmp",
+        [OP_REPEAT] = "x",
+    };
+    return op > 0 && op < (int)(sizeof names / sizeof *names) ? names[op] : NULL;
+}
+/* a op b where one side is a blessed reference: 1 with the result in *out when a handler ran */
+static NOINLINE int ovl_binop(pp_interp *I, int op, pp_val a, pp_val b, pp_val *out) {
+    int assign = ovl_assign; ovl_assign = 0;
+    const char *name = ovl_opname(op);
+    if (!name || I->ctl) return 0;
+    pp_obj *code;
+    if (assign) {   /* $a += $b: "(+=" when there is one */
+        char an[8]; pp_snprintf(an, sizeof an, "%s=", name);
+        if ((code = ovl_find(I, a, an)) != NULL) { *out = ovl_call(I, code, a, b, 0); return 1; }
+    }
+    if ((code = ovl_find(I, a, name)) != NULL) { *out = ovl_call(I, code, a, b, 0); return 1; }
+    if ((code = ovl_find(I, b, name)) != NULL) { *out = ovl_call(I, code, b, a, 1); return 1; }
+    /* comparisons come from <=> / cmp when only that one is given */
+    int viacmp = op >= OP_NUM_EQ && op <= OP_NUM_GE ? OP_NUM_CMP : op >= OP_STR_EQ && op <= OP_STR_GE ? OP_STR_CMP : 0;
+    if (viacmp) {
+        pp_val c;
+        if (!ovl_binop(I, viacmp, a, b, &c)) return 0;
+        int64_t k = I->ctl ? 0 : pp_to_int(c);
+        pp_release(c);
+        int base = viacmp == OP_NUM_CMP ? OP_NUM_EQ : OP_STR_EQ, t;
+        switch (op - base) {
+        case 0: t = k == 0; break;
+        case 1: t = k != 0; break;
+        case 2: t = k < 0; break;
+        case 3: t = k > 0; break;
+        case 4: t = k <= 0; break;
+        default: t = k >= 0; break;
+        }
+        *out = t ? pp_int(1) : pp_strn("", 0);
+        return 1;
+    }
+    return 0;
+}
+
 static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
+    if (__builtin_expect((a.t == PP_REF) | (b.t == PP_REF), 0) && pp_ovl_hook) { pp_val r; if (ovl_binop(I, op, a, b, &r)) return r; }
     switch (op) {
     case OP_CONCAT: {
         pp_str *sa = pp_to_str(a);
@@ -1372,6 +1466,7 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
             else if (slot->t == PP_STR && n->op != OP_CONCAT) warn_operand(I, n->op, *slot, var_name_of(a));
             warn_operand(I, n->op, v, var_name_of(b));
         }
+        if (slot->t == PP_REF) ovl_assign = pp_ovl_hook != NULL;   /* ovl_binop takes the note and clears it */
         pp_val r = do_binop(I, n->op, *slot, v);
         pp_release(v);
         if (I->ctl) { pp_release(r); return pp_undef(); }
@@ -2213,6 +2308,11 @@ static NOINLINE pp_val eval_neg(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     pp_val a = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
     pp_val r;
+    if (a.t == PP_REF && pp_ovl_hook) {   /* -$obj: "neg", or 0 - $obj through the "-" handler */
+        if (pp_ovl_unary(I, a, "neg", &r)) { pp_release(a); return I->ctl ? (pp_release(r), pp_undef()) : scalar_or_push(ctx, out, r); }
+        pp_obj *sub = ovl_find(I, a, "-");
+        if (sub) { r = ovl_call(I, sub, a, pp_int(0), 1); pp_release(a); return I->ctl ? (pp_release(r), pp_undef()) : scalar_or_push(ctx, out, r); }
+    }
     if (a.t == PP_STR && !pp_looks_like_number(a.u.s->d, a.u.s->len) && a.u.s->len > 0) {
         if (a.u.s->d[0] == '-') { r = pp_strn(a.u.s->d, a.u.s->len); r.u.s->d[0] = '+'; }
         else if (a.u.s->d[0] == '+') { r = pp_strn(a.u.s->d, a.u.s->len); r.u.s->d[0] = '-'; }
@@ -2228,6 +2328,10 @@ static NOINLINE pp_val eval_neg(pp_interp *I, pp_node *n, int ctx, pp_list *out)
 static NOINLINE pp_val eval_not(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val a = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
+    if (a.t == PP_REF && pp_ovl_hook) {   /* !$obj: "!" when there is one, else from its truth */
+        pp_val r;
+        if (pp_ovl_unary(I, a, "!", &r)) { pp_release(a); return I->ctl ? (pp_release(r), pp_undef()) : scalar_or_push(ctx, out, r); }
+    }
     int t = pp_truth(a); pp_release(a);
     return scalar_or_push(ctx, out, truth_val(!t));
 }
@@ -2246,7 +2350,24 @@ static NOINLINE pp_val eval_incdec(pp_interp *I, pp_node *n, int ctx, pp_list *o
     if (!slot) return pp_undef();
     int delta = (n->type == N_PREINC || n->type == N_POSTINC) ? 1 : -1;
     pp_val old = *slot;
-    pp_val nv = incdec(old, delta);
+    pp_val nv;
+    if (old.t == PP_REF && pp_ovl_hook && old.u.o->class) {
+        /* $obj++: the "++" handler changes the object in place; without one it is $obj + 1 */
+        int post = n->type == N_POSTINC || n->type == N_POSTDEC;
+        pp_val keep = pp_copy(old), r;
+        if (pp_ovl_unary(I, keep, delta > 0 ? "++" : "--", &r)) { pp_release(r); if (!post) return scalar_or_push(ctx, out, keep); pp_release(keep); return scalar_or_push(ctx, out, pp_undef()); }
+        if (ovl_binop(I, delta > 0 ? OP_ADD : OP_SUB, keep, pp_int(1), &r)) {
+            if (I->ctl) { pp_release(r); pp_release(keep); return pp_undef(); }
+            slot = pp_lvalue(I, n->a);
+            if (!slot) { pp_release(r); pp_release(keep); return pp_undef(); }
+            pp_release(*slot); *slot = r;
+            if (post) return scalar_or_push(ctx, out, keep);
+            pp_release(keep);
+            return scalar_or_push(ctx, out, pp_copy(r));
+        }
+        pp_release(keep);
+    }
+    nv = incdec(old, delta);
     *slot = nv;
     if (n->type == N_POSTINC || n->type == N_POSTDEC) {
         if (old.t == PP_UNDEF) { pp_release(old); old = pp_int(0); }

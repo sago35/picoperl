@@ -917,6 +917,11 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case B_INT: case B_ABS: case B_SQRT: case B_SIN: case B_COS: case B_EXP: case B_LOG: {
         pp_val v = unary_arg(I, n);
         if (I->ctl) return pp_undef();
+        if (v.t == PP_REF && pp_ovl_hook) {   /* abs($obj) and friends: the class's own version */
+            pp_val ov;
+            const char *fn = n->op == B_INT ? "int" : n->op == B_ABS ? "abs" : n->op == B_SQRT ? "sqrt" : n->op == B_SIN ? "sin" : n->op == B_COS ? "cos" : n->op == B_EXP ? "exp" : "log";
+            if (pp_ovl_unary(I, v, fn, &ov)) { pp_release(v); return I->ctl ? (pp_release(ov), pp_undef()) : ret(ctx, out, ov); }
+        }
         pp_val num = pp_numify(v); pp_release(v);
         pp_val r;
         switch (n->op) {
@@ -1999,7 +2004,25 @@ static pp_val n_untie(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (a->n && a->v[0].t == PP_REF && a->v[0].u.o->tied) pp_tie_remove(a->v[0].u.o);
     return pp_int(1);
 }
+/* overload::_enable(): some class overloads operators from now on.
+   overload::StrVal($x): the plain Class=HASH(0x...) form, whatever the class overloads */
+static pp_val n_ovl_enable(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)a; (void)ctx; (void)out;
+    pp_ovl_enable(I);
+    return pp_int(1);
+}
+static pp_val n_ovl_strval(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1) return pp_undef();
+    int (*saved)(pp_val, int, pp_val *) = pp_ovl_hook;
+    pp_ovl_hook = NULL;
+    pp_str *s = pp_to_str(a->v[0]);
+    pp_ovl_hook = saved;
+    return pp_str_val(s);
+}
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "overload::_enable", n_ovl_enable);
+    pp_register(I, "overload::StrVal", n_ovl_strval);
     pp_register(I, "__tie", n_tie);
     pp_register(I, "__tied", n_tied);
     pp_register(I, "__untie", n_untie);
