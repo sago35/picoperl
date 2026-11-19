@@ -134,3 +134,19 @@ for my $t ('aaab', 'aaa', '"x\"y" z', 'foobar', 'abcabc') {
 }
 # (?^aa:...) などの文字セット系フラグ (a u l d) と p は受け付けて無視する
 print "charset flags: ", join("", map { $_ ? 1 : 0 } "xAy" =~ /(?^aa:A)/, "xay" =~ /(?^aai:A)/, "xay" =~ /(?^u:A)/, "xAy" =~ /(?a)A/, "xAy" =~ /(?^lp:A)/), "\n";
+# 後読み (?<=...) (?<!...): 中身の長さに上限があればよい (選択肢ごとに長さが違ってもよい)
+for my $s ('foobar', 'price: $42 and 17', 'a^]b]>c', 'x  >> y > z', 'aXbXXc', "l1\nl2\nl3", 'ab12cd', '') {
+    my @r;
+    push @r, join(",", $s =~ /(?<=foo)(\w+)/g), join(",", $s =~ /(?<!\$)\b(\d+)/g), join(",", $s =~ /(?<!\^)([\]>]+)/g);
+    push @r, ($s =~ /(\s+|(?<=\s\s))(>{2,})/ ? "[$1][$2]" : "-"), scalar(() = $s =~ /(?<=X)/g);
+    push @r, join(",", $s =~ /(?<=^|\n)(l\d)/g), join(",", $s =~ /(?<=a|bc|\d\d)(\w)/g);
+    push @r, ($s =~ /(?<=(\d))c/ ? "c after $1" : "-"), join(",", $s =~ /(?<![a-z]{2})(\d)/g), ($s =~ /(?<=B)1/i ? "i" : "-");
+    (my $t = $s) =~ s/(?<=X)(?!X)/_/g; (my $u = $s) =~ s/(?<!\d)(\d)(?!\d)/<$1>/g;
+    push @r, $t, $u, join("+", split /(?<=,)|(?<=\d)(?=[a-z])/, $s);
+    push @r, ($s =~ /(?<=(?<!o)o)b/ ? "nest" : "-"), ($s =~ /\b(?<!x)y/ ? "y" : "-");
+    print "lookbehind: ", join(" | ", @r), "\n";
+}
+for my $p ('(?<=a+)b', '(?<=a{1,300})b', '(?<=\1)b', '(?<=a*)b') { my $r = eval { "aab" =~ /$p/ ? "m" : "n" }; print "lookbehind $p: ", (defined $r ? $r : "dies"), "\n"; }
+# ASCII に文字が無いカテゴリ (\p{Zl} など) は何にも一致しない
+print "empty properties: ", join("", map { $_ ? 1 : 0 } "a \n" =~ /[\p{Zl}\p{Zp}]/, "a \n" =~ /[\s\t\p{Zl}\p{C}\p{Zp}]/, "aZ" =~ /\p{Lo}/, "a" =~ /\P{Zl}/, "12" =~ /\p{No}/), "\n";
+print "posix ascii: ", join("", map { $_ ? 1 : 0 } "abc" =~ /^[[:ascii:]]+$/, "a\xC3\xA9" =~ /[[:^ascii:]]/, "abc" =~ /[[:^ascii:]]/, "a\xC3\xA9" =~ /^[[:ascii:]]+$/), "\n";

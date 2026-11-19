@@ -32,6 +32,7 @@ enum {
     I_REP,          /* kind arg min max greedy : one single-byte atom repeated */
     I_MARK, I_CHECK,/* loop progress guard */
     I_LOOK,         /* neg end : sub-program follows, ends with I_MATCH */
+    I_LOOKB,        /* neg end min max : lookbehind; the sub-program must end where we stand */
 };
 
 typedef struct {
@@ -46,6 +47,40 @@ typedef struct {
     char  err[96];
     int   failed;
 } rparser;
+
+/* recursive helpers stay one copy each: inlined or cloned per caller they cost kilobytes of ROM */
+#if defined(__GNUC__) && !defined(__clang__)
+#define RE_FN __attribute__((noinline, noclone))
+#else
+#define RE_FN __attribute__((noinline))          /* clang (the wasm build) has no noclone */
+#endif
+static rnode *rnew(rparser *P, int type);
+/* the fewest and the most bytes a node can match; 0 when there is no upper bound */
+RE_FN static int width(const struct rnode *n, int *lo, int *hi) {
+    int a = 0, b = 0;
+    *lo = *hi = 0;
+    switch (n->type) {
+    case R_CHAR: case R_ANY: case R_CLASS: *lo = *hi = 1; return 1;
+    case R_BACKREF: return 0;
+    case R_LOOK: return n->neg == 2 ? width(n->child, lo, hi) : 1;   /* an atomic group has a width, a lookaround none */
+    case R_GROUP: return width(n->child, lo, hi);
+    case R_CAT:
+        for (const struct rnode *c = n->child; c; c = c->next) { if (!width(c, &a, &b)) return 0; *lo += a; *hi += b; if (*hi > 100000) return 0; }
+        return 1;
+    case R_ALT:
+        *lo = -1;
+        for (const struct rnode *c = n->child; c; c = c->next) { if (!width(c, &a, &b)) return 0; if (*lo < 0 || a < *lo) *lo = a; if (b > *hi) *hi = b; }
+        if (*lo < 0) *lo = 0;
+        return 1;
+    case R_REPEAT:
+        if (!width(n->child, &a, &b)) return 0;
+        if (n->max < 0) { if (b > 0) return 0; return 1; }
+        if (b > 100000 || n->max > 100000) return 0;
+        *lo = a * n->min; *hi = b * n->max;
+        return *hi <= 100000;
+    default: return 1;   /* anchors and the empty node */
+    }
+}
 
 static rnode *rnew(rparser *P, int type) {
     rnode *n = calloc(1, sizeof *n);
@@ -77,6 +112,9 @@ static const struct { const char *name; char kind; } uprops[] = {
     { "Ll", 'l' }, { "Lower", 'l' }, { "Lowercase", 'l' }, { "IsLower", 'l' }, { "Lowercase_Letter", 'l' }, { "XPosixLower", 'l' },
     { "N", 'd' }, { "Nd", 'd' }, { "Digit", 'd' }, { "Number", 'd' }, { "IsDigit", 'd' }, { "XPosixDigit", 'd' }, { "Decimal_Number", 'd' },
     { "M", 'm' }, { "Mn", 'm' }, { "Mc", 'm' }, { "Me", 'm' }, { "Mark", 'm' },
+    /* categories with no ASCII character: they match nothing here */
+    { "Zl", 'm' }, { "Zp", 'm' }, { "Line_Separator", 'm' }, { "Paragraph_Separator", 'm' },
+    { "Lt", 'm' }, { "Lm", 'm' }, { "Lo", 'm' }, { "Nl", 'm' }, { "No", 'm' }, { "Cf", 'm' }, { "Cs", 'm' }, { "Co", 'm' }, { "Cn", 'm' },
     { "P", 'p' }, { "Punct", 'p' }, { "Punctuation", 'p' }, { "IsPunct", 'p' },
     { "S", 'y' }, { "Symbol", 'y' },
     { "Z", 'z' }, { "Zs", 'z' }, { "Space_Separator", 'z' },
@@ -145,6 +183,7 @@ static int class_posix(uint8_t *cls, const char *name, int len) {
     else if (len == 5 && !memcmp(name, "blank", 5)) fn = isblank;
     else if (len == 6 && !memcmp(name, "xdigit", 6)) fn = isxdigit;
     else if (len == 4 && !memcmp(name, "word", 4)) { class_named(cls, 'w'); return 1; }
+    else if (len == 5 && !memcmp(name, "ascii", 5)) { class_range(cls, 0, 127); return 1; }
     if (!fn) return 0;
     for (int c = 0; c < 128; c++) if (fn(c)) class_set(cls, c);
     return 1;
@@ -288,7 +327,7 @@ static rnode *parse_atom(rparser *P, int depth) {
             else if (k == '!') { look = 1; neg = 1; }
             else if (k == '>') { look = 1; neg = 2; }   /* (?>...): atomic, no backtracking into it */
             else if (k == '#') { while (P->p < P->end && *P->p != ')') P->p++; if (P->p < P->end) P->p++; return rnew(P, R_EMPTY); }
-            else if (k == '<' && P->p < P->end && (*P->p == '=' || *P->p == '!')) { rfail(P, "lookbehind is not supported"); return NULL; }
+            else if (k == '<' && P->p < P->end && (*P->p == '=' || *P->p == '!')) { look = 1; neg = *P->p++ == '=' ? 3 : 4; }   /* lookbehind */
             else if ((k == '<' || k == '\'') && P->p < P->end && (isalpha((unsigned char)*P->p) || *P->p == '_')) {
                 /* (?<name>...) / (?'name'...): a numbered group that also fills $+{name} */
                 char close = k == '<' ? '>' : '\'';
@@ -328,6 +367,11 @@ static rnode *parse_atom(rparser *P, int depth) {
         n = rnew(P, look ? R_LOOK : R_GROUP);
         if (!n) return NULL;
         n->child = body; n->cap = (int16_t)cap; n->neg = (uint8_t)neg;
+        if (neg >= 3) {   /* what a lookbehind matches must have a bounded length, as in perl */
+            int lo = 0, hi = 0;
+            if (!width(body, &lo, &hi) || hi > 255) { rfail(P, "Lookbehind longer than 255 not implemented"); return NULL; }
+            n->min = lo; n->max = hi;
+        }
         return n;
     }
     case '\\': {
@@ -539,6 +583,13 @@ static void gen(emitter *E, const rnode *n) {
     }
     case R_REPEAT: gen_repeat(E, n); break;
     case R_LOOK: {
+        if (n->neg >= 3) {   /* lookbehind: neg end min max, then the sub-program */
+            int at = emit(E, I_LOOKB); emit(E, n->neg == 4); emit(E, 0); emit(E, n->min); emit(E, n->max);
+            gen(E, n->child);
+            emit(E, I_MATCH); emit(E, 0);
+            if (!E->failed) E->prog[at + 2] = E->n;
+            break;
+        }
         int at = emit(E, I_LOOK); emit(E, n->neg); emit(E, 0);
         gen(E, n->child);
         emit(E, I_MATCH); emit(E, 0);
@@ -631,7 +682,7 @@ static int atom_ok(const pp_regex *re, int kind, int arg, const unsigned char *s
 }
 
 /* run the program from pc0 at position sp0; returns 1/0/-1 (overflow) */
-static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int sp0, int start, int notempty_at, int *caps, int depth, long *steps) {
+RE_FN static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int sp0, int start, int notempty_at, int end_at, int *caps, int depth, long *steps) {
     const int32_t *prog = re->prog;
     bt_stack st = {0};
     int result = 0;
@@ -716,7 +767,7 @@ static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int
                     int ns = pp_re_nslots(re);
                     int old[ns];
                     memcpy(old, caps, sizeof old);
-                    int r = run(re, s, len, pc + 3, sp, start, -1, caps, depth + 1, steps);
+                    int r = run(re, s, len, pc + 3, sp, start, -1, -1, caps, depth + 1, steps);
                     if (r < 0) { result = -1; goto done; }
                     if (!r) { fail = 1; break; }
                     for (int i = 2; i < ns; i++)
@@ -724,12 +775,26 @@ static int run(const pp_regex *re, const unsigned char *s, int len, int pc0, int
                     sp = caps[1]; pc = prog[pc + 2];
                     break;
                 }
-                int r = run(re, s, len, pc + 3, sp, start, -1, caps, depth + 1, steps);
+                int r = run(re, s, len, pc + 3, sp, start, -1, -1, caps, depth + 1, steps);
                 if (r < 0) { result = -1; goto done; }
                 if (r != prog[pc + 1]) pc = prog[pc + 2]; else fail = 1;
                 break;
             }
+            case I_LOOKB: {
+                /* try every length the body can have, shortest first; the sub-run only counts
+                   when it ends exactly here (end_at). caps[1] is scratch below depth 0. */
+                if (depth > 20) { result = -1; goto done; }
+                int found = 0;
+                for (int w = prog[pc + 3]; w <= prog[pc + 4] && w <= sp && !found; w++) {
+                    int r = run(re, s, len, pc + 5, sp - w, start, -1, sp, caps, depth + 1, steps);
+                    if (r < 0) { result = -1; goto done; }
+                    found = r;
+                }
+                if (found != prog[pc + 1]) pc = prog[pc + 2]; else fail = 1;
+                break;
+            }
             case I_MATCH:
+                if (end_at >= 0 && sp != end_at) { fail = 1; break; }
                 if (notempty_at >= 0 && sp == notempty_at && start == notempty_at && depth == 0) { fail = 1; break; }
                 if (depth == 0) caps[0] = start;
                 caps[1] = sp;   /* at depth 0 the end of the match; below, where the sub-program stopped */
@@ -783,7 +848,7 @@ int pp_re_exec(const pp_regex *re, const char *str, int len, int start, int note
             pos = (int)((const unsigned char *)f - s);
         }
         for (int i = 0; i < nslots; i++) caps[i] = -1;
-        int r = run(re, s, len, 0, pos, pos, notempty_at, caps, 0, &steps);
+        int r = run(re, s, len, 0, pos, pos, notempty_at, -1, caps, 0, &steps);
         if (r) return r;
     }
     return 0;
