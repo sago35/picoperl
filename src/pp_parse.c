@@ -2368,7 +2368,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
             int parens = accept_op(P, "(");
             if (cur_is_ident(P, "STDERR") || cur_is_ident(P, "STDOUT")) {
                 pp_tok *nx2 = peek(P);
-                if (!(nx2->type == T_OP && (!strcmp(nx2->op, ",") || !strcmp(nx2->op, "(") || !strcmp(nx2->op, "->")))) {
+                /* print STDERR LIST and print STDERR (LIST); not `print STDERR, ...` or STDERR->method */
+                if (!(nx2->type == T_OP && (!strcmp(nx2->op, ",") || !strcmp(nx2->op, "->")))) {
                     pp_node *fh = node(P, N_FILEHANDLE); fh->op = P->cur.s[3] == 'O' ? 1 : 2; n->a = fh; advance(P);
                 }
             }

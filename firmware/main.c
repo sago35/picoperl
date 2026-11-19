@@ -504,6 +504,9 @@ static long heap_free_bytes(void) {
     return unused + (long)mi.fordblks;
 }
 NATIVE(n_heap_free) { UNUSED; return pp_int(heap_free_bytes()); }
+/* chdir: the drive has no current directory. Always fails (returns false), but scripts that
+   mention chdir still compile. */
+NATIVE(n_chdir) { UNUSED; return pp_strn("", 0); }
 NATIVE(n_reboot)         { UNUSED; watchdog_reboot(0, 0, 10); for (;;) tight_loop_contents(); return pp_undef(); }
 NATIVE(n_fs_read) {
     /* fs_read("/path") -> contents or undef */
@@ -656,6 +659,7 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_led", n_board_led);
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
+    pp_register(I, "chdir", n_chdir);
     pp_register(I, "Board::_reboot", n_reboot);
     pp_register(I, "Fs::_read", n_fs_read);
     pp_register(I, "Fs::_write", n_fs_write);

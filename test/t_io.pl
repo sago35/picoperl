@@ -63,3 +63,11 @@ print STDOUT ("paren ", "list", "\n");
 print STDOUT (join("-", 1, 2), "\n");
 printf STDOUT ("%s-%d\n", "fmt", 7);
 print STDERR ("to stderr ", 1 + 1, "\n");
+# chdir
+require Cwd;
+my $cd_start = Cwd::getcwd();
+print "chdir: ", (chdir("test") ? "ok" : "failed"), " ", (Cwd::getcwd() eq "$cd_start/test" ? "moved" : "not moved"), " ", (-e "t_io.pl" ? "sees t_io.pl" : "no file"), "\n";
+print "chdir back: ", (chdir "..") ? "ok" : "failed", " ", (Cwd::getcwd() eq $cd_start ? "back" : "elsewhere"), "\n";
+print "chdir missing: ", (chdir("no_such_dir_here") ? "ok" : "failed"), "\n";
+{ package ChdirPkg; sub go { chdir "." } } print "chdir in package: ", (ChdirPkg::go() ? "ok" : "failed"), "\n";
+

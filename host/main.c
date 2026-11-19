@@ -432,6 +432,15 @@ static pp_val n_heap_free(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 static pp_val n_sim_exit_after(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
 
+/* chdir($dir): true on success */
+static pp_val n_chdir(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_strn("", 0);
+    pp_str *dir = pp_to_str(a->v[0]);
+    int ok = chdir(dir->d) == 0;
+    pp_str_decref(dir);
+    return ok ? pp_int(1) : pp_strn("", 0);
+}
 /* Cwd::_getcwd() / Cwd::_realpath($path): what lib/Cwd.pm asks the OS (the board has neither) */
 static pp_val n_cwd_getcwd(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)a; (void)ctx; (void)out;
@@ -481,6 +490,7 @@ void pp_host_register(pp_interp *I) {
     pp_register(I, "Board::_led", n_board_led);
     pp_register(I, "Board::_reboot_bootsel", n_reboot_bootsel);
     pp_register(I, "Board::_heap_free", n_heap_free);
+    pp_register(I, "chdir", n_chdir);
     pp_register(I, "Cwd::_getcwd", n_cwd_getcwd);
     pp_register(I, "Cwd::_realpath", n_cwd_realpath);
     pp_register(I, "Matrix::_scan", n_matrix_scan);
