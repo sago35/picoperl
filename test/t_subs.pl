@@ -173,3 +173,25 @@ print "done\n";
     package CoreP; sub length { "mine" } sub uc { "MINE" }
     print "CORE: ", CORE::length("abcd"), " ", CORE::uc("x"), " ", CoreP::length("abcd"), " ", CORE::join("-", 1, 2), "\n";
 }
+# sort $subref LIST: スカラーに入れた比較関数
+{
+    my $by_num = sub { $a <=> $b }; my $rev = sub { $b cmp $a }; my %sh = (b => 2, a => 1, c => 3); my @sl = (10, 9, 100, 1);
+    print "sort subref: ", join(",", sort $by_num @sl), " | ", join(",", sort $rev (keys %sh)), " | ", join(",", sort $by_num (3, 1, 2)), " | ", join(",", sort $rev keys %sh), "\n";
+    my $keysort; print "sort subref undef: ", join(",", defined $keysort ? (sort $keysort (keys %sh)) : sort keys %sh), "\n";
+    my ($sx, $sy) = ("b", "a"); my @sw = ("q", "p");
+    print "sort scalars: ", join(",", sort $sx, $sy), " | ", join(",", sort($sx, $sy)), " | ", join(",", sort $sx, @sw), " | ", join(",", sort $sx x 2, "a"), " | ", join(",", sort $sx eq "b" ? @sw : ()), "\n";
+}
+# サブの属性 (: lvalue など) は読み飛ばす
+{
+    sub attr_f : lvalue { 5 } sub attr_g :method { $_[0] + $_[1] } my $attr_h = sub : lvalue { 7 };
+    print "attributes: ", attr_f(), attr_g(1, 2), $attr_h->(), "\n";
+}
+# defined(name()) はサブを呼んで戻り値を調べる。defined &name は定義の有無
+{
+    my $dcalls = 0;
+    sub def_u { $dcalls++; undef } sub def_d { $dcalls++; 1 } sub def_none { $dcalls++; return }
+    print "defined call: ", join("", map { $_ ? 1 : 0 } defined(def_u()), defined(def_d()), defined &def_u, defined &def_nosuch, defined(def_none()), defined def_u(), defined(&def_d)), " calls $dcalls\n";
+    my ($dtext, $dat) = ("abc", 0); my $dch;
+    sub def_next { return $dch = undef if $dat >= 3; $dch = substr($dtext, $dat++, 1) }
+    my $dn = 0; while (defined(def_next())) { $dn++ } print "defined in while: $dn\n";
+}

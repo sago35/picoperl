@@ -1971,6 +1971,21 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
 /* at the '(' after `sub NAME`: if the parentheses hold a prototype (only sigils and the like:
    ($$) (&$) (\@\@) (;$) (_)), skip to the ')' in the source, because prototype text does not
    lex as perl code. Returns 1 if it did. An empty () is left to parse_sub_params. */
+/* sub NAME : lvalue : method(...) { ... }: attributes are read and ignored */
+static void skip_attributes(pp_parser *P) {
+    while (cur_is_op(P, ":")) {
+        advance(P);
+        while (P->cur.type == T_IDENT) {
+            advance(P);
+            if (cur_is_op(P, "(") && !P->has_nxt) {
+                pp_lex *L = &P->L;
+                while (L->pos < L->len && L->src[L->pos] != ')') L->pos++;
+                advance(P);              /* the ')' */
+                advance(P);
+            }
+        }
+    }
+}
 static int skip_prototype(pp_parser *P) {
     if (P->has_nxt) return 0;
     pp_lex *L = &P->L;
@@ -2286,6 +2301,28 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
             return n;
         }
     }
+    if (is_sort && P->cur.type == T_VAR && P->cur.sigil == '$' && !P->has_nxt) {
+        /* sort $subref LIST: a plain scalar directly followed by the start of a list. Decided
+           from the source text, because after a term the lexer would read "@list" as an operator. */
+        pp_lex *L = &P->L;
+        int i = L->pos, sp = 0;
+        while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) { i++; sp = 1; }
+        int c = i < L->len ? (unsigned char)L->src[i] : 0;
+        if (sp && (c == '@' || c == '(' || (is_ident_start(c) && !(c == 'x' && !is_ident_char(i + 1 < L->len ? (unsigned char)L->src[i + 1] : 0))
+                                             && strncmp(L->src + i, "if ", 3) && strncmp(L->src + i, "unless ", 7) && strncmp(L->src + i, "for ", 4) && strncmp(L->src + i, "foreach ", 8)
+                                             && strncmp(L->src + i, "or ", 3) && strncmp(L->src + i, "and ", 4) && strncmp(L->src + i, "eq ", 3) && strncmp(L->src + i, "ne ", 3)
+                                             && strncmp(L->src + i, "cmp ", 4) && strncmp(L->src + i, "lt ", 3) && strncmp(L->src + i, "gt ", 3) && strncmp(L->src + i, "le ", 3) && strncmp(L->src + i, "ge ", 3)
+                                             && strncmp(L->src + i, "while ", 6) && strncmp(L->src + i, "until ", 6) && strncmp(L->src + i, "xor ", 4)))) {
+            pp_node *call = node(P, N_CALLREF);
+            L->prev_term = 0;                 /* what follows starts a term */
+            call->a = parse_unary(P);
+            pp_node *blk = node(P, N_BLOCK); node_add(blk, call); n->a = blk;
+            pp_node *l2 = parse_comma_list(P);
+            if (parens) expect_op(P, ")");
+            take_children(n, l2);
+            return n;
+        }
+    }
     pp_node *l = parse_comma_list(P);
     if (parens) expect_op(P, ")");
     if (l->n >= 1 && !is_sort) {
@@ -2383,6 +2420,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
         if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        skip_attributes(P);
         parse_block_stmts(P, b);
         if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
         int nv = scope_pop(P);
@@ -2912,6 +2950,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 if (proto) noargs = 0;   /* a non-empty prototype takes arguments */
                 if (proto == 2) { n->op = 1; noargs |= 4; }
             }
+            skip_attributes(P);
             declare_sub(P, n->sym, noargs);
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
                 advance(P);

@@ -972,7 +972,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (n->n == 0) return ret(ctx, out, pp_int(I->g_underscore->u.scalar.t != PP_UNDEF ? 1 : 0));
         pp_node *a = n->list[0];
         int d;
-        if (a->type == N_CALL && a->n == 0) d = pp_resolve_sub(I, a->sym) != NULL;
+        if (a->type == N_CALL && a->n == 0 && (a->flags & 2)) d = pp_resolve_sub(I, a->sym) != NULL;   /* defined &name; defined name() calls it */
         else if (a->type == N_CALLREF && (a->flags & 2)) {   /* defined &$code / defined &{"name"}: no call */
             pp_val cv = pp_eval(I, a->a, CTX_SCALAR, NULL);
             if (I->ctl) { pp_release(cv); return pp_undef(); }
