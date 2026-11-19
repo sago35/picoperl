@@ -180,6 +180,7 @@ static void scope_finalize(pp_parser *P, int from, int min_target) {
 static int is_ident_start(int c);
 /* after "-e" (L->pos is at the '-'): does a path follow? Only a scalar or a string literal
    counts, so that -s => 1, -e, and -x(...) keep their old meaning. */
+static int is_ident_char(int c);
 static int lex_filetest_operand(pp_lex *L) {
     int i = L->pos + 2;
     while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
@@ -190,6 +191,12 @@ static int lex_filetest_operand(pp_lex *L) {
     if (L->src[L->pos + 1] == 't' && c >= 'A' && c <= 'Z') {   /* -t STDIN: a handle name (capitals only) */
         while (i < L->len && (isupper((unsigned char)L->src[i]) || isdigit((unsigned char)L->src[i]) || L->src[i] == '_')) i++;
         return i >= L->len || !(is_ident_start((unsigned char)L->src[i]) || L->src[i] == ':' || L->src[i] == '(');
+    }
+    if (c == '(') return 1;                                   /* -e ($path) */
+    if (is_ident_start((unsigned char)c)) {                   /* -e uc $path, -f File::Spec->catfile(...), -e __FILE__ */
+        while (i < L->len && (is_ident_char((unsigned char)L->src[i]) || L->src[i] == ':')) i++;
+        while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+        return !(i + 1 < L->len && L->src[i] == '=' && L->src[i + 1] == '>');   /* (-e word => 1) stays a string */
     }
     return c == '"' || c == '\'';
 }

@@ -188,3 +188,12 @@ my %h = (read => 1, getc => 2); print "$h{read}$h{getc}\n";
     }
     unlink "test/io_tmp.txt";
 }
+
+# ファイルテストの後ろに関数呼び出しや括弧が来る形
+print((-e __FILE__ && -f __FILE__) ? "y\n":"n\n");
+require File::Spec; print((-d File::Spec->curdir) ? "y\n":"n\n");
+print((-e ($0)) ? "y\n":"n\n");
+sub path { $0 } print((-s path() > 10) ? "y\n":"n\n");
+my %h = (-e => 1, -s => 2); print join(",", sort keys %h), "\n";
+my $x = 5; my $e = 2; print 0 + $x -$e, "\n";
+print((-e join "", "/", "tmp") ? "y\n":"n\n");
