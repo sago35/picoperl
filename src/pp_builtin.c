@@ -1397,7 +1397,11 @@ static pp_val n_vec_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 
 /* (kept out of line and uncloned: left alone, the compiler unrolls the recursion for groups
    into itself and the two functions grow to 30 KB of firmware) */
+#if defined(__GNUC__) && !defined(__clang__)
 #define PACK_FN __attribute__((noinline, noclone))
+#else
+#define PACK_FN __attribute__((noinline))          /* clang (the wasm build) has no noclone */
+#endif
 /* one item of a pack template: a letter (or a group), its modifiers and its repeat count */
 typedef struct {
     char type;                 /* the letter; '(' for a group */
