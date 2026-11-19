@@ -2330,6 +2330,11 @@ static pp_node *parse_ident_term(pp_parser *P) {
 
     pp_tok *nx = peek(P);
     if (nx->type == T_OP && !strcmp(nx->op, "=>")) { pp_node *n = const_str(P, id, len); advance(P); return n; }
+    int forced_core = 0;
+    if (len > 6 && !memcmp(id, "CORE::", 6) && pp_builtin_id(id + 6, len - 6, NULL) > 0) {
+        /* CORE::length: the builtin itself, even where a sub of that name exists */
+        t->s += 6; t->len -= 6; id = t->s; len = t->len; forced_core = 1;
+    }
 
     if (len == 8 && !memcmp(id, "__LINE__", 8)) { advance(P); return const_int(P, line); }
     if (len == 8 && !memcmp(id, "__FILE__", 8)) { advance(P); return const_str(P, P->file, (int)strlen(P->file)); }
@@ -2583,7 +2588,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         static const char *core_only[] = { "print", "printf", "say", "defined", "undef", "scalar", "exists", "delete", "bless", "die", "warn", "sort", "map", "grep", "push", "pop", "shift", "unshift", "keys", "values", "each", "split", "join", "ref", NULL };
         int core = 0;
         for (int i = 0; core_only[i]; i++) if ((int)strlen(core_only[i]) == len && !memcmp(core_only[i], id, len)) core = 1;
-        if (!core && is_declared(P, sym_sigil(P, '&', id, len))) bid = 0;
+        if (!core && !forced_core && is_declared(P, sym_sigil(P, '&', id, len))) bid = 0;
     }
     if (bid > 0) {
         advance(P);

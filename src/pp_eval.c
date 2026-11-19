@@ -393,9 +393,24 @@ static NOINLINE pp_val eval_globslot(pp_interp *I, pp_node *n, int ctx, pp_list 
     return scalar_or_push(ctx, out, r);
 }
 
+/* a sub that has been referred to (\&name) but not defined yet */
+static int is_sub_stub(const pp_obj *o) {
+    return o->kind == PP_OCODE && !o->u.code.body && !o->u.code.native && !o->u.code.is_const;
+}
 void pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code) {
     /* takes ownership of code */
     pp_obj *cell = pp_global(I, sym);   /* SCALAR cell holding a CODE ref keeps it alive */
+    if (cell->u.scalar.t == PP_REF && cell->u.scalar.u.o != code && is_sub_stub(cell->u.scalar.u.o)
+        && code->refcnt == 1 && code->u.code.body && !code->u.code.is_const) {
+        /* \&name was taken before the sub existed (*alias = \&name in a BEGIN block): the
+           definition moves into that same object, so everything holding it now has the sub */
+        pp_obj *stub = cell->u.scalar.u.o;
+        stub->u.code = code->u.code;
+        memset(&code->u.code, 0, sizeof code->u.code);
+        pp_obj_decref(code);
+        sym->sub = stub;
+        return;
+    }
     pp_release(cell->u.scalar);
     cell->u.scalar = pp_ref(code);
     pp_obj_decref(code);
@@ -859,7 +874,12 @@ static pp_val tie_var_call(pp_interp *I, pp_obj *var, const char *m, pp_list *ar
     pp_val *t = pp_tie_find(var);
     if (!t) { if (args) pp_list_free(args); return pp_undef(); }
     pp_val o = pp_copy(*t);
+    /* while its own method runs, the variable is plain: STORE may assign to it (as in perl) */
+    uint8_t was = var->tied;
+    var->tied = 2; var->refcnt++;
     pp_val r = pp_tie_call(I, o, m, args, ctx, out, 1);
+    if (var->tied == 2) var->tied = was;
+    pp_obj_decref(var);
     pp_release(o);
     return r;
 }
@@ -869,7 +889,7 @@ void pp_tie_flush(pp_interp *I) {
     while (p) { struct pp_tiepend *nx = p->next; p->next = rev; rev = p; p = nx; }   /* oldest first */
     while (rev) {
         p = rev; rev = p->next;
-        if (!I->ctl && p->var->tied) {
+        if (!I->ctl && p->var->tied == 1) {
             pp_list a = {0};
             if (p->keyed) pp_list_push(&a, pp_copy(p->key));
             pp_list_push(&a, pp_copy(p->keyed ? p->val : p->var->u.scalar));
@@ -1008,7 +1028,7 @@ static pp_val *lvalue_or_null(pp_interp *I, pp_node *n) {
 pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
     switch (n->type) {
     case N_VAR:
-        if (n->sym->name[0] == '$') { pp_obj *c = var_cell(I, n); return c->tied ? tie_lv(I, c, pp_undef(), 0) : &c->u.scalar; }
+        if (n->sym->name[0] == '$') { pp_obj *c = var_cell(I, n); return c->tied == 1 ? tie_lv(I, c, pp_undef(), 0) : &c->u.scalar; }
         break;
     case N_MY:
         declare_my(I, n);
@@ -1045,14 +1065,14 @@ pp_val *pp_lvalue(pp_interp *I, pp_node *n) {
         if (I->ctl) return NULL;
         if (inner) {
             if (inner->t == PP_UNDEF) { pp_obj *s = pp_obj_new(PP_OSCALAR); *inner = pp_ref(s); pp_obj_decref(s); return &s->u.scalar; }
-            if (inner->t == PP_REF && inner->u.o->kind == PP_OSCALAR) return inner->u.o->tied ? tie_lv(I, inner->u.o, pp_undef(), 0) : &inner->u.o->u.scalar;
+            if (inner->t == PP_REF && inner->u.o->kind == PP_OSCALAR) return inner->u.o->tied == 1 ? tie_lv(I, inner->u.o, pp_undef(), 0) : &inner->u.o->u.scalar;
             if (is_symname(*inner)) { pp_sym *s = pp_symref(I, n, *inner, '$', 1); return s ? &pp_global(I, s)->u.scalar : NULL; }
             pp_die(I, "Not a SCALAR reference");
             return NULL;
         }
         pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(v); return NULL; }
-        if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { hold(I, v.u.o); pp_release(v); return I->lv_hold->tied ? tie_lv(I, I->lv_hold, pp_undef(), 0) : &I->lv_hold->u.scalar; }
+        if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { hold(I, v.u.o); pp_release(v); return I->lv_hold->tied == 1 ? tie_lv(I, I->lv_hold, pp_undef(), 0) : &I->lv_hold->u.scalar; }
         if (is_symname(v)) { pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v); return s ? &pp_global(I, s)->u.scalar : NULL; }
         pp_release(v);
         pp_die(I, "Not a SCALAR reference");
@@ -1366,7 +1386,7 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
         v = pp_copy(v);
         pp_tie_flush(I);
         if (ctx == CTX_VOID || I->ctl) { pp_release(v); return pp_undef(); }
-        if (a->type == N_VAR && a->sym->name[0] == '$' && var_cell(I, a)->tied) { pp_release(v); return pp_eval(I, a, CTX_SCALAR, NULL); }
+        if (a->type == N_VAR && a->sym->name[0] == '$' && var_cell(I, a)->tied == 1) { pp_release(v); return pp_eval(I, a, CTX_SCALAR, NULL); }
         return v;
     }
     if (ctx == CTX_VOID) return pp_undef();
@@ -1399,6 +1419,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
         return r;
     }
     if (I->depth >= I->max_depth) return pp_die(I, "Deep recursion limit exceeded");
+    if (!code->u.code.body) return pp_die(I, "Undefined subroutine &%s%s called", strstr(code->u.code.name ? code->u.code.name : "", "::") ? "" : "main::", code->u.code.name ? code->u.code.name : "");
     pp_env *env = pp_env_new(code->u.code.env, 1);
     env->is_sub = 1;
     pp_obj *argv = pp_env_cell(env, 0, '@');
@@ -1768,7 +1789,18 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
     case N_CALL:
         if (a->n == 0) {
             pp_obj *code = pp_resolve_sub(I, a->sym);
-            if (!code) return pp_die(I, "Undefined subroutine &%s%s", strstr(a->sym->name, "::") ? "" : "main::", a->sym->name + 1);
+            if (!code) {
+                /* not defined yet: a placeholder that the definition will fill in. It lives in
+                   the name's cell only, so the name itself still counts as undefined. */
+                pp_obj *cell = pp_global(I, a->sym);
+                if (cell->u.scalar.t == PP_REF && is_sub_stub(cell->u.scalar.u.o)) return pp_copy(cell->u.scalar);
+                code = pp_obj_new(PP_OCODE);
+                code->u.code.name = a->sym->name + 1;
+                pp_release(cell->u.scalar);
+                cell->u.scalar = pp_ref(code);
+                pp_obj_decref(code);
+                return pp_copy(cell->u.scalar);
+            }
             return pp_ref(code);
         }
         break;
@@ -2417,7 +2449,7 @@ static NOINLINE pp_val eval_var(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     pp_obj *c = var_cell(I, n);
     switch (n->sym->name[0]) {
     case '$':
-        if (c->tied) return scalar_or_push(ctx, out, tie_fetch_scalar(I, c));
+        if (c->tied == 1) return scalar_or_push(ctx, out, tie_fetch_scalar(I, c));
         if (n->flags & PP_VAR_ERRNO) return scalar_or_push(ctx, out, eval_errno(n, c->u.scalar));
         return scalar_or_push(ctx, out, pp_copy(c->u.scalar));
     case '@':
@@ -2487,7 +2519,7 @@ static NOINLINE pp_val eval_rv2(pp_interp *I, pp_node *n, int ctx, pp_list *out)
     }
     pp_val v = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
-    if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { pp_val r = v.u.o->tied ? tie_fetch_scalar(I, v.u.o) : pp_copy(v.u.o->u.scalar); pp_release(v); return scalar_or_push(ctx, out, r); }
+    if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR) { pp_val r = v.u.o->tied == 1 ? tie_fetch_scalar(I, v.u.o) : pp_copy(v.u.o->u.scalar); pp_release(v); return scalar_or_push(ctx, out, r); }
     if (is_globref(v)) { pp_val r = pp_copy(v.u.o->u.glob.name); pp_release(v); return scalar_or_push(ctx, out, r); }   /* $$globref is the glob */
     if (is_symname(v)) {
         pp_sym *s = pp_symref(I, n, v, '$', 1); pp_release(v);

@@ -156,3 +156,20 @@ print "done\n";
     };
     print "own try: ", ($ok ? "ok" : "caught"), " @got\n";
 }
+# まだ定義されていないサブへの参照 (\&name): 後から定義されると、先に取った参照や別名からも呼べる
+{
+    package StubP;
+    BEGIN { no strict 'refs'; *is_pos = \&is_positive; *alias2 = \&is_positive; }
+    my $early = \&later; my $r1 = \&later;
+    print "stub: same ", ($early == $r1 ? 1 : 0), " defined ", (defined &later ? 1 : 0), (defined &is_positive ? 1 : 0), "\n";
+    sub is_positive { $_[0] > 0 ? "pos" : "notpos" }
+    print "stub: ", is_pos(3), " ", alias2(-1), " ", StubP->can('is_pos')->(5), "\n";
+    eval { $early->() }; print "stub early call: ", ($@ =~ /Undefined subroutine &StubP::later called/ ? "undefined" : "other: $@"), "\n";
+    eval 'sub later { "now " . shift }'; print "stub: ", $early->("defined"), " ", (defined &later ? 1 : 0), "\n";
+    my $never = \&never_defined; eval { $never->() }; print "stub never: ", ($@ =~ /Undefined subroutine &StubP::never_defined called/ ? "undefined" : "other: $@"), "\n";
+}
+# CORE::name は、同じ名前のサブがあっても組み込みの方
+{
+    package CoreP; sub length { "mine" } sub uc { "MINE" }
+    print "CORE: ", CORE::length("abcd"), " ", CORE::uc("x"), " ", CoreP::length("abcd"), " ", CORE::join("-", 1, 2), "\n";
+}
