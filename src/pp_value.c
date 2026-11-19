@@ -44,6 +44,17 @@ void pp_arena_free(pp_arena *a) {
     free(a);
 }
 
+void pp_arena_absorb(pp_arena *dst, pp_arena *src) {
+    if (src->chunks) {
+        pp_arena_chunk *tail = src->chunks;
+        while (tail->next) tail = tail->next;
+        if (dst->chunks) { tail->next = dst->chunks->next; dst->chunks->next = src->chunks; }   /* dst keeps filling its own head chunk */
+        else dst->chunks = src->chunks;
+    }
+    dst->nnodes += src->nnodes;
+    free(src);
+}
+
 /* ---------------- strings ---------------- */
 
 pp_str *pp_str_new(const char *s, int len) {

@@ -1789,6 +1789,85 @@ static NOINLINE pp_val eval_evalblock(pp_interp *I, pp_node *n, int ctx, pp_list
     return r;
 }
 
+/* eval STRING: parse the string now and run it like a small file. Its file scope starts with
+   the `my` variables that were visible at the eval (the same cells, so assignments are seen
+   outside). Errors, including syntax errors, end up in $@. */
+static NOINLINE pp_val eval_evalstr(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    pp_val sv = n->a ? pp_eval(I, n->a, CTX_SCALAR, NULL) : pp_copy(I->g_underscore->u.scalar);
+    if (I->ctl) { pp_release(sv); return pp_undef(); }
+    pp_str *src = pp_to_str(sv);
+    pp_release(sv);
+    char namebuf[32];
+    int nl = snprintf(namebuf, sizeof namebuf, "(eval %d)", ++I->eval_seq);
+    char *fname = pp_xmalloc(nl + 1); memcpy(fname, namebuf, nl + 1);
+    /* like a required file: the code being run keeps its own list of subs to define */
+    pp_node **outer_subs = I->subdefs; int outer_nsubs = I->nsubdefs;
+    pp_env *outer_pending = I->pending_env;
+    I->subdefs = NULL; I->nsubdefs = 0; I->pending_env = NULL;
+    char errbuf[400];
+    pp_arena *arena = NULL;                      /* the code's AST lives here */
+    int subs_before = I->nall_subdefs;
+    pp_node *unit = pp_parse_eval(I, fname, src->d, n, errbuf, sizeof errbuf, &arena);
+    pp_str_decref(src);
+    pp_val r = pp_undef();
+    if (!unit) {
+        if (I->pending_env) pp_env_decref(I->pending_env);
+        pp_release(I->g_at->u.scalar);
+        I->g_at->u.scalar = pp_cstr(errbuf);
+        free(fname);
+    } else {
+        pp_env *e = I->pending_env ? I->pending_env : pp_env_new(NULL, unit->aux);
+        pp_env_grow(e, unit->aux);
+        int slot = 0;
+        for (int i = 0; i < n->n; i++) {
+            if (!(n->list[i]->flags & PP_VAR_LEX)) continue;
+            pp_obj *cell = var_cell(I, n->list[i]);
+            cell->refcnt++;
+            if (e->cells[slot]) pp_obj_decref(e->cells[slot]);
+            e->cells[slot++] = cell;
+        }
+        I->pending_env = e;                      /* pp_exec_unit runs the code in it */
+        pp_env *saved_env = I->env; int saved_depth = I->depth, saved_ctx = I->call_ctx;
+        const char *saved_file = I->file; int saved_line = I->line;
+        int lh = I->nlocals, outn = out ? out->n : 0;
+        I->file = fname;
+        I->call_ctx = ctx;                       /* return and wantarray inside see the eval's context */
+        r = pp_exec_unit(I, unit, ctx, out);
+        I->file = saved_file; I->line = saved_line; I->call_ctx = saved_ctx;
+        if (I->ctl == CTL_DIE) {
+            I->ctl = CTL_NONE;
+            pp_release(r); r = pp_undef();
+            if (out) { for (int i = outn; i < out->n; i++) pp_release(out->v[i]); out->n = outn; }
+            pp_release(I->g_at->u.scalar);
+            I->g_at->u.scalar = I->err; I->err = pp_undef();
+            I->env = saved_env; I->depth = saved_depth; I->call_ctx = saved_ctx;
+            local_unwind(I, lh);
+        } else {
+            if (I->ctl == CTL_RETURN) {          /* return inside the string ends the eval */
+                I->ctl = CTL_NONE;
+                pp_release(r);
+                pp_list rv = I->ret;
+                memset(&I->ret, 0, sizeof I->ret);
+                if (ctx == CTX_LIST && out) { for (int i = 0; i < rv.n; i++) pp_list_push(out, rv.v[i]); rv.n = 0; r = pp_undef(); }
+                else { r = rv.n ? rv.v[rv.n - 1] : pp_undef(); if (rv.n) rv.n--; }
+                pp_list_free(&rv);
+            }
+            pp_release(I->g_at->u.scalar);
+            I->g_at->u.scalar = pp_strn("", 0);
+        }
+        /* statements that made no sub or closure were released as they ran. If nothing made
+           one, the whole AST goes away now (an eval in a loop must not pile up memory);
+           otherwise it stays with the interpreter. */
+        int kept = I->nall_subdefs != subs_before;
+        for (int i = 0; i < unit->n; i++) if (unit->list[i]) kept = 1;
+        if (kept) { pp_arena_absorb(I->arena, arena); track_unit(I, unit, fname); }
+        else { pp_free_ast(unit); pp_arena_free(arena); free(fname); }
+    }
+    free(I->subdefs);
+    I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
+    return r;
+}
+
 /* try/catch/finally: like eval {}, but return/last/next escape through the try
  * block, $@ stays empty inside catch (the error is in the catch variable), and
  * finally always runs, preserving whatever control flow is pending. */
@@ -2146,6 +2225,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_NOP: return pp_undef();
     case N_DOBLOCK: return exec_block(I, n->a, ctx, out);
     case N_EVALBLOCK: return eval_evalblock(I, n, ctx, out);
+    case N_EVALSTR: return eval_evalstr(I, n, ctx, out);
     case N_CONSTDEF: return eval_constdef(I, n);
     case N_REQUIRE: return scalar_or_push(ctx, out, eval_require(I, n));
     case N_USE: return eval_use(I, n);

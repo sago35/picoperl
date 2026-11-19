@@ -182,6 +182,9 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_EVALSTR,      /* eval STRING: a: the code (NULL = $_), b: package at the eval (const, NULL = main),
+                       op: pragmas in effect (1 strict vars, 2 subs, 4 refs, 8 warnings),
+                       list: one N_VAR per `my` variable visible here, so the code can use them */
     N_SUBCLOSE,     /* a named sub that uses `my` variables of an enclosing block: define it here, when
                        the block runs (sym: the sub; its N_SUBDEF is flagged PP_SUB_INPLACE) */
     N_LOCALELEM,    /* local $h{k} / local $a[i] / local @h{...} / local @a[...]: a: the element or slice */
@@ -240,6 +243,7 @@ typedef struct pp_arena { pp_arena_chunk *chunks; long nnodes; } pp_arena;
 pp_arena *pp_arena_new(void);
 void     *pp_arena_alloc(pp_arena *a, size_t n);
 void      pp_arena_free(pp_arena *a);
+void      pp_arena_absorb(pp_arena *dst, pp_arena *src);   /* dst takes over src's memory; src is freed */
 
 /* ------------------------------------------------------------------ */
 /* Interpreter                                                         */
@@ -306,6 +310,7 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    int      eval_seq;           /* number of eval STRINGs so far: their "file" is "(eval N)" */
     pp_env  *pending_env;        /* file scope of the file being parsed, made early when a BEGIN block
                                     needs the subs defined so far; pp_exec_unit runs the file in it */
     const char *file_pkg;        /* package of the file-level code being run (NULL = main), for caller */

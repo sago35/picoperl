@@ -59,6 +59,7 @@ typedef struct {
     pscope *st; int n, cap;                      /* open scopes (stack) */
     unsigned char *collapsed; int *parent_of; int nids, capids;
     struct { pp_node *node; int own, target; } *recs; int nrecs, caprecs;   /* lexical references to finalize */
+    pp_node **made; int nmade, capmade; int track;   /* eval STRING: every arena node, to clean up after a syntax error */
     pp_sym **ours; int nours, capours;           /* `our` names allowed under strict vars */
 } pscopes;
 
@@ -654,7 +655,14 @@ static pp_node *const_str(pp_parser *P, const char *s, int len);
 static pp_node *node(pp_parser *P, int type) {
     pp_node *n;
     if (P->sc->heap_depth) { n = pp_xmalloc(sizeof(pp_node)); memset(n, 0, sizeof *n); n->flags = PP_NODE_HEAP; }
-    else { n = pp_arena_alloc(P->sc->arena, sizeof(pp_node)); memset(n, 0, sizeof *n); P->sc->arena->nnodes++; }
+    else {
+        n = pp_arena_alloc(P->sc->arena, sizeof(pp_node)); memset(n, 0, sizeof *n); P->sc->arena->nnodes++;
+        if (P->sc->track) {
+            pscopes *S = P->sc;
+            if (S->nmade == S->capmade) { S->capmade = S->capmade ? S->capmade * 2 : 64; S->made = pp_xrealloc(S->made, S->capmade * sizeof(pp_node *)); }
+            S->made[S->nmade++] = n;
+        }
+    }
     pp_stat_nodes++;
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
@@ -669,6 +677,7 @@ static pp_node *node(pp_parser *P, int type) {
 }
 /* temporary node (list shells etc.): always malloc'd so it can be dropped */
 static pp_node *node_tmp(pp_parser *P, int type) {
+    if (P->sc->track && !P->sc->heap_depth) return node(P, type);   /* eval STRING: everything is in its arena */
     pp_node *n = pp_xmalloc(sizeof(pp_node));
     memset(n, 0, sizeof *n);
     pp_stat_nodes++;
@@ -690,6 +699,7 @@ static pp_node *adopt(pp_parser *P, pp_node *n) {
 static void drop_shell(pp_node *l) {
     free(l->list);
     if (l->flags & PP_NODE_HEAP) { free(l); pp_stat_nodes--; }
+    else { l->list = NULL; l->n = 0; }        /* an arena node stays behind, empty */
 }
 static void node_add(pp_node *n, pp_node *child) {
     if ((n->n & (n->n - 1)) == 0) {
@@ -2195,7 +2205,29 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (len == 4 && !memcmp(id, "eval", 4)) {
         advance(P);
         if (cur_is_op(P, "{")) { pp_node *n = node(P, N_EVALBLOCK); n->a = parse_block(P); return n; }
-        perr(P, "eval STRING is not supported");
+        /* eval STRING: the code is parsed when it runs. Note which `my` variables it can see
+           (innermost first, so shadowed ones are skipped): the run-time parser declares the
+           same names, and their cells are shared with the eval. */
+        pp_node *n = node(P, N_EVALSTR);
+        if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) n->a = parse_expr(P); expect_op(P, ")"); }   /* eval(...) + 1 */
+        else if (starts_term(P)) n->a = parse_binary(P, PREC_NAMED_UNARY);
+        pscopes *S = P->sc;
+        for (int i = S->n - 1; i >= 0 && n->n < 200; i--) {
+            pscope *sc = &S->st[i];
+            for (int k = sc->n - 1; k >= 0 && n->n < 200; k--) {
+                int dup = 0;
+                for (int j = 0; j < n->n; j++) if (n->list[j]->sym == sc->vars[k]) { dup = 1; break; }
+                if (dup) continue;
+                pp_node *v = node(P, N_VAR);
+                v->sym = sc->vars[k]; v->flags |= PP_VAR_LEX; v->op = (uint8_t)k;
+                scope_record(P, v, S->st[S->n - 1].id, sc->id);
+                node_add(n, v);
+            }
+        }
+        if (strcmp(P->pkg, "main") != 0) n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+        pscope *top = scope_top(P);
+        n->op = (uint8_t)((top->strict_vars ? 1 : 0) | (top->strict_subs ? 2 : 0) | (top->strict_refs ? 4 : 0) | (top->warnings ? 8 : 0));
+        return n;
     }
     if (len == 3 && !memcmp(id, "not", 3) && nx->type == T_OP && !strcmp(nx->op, "(")) {
         advance(P); advance(P);
@@ -2795,7 +2827,7 @@ static void parser_free(pp_parser *P) {
         free(P->our_names); free(P->our_syms);
         pscopes *S = P->sc;
         while (S->n) scope_pop(P);
-        free(S->st); free(S->collapsed); free(S->parent_of); free(S->recs); free(S->ours);
+        free(S->st); free(S->collapsed); free(S->parent_of); free(S->recs); free(S->ours); free(S->made);
         free(S);
     }
 }
@@ -2816,22 +2848,59 @@ static void shrink_ast(pp_arena *arena, pp_node *n) {
     n->list = nl;
 }
 
-pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err) {
+/* Parse a file, or (site != NULL) the code of an eval STRING. The eval code starts with the
+   package, pragmas and `my` variables of the place it is evaluated at, its nodes go into an
+   arena of their own (*arena, freed by the caller once the code has run), and a syntax error
+   goes to errbuf instead of stderr. */
+static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, int *err, pp_node *site, char *errbuf, int errcap, pp_arena **arena) {
     pp_parser P;
     parser_init(&P, I, filename, src, (int)strlen(src), 1, NULL);
     *err = 0;
+    int subs_before = I->nall_subdefs;
+    if (site) { P.sc->arena = pp_arena_new(); P.sc->track = 1; *arena = P.sc->arena; }
     if (setjmp(P.jb)) {
         char buf[512];
         int n = P.err_has_loc ? snprintf(buf, sizeof buf, "%s\n", P.errmsg)
                               : snprintf(buf, sizeof buf, "%s at %s line %d.\n", P.errmsg, filename, P.cur.line);
-        pp_host_write(2, buf, n);
+        if (errbuf) snprintf(errbuf, errcap, "%s", buf);
+        else pp_host_write(2, buf, n);
         *err = 1;
-        parser_free(&P);      /* the partial tree stays in the arena until pp_free */
+        if (site) {
+            pp_arena *ea = P.sc->arena;
+            int defined_early = 0;               /* a BEGIN block in the string already defined a sub from it */
+            for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_SUB_EARLY) defined_early = 1;
+            if (defined_early) pp_arena_absorb(I->arena, ea);
+            else {
+                I->nall_subdefs = subs_before;   /* the string did not compile: its subs are not defined */
+                /* nothing refers to the partial tree: release what its nodes own, then the arena */
+                for (int i = 0; i < P.sc->nmade; i++) {
+                    pp_node *nd = P.sc->made[i];
+                    if (nd->type == N_CONST) { pp_release(nd->val); nd->val = pp_undef(); }
+                    else { free(nd->list); nd->list = NULL; }
+                }
+                pp_arena_free(ea);
+            }
+            *arena = NULL;
+        }
+        parser_free(&P);      /* a file's partial tree stays in the arena until pp_free */
         return NULL;
     }
     advance(&P);
     pp_node *unit = node(&P, N_BLOCK);
     scope_push(&P, SCOPE_UNIT);
+    if (site) {
+        pscope *top = scope_top(&P);
+        top->strict_vars = site->op & 1; top->strict_subs = (site->op & 2) != 0;
+        top->strict_refs = (site->op & 4) != 0; top->warnings = (site->op & 8) != 0;
+        for (int i = 0; i < site->n; i++)            /* slots 0..k-1: the caller fills them with the cells */
+            if (site->list[i]->flags & PP_VAR_LEX) scope_declare(&P, site->list[i]->sym);
+        if (site->b) {
+            snprintf(P.pkg, sizeof P.pkg, "%s", site->b->val.u.s->d);
+            pp_node *pn = node(&P, N_PACKAGE);
+            pn->sym = pp_intern(I, P.pkg, (int)strlen(P.pkg));
+            node_add(unit, pn);
+        }
+    }
     while (P.cur.type != T_EOF) {
         if (cur_is_op(&P, "}")) perr(&P, "Unmatched right curly bracket");   /* would loop forever: nothing consumes it */
         pp_node *s = parse_statement(&P);
@@ -2845,6 +2914,13 @@ pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err)
     for (int i = 0; i < I->nsubdefs; i++) shrink_ast(P.sc->arena, I->subdefs[i]);
     parser_free(&P);
     return unit;
+}
+pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err) {
+    return parse_unit(I, filename, src, err, NULL, NULL, 0, NULL);
+}
+pp_node *pp_parse_eval(pp_interp *I, const char *filename, const char *src, pp_node *site, char *errbuf, int errcap, pp_arena **arena) {
+    int err = 0;
+    return parse_unit(I, filename, src, &err, site, errbuf, errcap, arena);
 }
 
 /* parse an interpolated expression with the scopes of the enclosing parser */
