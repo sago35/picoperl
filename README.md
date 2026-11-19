@@ -277,6 +277,23 @@ reftype refaddr indexed)`、
 実行されたときに定義されます。ブロックより前で呼ぶと `Undefined subroutine` になり、ループの中に
 書くと繰り返しのたびに定義し直されます (perl は最初の 1 回の変数を使い続けます)。
 
+**`List::Util`**、**`Scalar::Util`**、**`mro`** の picoperl 版を `lib/` に同梱しています (本家は XS なので
+読み込めないため)。`lib/` は perl 本体のライブラリより先に探すので、`use List::Util qw(sum max first);` と
+書けばこちらが使われます。
+
+- `List::Util`: `sum sum0 product min max minstr maxstr first any all none notall reduce reductions
+  shuffle uniq uniqnum uniqint uniqstr pairs unpairs pairkeys pairvalues pairmap pairgrep pairfirst
+  head tail zip mesh` (`_longest` / `_shortest` 付き)
+- `Scalar::Util`: `blessed reftype refaddr looks_like_number` は本家と同じ。`weaken` は何もしません
+  (参照カウントだけで弱参照が無いので、循環参照は解放されません)。`readonly` `tainted` `isweak` は常に偽、
+  `dualvar` は die します
+- `mro`: `get_linear_isa` など。メソッド探索は常に深さ優先で、`use mro 'c3'` は受け付けるだけです
+
+**`(&...)` で始まるプロトタイプ**を持つサブには、`first { $_ > 1 } @list` のようにブロックを渡せます
+(`sub apply(&@) { my $f = shift; ... }`)。ブロックは無名サブとして渡されます。
+
+bless したリファレンスを文字列にすると、perl と同じ `Class=HASH(0x...)` の形になります。
+
 **`END { ... }`** はプログラムの終了時 (`die` や `exit` の後も) に、登録の逆順で実行されます。
 ブロックの中では終了コードが **`$?`** に入っていて、書き換えると終了コードが変わります。
 perl と違い、登録されるのは `END` の文に実行が到達したときです (コンパイル時ではありません)。

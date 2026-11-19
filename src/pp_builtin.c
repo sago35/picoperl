@@ -1158,10 +1158,20 @@ static pp_val n_bi_refaddr(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_int((int64_t)(uintptr_t)a->v[0].u.o);
 }
 
+/* Scalar::Util::looks_like_number($x): would perl treat the value as a number without a warning? */
+static pp_val n_looks_like_number(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_strn("", 0);
+    if (a->v[0].t == PP_INT || a->v[0].t == PP_NUM) return pp_int(1);
+    if (a->v[0].t != PP_STR) return pp_strn("", 0);
+    return pp_looks_like_number(a->v[0].u.s->d, a->v[0].u.s->len) ? pp_int(1) : pp_strn("", 0);
+}
+
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "builtin::ceil", n_bi_ceil);
     pp_register(I, "builtin::floor", n_bi_floor);
     pp_register(I, "builtin::blessed", n_bi_blessed);
     pp_register(I, "builtin::reftype", n_bi_reftype);
     pp_register(I, "builtin::refaddr", n_bi_refaddr);
+    pp_register(I, "Scalar::Util::looks_like_number", n_looks_like_number);
 }
