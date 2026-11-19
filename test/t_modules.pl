@@ -55,4 +55,10 @@ print "unknown name: ", ($@ =~ /^"no_such_name" is not exported by the ImpTags m
 # サブの中から require したファイルでも、caller はそのファイルのパッケージを返す
 { package LoaderPkg; sub load { require TestCallerUser; TestCallerUser::get() } }
 print "caller while loading: ", LoaderPkg::load(), " / body: $TestCallerUser::body_caller\n";
+# use Module (); は読み込むだけで、何も取り込まない
+{ package EmptyImp; use TestImpExp (); sub has { __PACKAGE__->can('exp_default') ? "imported" : "not imported" } sub direct { TestImpExp::exp_default() } }
+{ package EmptyImp2; use TestImpExp qw(); sub has { __PACKAGE__->can('exp_default') ? "imported" : "not imported" } }
+{ package EmptyImp3; use TestImpChild (); }
+print "empty import list: ", EmptyImp::has(), " ", EmptyImp::direct(), " ", EmptyImp2::has(), " ", (grep({ /EmptyImp3/ } @TestImpBase::log) ? "import called" : "import not called"), "\n";
+print "builtins are not methods: ", (main->can('chdir') ? "can" : "cannot"), "\n";
 print "done modules\n";

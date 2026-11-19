@@ -1598,6 +1598,7 @@ static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
     pp_val r = do_require(I, file, 0);
     pp_release(r);
     if (I->ctl) goto out;
+    if (n->flags & 2) goto out;                  /* use Module (); */
     pp_list args = {0};
     for (int i = 0; i < n->n; i++) { pp_eval(I, n->list[i], CTX_LIST, &args); if (I->ctl) { pp_list_free(&args); goto out; } }
     /* Module->import(LIST): the module's own import, or one it inherits (use Test::Simple
@@ -2125,10 +2126,12 @@ static NOINLINE pp_val eval_subdef(pp_interp *I, pp_node *n) {
 /* find &Class::name following @Class::ISA depth-first */
 static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth) {
     char buf[256];
-    int n = snprintf(buf, sizeof buf, "&%s::%s", cls, name);
+    int is_main = !strcmp(cls, "main");          /* main's subs and @ISA have no package prefix */
+    int n = is_main ? pp_snprintf(buf, sizeof buf, "&%s", name) : pp_snprintf(buf, sizeof buf, "&%s::%s", cls, name);
     pp_obj *code = pp_resolve_sub(I, pp_intern(I, buf, n));
+    if (is_main && code && code->u.code.native) code = NULL;   /* chdir and friends are builtins, not methods */
     if (code || depth > 16) return code;
-    n = snprintf(buf, sizeof buf, "@%s::ISA", cls);
+    n = is_main ? pp_snprintf(buf, sizeof buf, "@ISA") : pp_snprintf(buf, sizeof buf, "@%s::ISA", cls);
     pp_sym *isa = pp_intern(I, buf, n);
     if (!isa->gcell) return NULL;
     pp_obj *arr = isa->gcell;
@@ -2143,7 +2146,7 @@ static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int 
 static int class_isa(pp_interp *I, const char *cls, const char *want, int depth) {
     if (strcmp(cls, want) == 0) return 1;
     if (depth > 16) return 0;
-    char buf[256]; int n = snprintf(buf, sizeof buf, "@%s::ISA", cls);
+    char buf[256]; int n = !strcmp(cls, "main") ? pp_snprintf(buf, sizeof buf, "@ISA") : pp_snprintf(buf, sizeof buf, "@%s::ISA", cls);
     pp_sym *isa = pp_intern(I, buf, n);
     if (!isa->gcell) return 0;
     pp_obj *arr = isa->gcell;

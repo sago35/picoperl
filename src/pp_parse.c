@@ -2028,7 +2028,8 @@ static pp_node *parse_term(pp_parser *P) {
     case T_NUM: { pp_node *n = node(P, N_CONST); n->val = t->num; advance(P); return n; }
     case T_STR: {
         if (t->sigil == 'H') { pp_node *n = const_str(P, t->s, t->len); advance(P); return n; }   /* <<'EOF': raw */
-        pp_node *n = single_quoted(P, t->s, t->len); advance(P); return n;
+        pp_node *n = single_quoted(P, t->s, t->len); advance(P);
+        return cur_is_op(P, "->") ? parse_postfix(P, n) : n;      /* 'Class'->method(...) */
     }
     case T_PAT: return parse_pattern_term(P);
     case T_READLINE: {
@@ -2037,7 +2038,7 @@ static pp_node *parse_term(pp_parser *P) {
         advance(P);
         return n;
     }
-    case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return n; }
+    case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return cur_is_op(P, "->") ? parse_postfix(P, n) : n; }
     case T_QW: {
         pp_node *n = qw_list(P, t->s, t->len); n->flags |= 1; advance(P);
         if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_LSLICE); s->a = n; s->b = parse_expr(P); expect_op(P, "]"); return s; }
@@ -2647,6 +2648,8 @@ static pp_node *parse_use(pp_parser *P) {
             n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
             advance(P);
             if (P->cur.type == T_NUM) advance(P);   /* version */
+            /* use Module (); / use Module qw(); -- an empty list written out: load, import nothing */
+            if ((cur_is_op(P, "(") && is_op(peek(P), ")")) || (P->cur.type == T_QW && P->cur.len == 0)) n->flags |= 2;
             if (!cur_is_op(P, ";")) take_children(n, wrap_list(P, parse_expr(P)));
             expect_op(P, ";");
             return n;

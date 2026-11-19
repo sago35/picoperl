@@ -76,4 +76,9 @@ print "isa on plain refs: ", join("", map { $_ ? 1 : 0 } UNIVERSAL::isa([], 'ARR
 print "isa on names and non-refs: ", join("", map { $_ ? 1 : 0 } UNIVERSAL::isa('UvKid', 'UvBase'), UNIVERSAL::isa('UvBase', 'UvKid'), UNIVERSAL::isa('NoSuchClass', 'UvBase'), UNIVERSAL::isa(undef, 'ARRAY'), UNIVERSAL::isa("string", 'ARRAY'), UNIVERSAL::isa(42, 'SCALAR')), "\n";
 my $uv_can = UNIVERSAL::can($uv, 'hello');
 print "UNIVERSAL::can: ", ref($uv_can), " ", $uv_can->($uv), " ", (UNIVERSAL::can('UvKid', 'new') ? "class" : "no"), " ", (defined UNIVERSAL::can($uv, 'nope') ? "found" : "undef"), " ", (defined UNIVERSAL::can([], 'hello') ? "found" : "undef"), " ", (defined UNIVERSAL::can(undef, 'hello') ? "found" : "undef"), "\n";
-
+# クラス名 main と、文字列リテラルをクラス名にしたメソッド呼び出し
+sub mn_hello { "hi from main" }
+my $mn_cls = "main";
+print "class main: ", ($mn_cls->can("mn_hello") ? "can" : "cannot"), " ", (main->can("mn_hello") ? "can" : "cannot"), " ", $mn_cls->mn_hello, " / ", main->mn_hello, " ", (UNIVERSAL::can("main", "mn_hello") ? "can" : "cannot"), " ", (main->can("mn_nope") ? "y" : "n"), "\n";
+{ package StrCls; sub new { bless { v => $_[1] }, $_[0] } sub get { $_[0]{v} } sub name { "StrCls" } }
+print "string as class: ", "StrCls"->new(5)->get, " ", 'StrCls'->name, " ", ("StrCls"->can("get") ? "can" : "cannot"), " ", "main"->mn_hello, "\n";
