@@ -233,7 +233,7 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     if (I->ctl) return pp_undef();
     if (flags & PP_M_NEG) matched = !matched;
     if (want_list) return pp_undef();
-    return scalar_or_push(ctx, out, matched ? pp_int(1) : pp_strn("", 0));
+    return scalar_or_push(ctx, out, matched ? pp_int(1) : pp_false());
 }
 
 /* ---------------- s/// ---------------- */
@@ -292,9 +292,9 @@ pp_val pp_eval_subst(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         *slot = pp_str_val(result);
         r = pp_int(count);
     }
-    else { pp_str_decref(result); r = pp_strn("", 0); }
+    else { pp_str_decref(result); r = pp_false(); }
     pp_str_decref(s);
-    if (flags & PP_M_NEG) { int t = !pp_truth(r); pp_release(r); r = t ? pp_int(1) : pp_strn("", 0); }
+    if (flags & PP_M_NEG) { int t = !pp_truth(r); pp_release(r); r = t ? pp_int(1) : pp_false(); }
     return scalar_or_push(ctx, out, r);
 }
 

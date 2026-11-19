@@ -395,7 +395,7 @@ static void local_unwind(pp_interp *I, int height) {
 /* numeric helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-static pp_val truth_val(int b) { return b ? pp_int(1) : pp_strn("", 0); }
+static pp_val truth_val(int b) { return b ? pp_int(1) : pp_false(); }
 
 static int is_magic_inc_str(pp_str *s) {
     if (s->len == 0) return 0;
@@ -467,7 +467,7 @@ static void warn_operand(pp_interp *I, int op, pp_val v, const char *var) {
     if (op == OP_LOGXOR || op == OP_ISA) return;   /* like &&/||, no uninitialized warning */
     if (v.t == PP_UNDEF) { warn_uninit(I, binop_name(op), var); return; }
     int numeric = op != OP_CONCAT && op != OP_REPEAT && !(op >= OP_STR_EQ && op <= OP_STR_CMP);
-    if (numeric && v.t == PP_STR && !pp_looks_like_number(v.u.s->d, v.u.s->len) && strcmp(v.u.s->d, "0 but true") != 0)
+    if (numeric && v.t == PP_STR && !pp_is_false(v) && !pp_looks_like_number(v.u.s->d, v.u.s->len) && strcmp(v.u.s->d, "0 but true") != 0)
         pp_warn(I, "Argument \"%s\" isn't numeric in %s", v.u.s->d, binop_name(op));
 }
 

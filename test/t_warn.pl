@@ -29,3 +29,13 @@ print "ok=$ok\n";
 my $z; $z .= "a"; $z += 1 if 0; print "z=$z\n";
 my $w = "12" + 3; print "w=$w\n";
 print "done\n";
+# 比較や照合の「偽」は、警告なしで数値の 0 になる。書いた "" は警告が出る
+{
+    my $false = (1 == 2); my $true = (1 == 1);
+    my $n = $false + 5; my $m = ("a" =~ /b/) + 1; my $not = !1;
+    print "false in arithmetic: $n $m ", $not + 0, " [$false][$true] ", length($false), " ", ($false eq "" ? "empty" : "other"), "\n";
+    my @hits = map { $_ == 2 } 1 .. 3; my $sum = 0; $sum += $_ for @hits;
+    my %h = (k => (3 < 2)); my $copy = $false; $copy .= "x";
+    print "false copies: $sum ", $h{k} + 0, " $copy [$false]\n";
+    my $empty = ""; my $w = $empty + 1; print "written empty string: $w\n";
+}
