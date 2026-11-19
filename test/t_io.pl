@@ -82,9 +82,15 @@ $! = 1; my $en_in = en_local(); print "errno local: inside $en_in, outside ", $!
 my $en_copy = $!; print "errno copy is the message: $en_copy / " . $! . "\n";
 # getpwnam / getpwuid / getgrnam / getgrgid (ホスト版)
 my @pw_none = getpwnam("no_such_user_xyz_123"); my $pw_none = getpwnam("no_such_user_xyz_123");
-my @pw_root = getpwuid(0); my $pw_name = getpwuid(0); my $pw_uid = getpwnam($pw_name);
-my @gr_none = getgrnam("no_such_group_xyz_123"); my @gr_zero = getgrgid(0);
-print "passwd: ", scalar(@pw_none), " ", (defined $pw_none ? "def" : "undef"), " ", scalar(@pw_root), " ", ($pw_root[0] eq $pw_name ? "same name" : "differs"), " uid=$pw_uid $pw_root[2] / group: ", scalar(@gr_none), " ", scalar(@gr_zero), " gid=$gr_zero[2]\n";
+my @gr_none = getgrnam("no_such_group_xyz_123");
+print "passwd: no such user: ", scalar(@pw_none), " ", (defined $pw_none ? "def" : "undef"), " / no such group: ", scalar(@gr_none), "\n";
+# uid 0 / gid 0 の登録が無い環境がある (wasm)。あるときだけ、名前と番号が行き来できることを確かめる
+{
+    my @pw = getpwuid(0); my @gr = getgrgid(0);
+    my $pw_ok = !@pw || (@pw == 9 && scalar(getpwuid(0)) eq $pw[0] && getpwnam($pw[0]) == 0 && $pw[2] == 0);
+    my $gr_ok = !@gr || (@gr == 4 && scalar(getgrgid(0)) eq $gr[0] && getgrnam($gr[0]) == 0 && $gr[2] == 0);
+    print "passwd / group lookups: ", ($pw_ok ? "consistent" : "passwd differs"), " ", ($gr_ok ? "consistent" : "group differs"), "\n";
+}
 # bareword のファイルハンドル
 open(BW, '>', 'test/io_tmp.txt') or die "open: $!";
 print BW "a\n"; printf BW "%s\n", "b"; print {*BW} "c\n"; print {\*BW} "d\n";

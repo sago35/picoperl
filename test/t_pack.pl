@@ -18,7 +18,7 @@ show("float", hx(pack("f", 1.5)), hx(pack("d", -2.25)), hx(pack("d>", 1)), hx(pa
 show("uni", hx(pack("W", 200)), hx(pack("w", 300)), hx(pack("w*", 0, 127, 128, 16384)), join(",", unpack("w*", pack("w*", 0, 127, 128, 16384, 4000000000))));
 show("slash", hx(pack("n/a*", "hello")), hx(pack("C/a* C/a*", "ab", "cde")), hx(pack("N/A*", "x")), hx(pack("C/Z*", "zz")), join(",", unpack("n/a* C", pack("n/a* C", "hello", 7))), join(",", unpack("(C/a*)*", pack("(C/a*)*", "a", "bcd", ""))));
 # unpack
-show("ua", unpack("a3 A3 Z3", "abcdef   x\0y"), unpack("A*", "trail  \0 "), unpack("Z*", "zed\0junk"), unpack("a*", "all\0of it"), unpack("a2 x2 a2", "abXXcd"), unpack("a2 X2 a3", "hello"), unpack("\@2 a2", "abcdef"));
+show("ua", unpack("a3 A3 Z3", "abcdef   x\0y"), unpack("A*", "trail  \0 "), unpack("Z*", "zed\0junk"), hx(unpack("a*", "al\0l")), unpack("a2 x2 a2", "abXXcd"), unpack("a2 X2 a3", "hello"), unpack("\@2 a2", "abcdef"));
 show("ub", unpack("b8", "\x0d"), unpack("B8", "\x0d"), unpack("b*", "\x01\x80"), unpack("B10", "\xff\xc0"), unpack("h*", "\x1a\x2b"), unpack("H*", "\x1a\x2b"), unpack("H3", "\xab\xcd"));
 show("ui", unpack("c C", "\xff\xff"), unpack("s S", "\xfe\xff\xfe\xff"), unpack("l L", "\xfd\xff\xff\xff\x00\x28\x6b\xee"), unpack("n N v V", "\x01\x02\x01\x02\x03\x04\x02\x01\x04\x03\x02\x01"), unpack("q", pack("q", -4)), unpack("Q", pack("Q", 5)), unpack("s> l<", "\x00\x01\x02\x00\x00\x00"), unpack("n!", "\xff\xfe"));
 show("ur", unpack("C*", "ABC"), unpack("n*", "\0\1\0\2\0"), unpack("(C n)2", "\1\0\2\3\0\4"), unpack("(a1 C)*", "a\1b\2"), unpack("C3", "\1\2"), unpack("W*", "\xc8A"));

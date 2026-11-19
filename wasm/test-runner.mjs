@@ -19,13 +19,18 @@ const mod = await createPicoperl({
 
 /* recreate the script and its data/module files inside MEMFS under the same
    relative paths, so error messages and @INC behave like the native CLI */
+/* run in a directory of its own, not in "/": tests that look at the current directory
+   (getcwd, chdir, rel2abs) expect a real path there. The embedded /lib shows up as ./lib. */
+mod.FS.mkdir('/work');
+mod.FS.symlink('/lib', '/work/lib');
+mod.FS.chdir('/work');
 const dir = dirname(script);
-mod.FS.mkdirTree('/' + dir);
+mod.FS.mkdirTree('/work/' + dir);
 mod.FS.writeFile(script, readFileSync(script));
 const copyAux = (d) => {
   for (const ent of readdirSync(d, { withFileTypes: true })) {
     const p = join(d, ent.name);
-    if (ent.isDirectory()) { mod.FS.mkdirTree('/' + p); copyAux(p); }
+    if (ent.isDirectory()) { mod.FS.mkdirTree('/work/' + p); copyAux(p); }
     else if (/\.(txt|pm)$/.test(ent.name)) mod.FS.writeFile(p, readFileSync(p));
   }
 };
