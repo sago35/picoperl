@@ -227,7 +227,50 @@ while (1) { sleep 0.1 }        # イベントが来ると sleep は早く戻る 
 `isa` 演算子、後置デリファレンス (`$r->@*` `$r->%*` `$r->$*` `$r->$#*`)、
 `any { }` / `all { }` (短絡)、`use builtin qw(true false ceil floor trim blessed
 reftype refaddr indexed)`、
-文字列のマジックインクリメント、`__LINE__`/`__FILE__`/`__PACKAGE__`、POD。
+文字列のマジックインクリメント、`__LINE__`/`__FILE__`/`__PACKAGE__`、POD、
+`use vars qw($x @y %z)` (`our` と同じ扱い)。
+
+**型グロブへの代入**に対応しています: `*name = \&func;` / `*name = sub {...};` (サブの別名・定義)、
+`*name = \@array;` / `\%hash` / `\$scalar` (変数の別名)、`*a = *b;` (4 種類すべて)、
+動的な名前 `*{"${class}::$name"} = sub {...};` / `*$name = ...`。
+**シンボリックリファレンス** (`&{"name"}` `&$name()` `\&{"name"}` `@{"Pkg::x"}` `${"name"}` `%{"name"}`
+`defined &{"name"}`) も使えます。perl と同じく `use strict` の下では
+`Can't use string ("x") as an ARRAY ref while "strict refs" in use` で die し、`no strict 'refs'` で許可されます。
+グロブを値として使う機能 (`\*STDOUT`、`*FH{IO}`、`*x{CODE}`、`local *name`、バレワードのファイルハンドル) は未対応です。
+
+**型グロブへの代入**に対応しています: `*name = \&func;` / `*name = sub {...};` (サブの定義)、
+`*name = \@array;` / `\%hash` / `\$scalar` (変数の別名)、`*a = *b;` (4 種類すべての別名)。
+名前は `*Pkg::name`、`*{"${class}::$name"}`、`*$name` の形でも書けます。
+`BEGIN { *DEBUG = sub () { 0 } }` のように `BEGIN` で定義したものは定数として使えます。
+未対応: 値としてのグロブ (`\*STDOUT`、`*FH{IO}`、`*name{CODE}`)、`local *name`、バレワードのファイルハンドル。
+`}` の直後の `*` は行頭にあるときだけグロブとして読みます (`$h{w} *$x` を乗算として読むため)。
+
+**シンボリックリファレンス** (`&{"name"}`、`\&{"Pkg::name"}`、`@{"Pkg::ISA"}`、`${"name"}`、`%{"name"}`、
+`defined &{"name"}`) は `no strict 'refs'` の範囲で使えます。`use strict` の下では perl と同じ
+メッセージ (`Can't use string ("x") as an ARRAY ref while "strict refs" in use`) で die します。
+
+**`goto &sub`** (`goto &name`、`goto &$code`、`goto &{...}`、`goto \&name`) は、現在の `@_` を渡して
+別のサブに移ります。内部的には `return &sub;` として動くので、呼び出し元のコンテキストは引き継がれますが、
+`caller` から元のサブが消えることはなく、スタックも 1 段消費します (深い末尾再帰には使えません)。
+
+**`caller`** に対応しています: `caller` / `caller()` は呼び出し元の (パッケージ, ファイル, 行)、
+`caller(N)` は N 段上のフレームでさらに (サブ名, hasargs, wantarray) を返します。スカラーコンテキストでは
+パッケージ名、呼び出し元がなければ空リスト / undef です。制限: `caller(N)` の 7 番目以降の要素はなく、
+`eval` や `require` のフレームは数えません。ファイル名は実行中のファイル (サブが定義されたファイルではない) です。
+
+**ファイルテスト** `-e` `-f` `-d` `-s` `-z` `-r` `-w` `-x` `-l` に対応しています (perl と同じく真は `1`、
+偽は空文字列、存在しないパスは undef、`-s` はサイズ)。対象はスカラー変数か文字列リテラルで始まる式に限ります
+(`-e $path`、`-d "$dir/sub"`。`-e` 単独や `-f _`、ファイルハンドルは未対応)。ボードでは PICOPERL ドライブ (FAT) を
+見るので権限の区別はなく、読み取りは常に真、書き込みは読み取り専用属性がなければ真、`-x` はディレクトリだけ真です。
+
+`shift->[0]`、`shift->{key}`、`shift->method(...)` のように、引数なしの `shift` / `pop` に `->` を続けられます。
+
+`=~` / `!~` の直後なら、区切り文字がカンマの `s,a,b,` / `m,a,` / `tr,a,b,` も書けます
+(それ以外の位置の `s,` は、従来どおり識別子 `s` とカンマとして読みます)。
+
+特殊変数 **`$]`** は `"5.044000"` (picoperl が追従している perl のバージョン)、**`$^O`** は
+PC のホスト版ではその OS 名 (`linux` など)、ボードとブラウザ版では `picoperl` を返します。
+`$^W` など他の `$^X` 形式の変数は普通のグローバル変数として読み書きできるだけで、効果はありません。
 
 **`use v5.36;` のようなバージョン宣言**も受理します: picoperl の機能は常時すべて
 有効で、perl と同じく v5.12 以上の宣言で `strict`、v5.36 以上で `warnings` が
@@ -251,7 +294,8 @@ reftype refaddr indexed)`、
 5.44 の**名前付きパラメータ** (`sub f($x, :$width = 10, :$label)` — `:$name` は必須、
 `= default` で省略可、末尾 `%rest` が未知のキーを回収。Missing/Unrecognized/Odd の
 エラーメッセージも perl と同一) にも対応しています。
-`sub f($$)` のような識別子を含まない括弧は従来どおりプロトタイプとして無視されます。
+`sub f($$)` / `sub f(&$)` / `sub f(\@\@)` のような識別子を含まない括弧はプロトタイプとして読み飛ばします
+(引数の扱いは変わりません。`&` でブロックを渡す書き方や `\@` の自動リファレンス化は未対応)。
 未対応: 無名パラメータ (`sub f($x, $)` はコンパイルエラー)。`sub f() {}` の空括弧は
 引数チェックをしません (perl のシグネチャは 0 個を強制する点が違います)。
 
@@ -279,10 +323,11 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 `$.` (警告の `, <$fh> line N` 表記) — 該当するものは初回に `picoperl:` 警告を出します。
 
 非対応 (今のところ): `sprintf` の `%vd` と位置指定 (`%2$s`)、
-`DESTROY`、`AUTOLOAD`、`eval STRING`、`redo`、`goto`、
-lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、ファイルテスト (`-e`)、
+`DESTROY`、`AUTOLOAD`、`eval STRING`、`redo`、`goto LABEL`、
+lvalue の `substr` (4 引数形式は可)、`localtime`/`gmtime`、
 `system`/バッククォート、`tie`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
-`my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)。
+`my method` / `->&` (5.42)、`foreach` のエイリアス (単一配列に対する書き戻しで代用)、
+値としての型グロブ (`\*STDOUT` など)。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 **`%SIG`** は `__WARN__` / `__DIE__` フックと `alarm` + `$SIG{ALRM}` に対応しています
 (perl の safe signals と同じく文の切れ目で配送。未捕捉の ALRM は `Alarm clock` で die)。
