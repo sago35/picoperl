@@ -346,15 +346,46 @@ static void local_push(pp_interp *I, pp_obj *cell) {
     if (I->nlocals == I->caplocals) { I->caplocals = I->caplocals ? I->caplocals * 2 : 8; I->locals = pp_xrealloc(I->locals, I->caplocals * sizeof *I->locals); }
     I->locals[I->nlocals].cell = cell; cell->refcnt++;
     I->locals[I->nlocals].saved = cell->u.scalar;
+    I->locals[I->nlocals].key = NULL; I->locals[I->nlocals].kind = 0;
     cell->u.scalar = pp_undef();
+    I->nlocals++;
+}
+/* local $h{key} (key != NULL) or local $a[idx]: the element becomes undef until the scope ends */
+static void local_push_elem(pp_interp *I, pp_obj *box, pp_str *key, int idx) {
+    if (I->nlocals == I->caplocals) { I->caplocals = I->caplocals ? I->caplocals * 2 : 8; I->locals = pp_xrealloc(I->locals, I->caplocals * sizeof *I->locals); }
+    int existed = 1;
+    pp_val *slot;
+    if (key) {
+        existed = pp_hash_find(box, key->d, key->len) != NULL;
+        slot = pp_hash_slot(box, key->d, key->len);
+        key->refcnt++;
+    } else slot = pp_array_slot(box, idx);
+    if (!slot) return;
+    I->locals[I->nlocals].cell = box; box->refcnt++;
+    I->locals[I->nlocals].saved = *slot; *slot = pp_undef();
+    I->locals[I->nlocals].key = key; I->locals[I->nlocals].idx = idx;
+    I->locals[I->nlocals].kind = key ? 1 : 2; I->locals[I->nlocals].existed = (uint8_t)existed;
     I->nlocals++;
 }
 static void local_unwind(pp_interp *I, int height) {
     while (I->nlocals > height) {
         I->nlocals--;
         pp_obj *cell = I->locals[I->nlocals].cell;
-        pp_release(cell->u.scalar);
-        cell->u.scalar = I->locals[I->nlocals].saved;
+        if (I->locals[I->nlocals].kind == 0) {
+            pp_release(cell->u.scalar);
+            cell->u.scalar = I->locals[I->nlocals].saved;
+        } else {
+            pp_str *key = I->locals[I->nlocals].key;
+            pp_val saved = I->locals[I->nlocals].saved;
+            if (key && !I->locals[I->nlocals].existed) {      /* the key was not there before */
+                pp_val gone; if (pp_hash_delete(cell, key->d, key->len, &gone)) pp_release(gone);
+                pp_release(saved);
+            } else {
+                pp_val *slot = key ? pp_hash_slot(cell, key->d, key->len) : pp_array_slot(cell, I->locals[I->nlocals].idx);
+                if (slot) { pp_release(*slot); *slot = saved; } else pp_release(saved);
+            }
+            if (key) pp_str_decref(key);
+        }
         pp_obj_decref(cell);
     }
 }
@@ -782,6 +813,7 @@ static int is_list_lhs(pp_node *a) {
     case N_VAR: return a->sym->name[0] == '@' || a->sym->name[0] == '%';
     case N_MY: return (a->flags & 1) || (a->n == 1 && a->list[0]->type == N_VAR && a->list[0]->sym->name[0] != '$');
     case N_LIST: return 1;
+    case N_LOCALELEM: return a->a->type == N_HSLICE || a->a->type == N_ASLICE;
     case N_RV2AV: case N_RV2HV: case N_ASLICE: case N_HSLICE: return 1;
     default: return 0;
     }
@@ -841,9 +873,37 @@ static void assign_list(pp_interp *I, pp_node *a, pp_list *src) {
     }
 }
 
+/* local on an element or a slice: save the elements and leave them undef */
+static NOINLINE void eval_local_elem(pp_interp *I, pp_node *n) {
+    pp_node *t = n->a;
+    int is_hash = t->type == N_HELEM || t->type == N_HSLICE;
+    pp_obj *box = is_hash ? pp_get_hash(I, t->a, 1, NULL) : pp_get_array(I, t->a, 1, NULL);
+    if (!box || I->ctl) { if (box) pp_obj_decref(box); return; }
+    pp_list keys = {0};
+    if (t->type == N_HELEM) { pp_str *k = eval_key(I, t->b); if (k) pp_list_push(&keys, (pp_val){ .t = PP_STR, .u.s = k }); }
+    else if (t->type == N_AELEM) pp_list_push(&keys, pp_eval(I, t->b, CTX_SCALAR, NULL));
+    else pp_eval(I, t->b, CTX_LIST, &keys);
+    for (int i = 0; i < keys.n && !I->ctl; i++) {
+        if (is_hash) { pp_str *k = pp_to_str(keys.v[i]); local_push_elem(I, box, k, 0); pp_str_decref(k); }
+        else {
+            int64_t idx = pp_to_int(keys.v[i]);
+            if (idx < 0) idx += box->u.arr.n;
+            if (idx >= 0) local_push_elem(I, box, NULL, (int)idx);
+        }
+    }
+    pp_list_free(&keys);
+    pp_obj_decref(box);
+}
+
 static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_node *a = n->a, *b = n->b;
     if (a->type == N_GLOB && n->op == OP_NONE) return eval_glob_assign(I, n);
+    if (a->type == N_LOCALELEM) {   /* local $h{k} = v: localize, then assign to the element itself */
+        eval_local_elem(I, a);
+        if (I->ctl) return pp_undef();
+        pp_node tmp = *n; tmp.a = a->a; tmp.flags &= ~PP_NODE_HEAP;
+        return eval_assign(I, &tmp, ctx, out);
+    }
     if (a->type == N_MY && a->op == 's' && n->op == OP_NONE && declare_my(I, a)) {
         /* state vars already initialized on an earlier call: skip the initializer */
         if (ctx == CTX_LIST && out) { pp_eval(I, a, CTX_LIST, out); return pp_undef(); }
@@ -2081,6 +2141,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_GLOB: return eval_glob(I, n, ctx, out);
     case N_CALLER: return eval_caller(I, n, ctx, out);
     case N_FILETEST: return eval_filetest(I, n, ctx, out);
+    case N_LOCALELEM: eval_local_elem(I, n); return pp_undef();
     case N_END: {   /* queue the block; pp_run calls the queue in reverse order */
         pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(code); return pp_undef(); }
@@ -2237,6 +2298,10 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "$,", 2));
     pp_global(I, pp_intern(I, "$\\", 2));
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
+    /* ${^NAME} variables scripts commonly read: no taint mode, no -C, and the main program is running */
+    pp_global(I, pp_intern(I, "$^TAINT", 7))->u.scalar = pp_int(0);
+    pp_global(I, pp_intern(I, "$^UNICODE", 9))->u.scalar = pp_int(0);
+    pp_global(I, pp_intern(I, "$^GLOBAL_PHASE", 14))->u.scalar = pp_strn("RUN", 3);
     /* $]: the perl version picoperl follows (a string, like perl's "5.044000") */
     pp_global(I, pp_intern(I, "$]", 2))->u.scalar = pp_strn("5.044000", 8);
     pp_global(I, pp_intern(I, "$^O", 3))->u.scalar = pp_strn(PP_OSNAME, (int)strlen(PP_OSNAME));
@@ -2363,6 +2428,8 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
        and may change it. */
     pp_obj *ends = pp_global(I, pp_intern(I, "@ END", 5));
     if (ends->u.arr.n > 0) {
+        pp_obj *phase = pp_global(I, pp_intern(I, "$^GLOBAL_PHASE", 14));
+        pp_release(phase->u.scalar); phase->u.scalar = pp_strn("END", 3);
         pp_obj *status = pp_global(I, pp_intern(I, "$?", 2));
         pp_release(status->u.scalar); status->u.scalar = pp_int(rc);
         while (ends->u.arr.n > 0) {

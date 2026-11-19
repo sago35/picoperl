@@ -497,6 +497,16 @@ int main(int argc, char **argv) {
     I_for_stats = I;
     if (getenv("PICOPERL_STACK_LIMIT")) I->stack_limit = (size_t)atol(getenv("PICOPERL_STACK_LIMIT"));   /* emulate the board's stack budget */
     if (getenv("PICOPERL_MAX_DEPTH")) I->max_depth = atoi(getenv("PICOPERL_MAX_DEPTH"));
+    {   /* %ENV: a copy of the process environment (changing it does not change the real one) */
+        extern char **environ;
+        pp_obj *env = pp_global(I, pp_intern(I, "%ENV", 4));
+        for (char **e = environ; e && *e; e++) {
+            const char *eq = strchr(*e, '=');
+            if (!eq) continue;
+            pp_val *slot = pp_hash_slot(env, *e, (int)(eq - *e));
+            pp_release(*slot); *slot = pp_cstr(eq + 1);
+        }
+    }
     pp_obj *argvcell = I->g_argv;
     for (int i = 2; i < argc; i++) pp_array_push(argvcell, pp_cstr(argv[i]));
     pp_obj *zero = pp_global(I, pp_intern(I, "$0", 2));

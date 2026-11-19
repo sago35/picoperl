@@ -181,6 +181,7 @@ enum {
     N_TRANS,        /* a: target, b: search list (const str), c: replacement list (const str), op: PP_TR_* flags */
     N_SIGCHECK,     /* signature arity check: a: sub name (const str), b: scalar param count (const int),
                        op: min args, aux: max args (255 = slurpy, no limit), flags&1: odd name/value check */
+    N_LOCALELEM,    /* local $h{k} / local $a[i] / local @h{...} / local @a[...]: a: the element or slice */
     N_END,          /* END { ... }: a: N_ANONSUB; evaluating it queues the block to run at exit */
     N_FILETEST,     /* -e $path etc.: op: the letter (e f d s z r w x l), a: path expr */
     N_CALLER,       /* caller / caller(N): a: frame number expr or NULL */
@@ -276,7 +277,9 @@ struct pp_interp {
     int      in_sub;
     int      warn_on;            /* `use warnings` in effect for the running statement */
     pp_obj  *lv_hold;            /* keeps a container alive while an lvalue slot is in use */
-    struct { pp_obj *cell; pp_val saved; } *locals; int nlocals, caplocals;  /* `local` save stack */
+    /* `local` save stack. kind 0: a scalar cell. kind 1/2: one hash / array element of `cell`
+       (key / idx), where `existed` says whether a hash key was there before. */
+    struct { pp_obj *cell; pp_val saved; pp_str *key; int idx; uint8_t kind, existed; } *locals; int nlocals, caplocals;
     pp_obj  *unit_env_holder;
     /* symbols frequently needed */
     pp_sym  *sym_args;           /* @_ */

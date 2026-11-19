@@ -66,4 +66,26 @@ print "osname: ", (length($^O) > 0 ? "set" : "empty"), " ", ("$^O" eq $^O ? "int
     sub version { $VERSION }
 }
 print "use vars: $VarsDemo::VERSION ", VarsDemo::version(), " ", scalar(@VarsDemo::ISA), " $VarsDemo::opt{a}\n";
+# %ENV と ${^NAME}
+print "env: ", (defined $ENV{PATH} && length $ENV{PATH} ? "path" : "nopath"), " ", (exists $ENV{PICOPERL_NO_SUCH_VAR} ? "exists" : "missing"), " ", (scalar(keys %ENV) > 1 ? "many" : "few"), "\n";
+{ package EnvPkg; sub path_len { length $ENV{PATH} } }
+print "env in package: ", (EnvPkg::path_len() == length($ENV{PATH}) ? "same" : "differ"), "\n";
+sub env_local { local $ENV{PATH} = "/x"; local @ENV{qw(HOME PICOPERL_TMP)} = ("/h", "t"); "$ENV{PATH} $ENV{HOME} $ENV{PICOPERL_TMP}" }
+my $env_before = $ENV{PATH};
+print "env local: ", env_local(), " ", ($ENV{PATH} eq $env_before ? "restored" : "changed"), " ", (exists $ENV{PICOPERL_TMP} ? "left" : "gone"), "\n";
+print "caret names: taint=${^TAINT} phase=${^GLOBAL_PHASE} ", (defined ${^WARNING_BITS} ? "bits" : "nobits"), " ", ${^UNICODE} + 0, "\n";
+{ no strict; ${^PICO_TEST} = 41; print "caret user: ", ${^PICO_TEST} + 1, " ", "interp ${^PICO_TEST}", "\n"; }
+$^H{pico_hint} = "h"; print "hint hash: $^H{pico_hint} ", scalar(grep { $_ eq "pico_hint" } keys %^H), "\n";
+# local を要素とスライスに
+our %lh = (a => 1, b => 2); our @la = (1, 2, 3); my $lr = { k => "v", list => [1, 2] };
+sub lh_show { join(",", map { "$_=" . ($lh{$_} // "undef") } sort keys %lh) . " [@la] $lr->{k} @{$lr->{list}}" }
+sub l_elem  { local $lh{a} = 9; local $lh{new} = 5; local $la[0] = 7; local $lr->{k} = "w"; local $lr->{list}[1] = 8; lh_show() }
+sub l_slice { local @lh{qw(a c)} = (8, 9); local @la[1, 2] = (5, 6); lh_show() }
+sub l_bare  { local @lh{qw(a b)}; local $la[-1]; join(",", map { defined $lh{$_} ? "def" : "undef" } qw(a b)) . (defined $la[2] ? " def" : " undef") }
+sub l_die   { local $lh{a} = "tmp"; die "x\n" }
+print "local elem: ", l_elem(), "\n";
+print "local slice: ", l_slice(), "\n";
+print "local bare: ", l_bare(), "\n";
+eval { l_die() };
+print "local after: ", lh_show(), "\n";
 print "done\n";

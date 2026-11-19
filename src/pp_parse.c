@@ -191,7 +191,7 @@ static int is_special_var(char sigil, const char *name, int len) {
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
     }
     if (sigil == '$' && len >= 1 && isdigit((unsigned char)name[0])) return 1;   /* $1 .. */
-    if (sigil == '$' && len == 2 && name[0] == '^') return 1;                     /* $^O $^W .. */
+    if (len >= 2 && name[0] == '^') return 1;                                     /* $^O ${^TAINT} %^H .. */
     if (sigil == '%' && len == 3 && !memcmp(name, "SIG", 3)) return 1;
     if (sigil == '$' && ((len == 6 && !memcmp(name, "STDOUT", 6)) || (len == 6 && !memcmp(name, "STDERR", 6)) || (len == 5 && !memcmp(name, "STDIN", 5)))) return 1;
     if (sigil == '$' && len > 0 && name[0] >= '1' && name[0] <= '9') return 1;
@@ -547,6 +547,13 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             while (isdigit(peekc(L, 0))) L->pos++;
             t->type = T_VAR; t->sigil = '$'; t->s = L->src + start; t->len = L->pos - start; term = 1;
         }
+        else if (c1 == '{' && peekc(L, 2) == '^' && isupper(peekc(L, 3))) {   /* ${^NAME}: the name is "^NAME" */
+            int start = L->pos + 2, e = start + 1;
+            while (e < L->len && is_ident_char((unsigned char)L->src[e])) e++;
+            if (e >= L->len || L->src[e] != '}') perr(P, "syntax error in ${^NAME}");
+            t->type = T_VAR; t->sigil = '$'; t->s = L->src + start; t->len = e - start; term = 1;
+            L->pos = e + 1;
+        }
         else if (c1 == '{' || c1 == '$') {
             if (c1 == '$' && !(is_ident_start(peekc(L, 2)) || peekc(L, 2) == '{' || peekc(L, 2) == '$')) {
                 L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = "$"; t->len = 1; term = 1;
@@ -575,6 +582,9 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             L->pos += 2; t->type = T_VAR; t->sigil = '@'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else perr(P, "unexpected '@'");
+    }
+    else if (c == '%' && !L->prev_term && peekc(L, 1) == '^' && isupper(peekc(L, 2))) {   /* %^H */
+        L->pos += 3; t->type = T_VAR; t->sigil = '%'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
     }
     else if (c == '%' && (!L->prev_term || L->prev_brace) && peekc(L, 1) == '+') {   /* %+ : named captures */
         L->pos += 2; t->type = T_VAR; t->sigil = '%'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
@@ -2077,7 +2087,21 @@ static pp_node *parse_ident_term(pp_parser *P) {
         }
     }
     if (len == 3 && !memcmp(id, "our", 3)) { advance(P); return parse_var_decl_list(P, 'o'); }
-    if (len == 5 && !memcmp(id, "local", 5)) { advance(P); return parse_var_decl_list(P, 'l'); }
+    if (len == 5 && !memcmp(id, "local", 5)) {
+        advance(P);
+        if (P->cur.type == T_VAR && (P->cur.sigil == '$' || P->cur.sigil == '@')) {
+            pp_tok *nx = peek(P);
+            if (nx->type == T_OP && !nx->space_before && (!strcmp(nx->op, "{") || !strcmp(nx->op, "[") || !strcmp(nx->op, "->"))) {
+                /* local $h{k}, local $a[i], local @h{...}, local $r->{k}: an element or a slice */
+                pp_node *e = parse_term(P);
+                if (e->type != N_HELEM && e->type != N_AELEM && e->type != N_HSLICE && e->type != N_ASLICE)
+                    perr(P, "Can't localize this kind of expression");
+                pp_node *n = node(P, N_LOCALELEM); n->a = e;
+                return n;
+            }
+        }
+        return parse_var_decl_list(P, 'l');
+    }
     if (len == 3 && !memcmp(id, "sub", 3)) {
         advance(P);
         pp_node *n = node(P, N_ANONSUB);
