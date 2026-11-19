@@ -1785,18 +1785,43 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
     pp_node *m = node(P, N_MY); m->op = (uint8_t)kind;
     if (cur_is_op(P, "(")) {
         advance(P);
+        /* local($x, $h{k}, @a[1, 2]): once an element or slice shows up, the list is kept in
+           source order, every plain variable in a `local` node of its own, so that a list
+           assigned to it lines up */
+        pp_node *mixed = NULL;
         while (!cur_is_op(P, ")")) {
             if (P->cur.type != T_VAR) {
-                if (cur_is_ident(P, "undef")) { advance(P); node_add(m, node(P, N_NOP)); }
+                if (cur_is_ident(P, "undef")) { advance(P); node_add(mixed ? mixed : m, node(P, N_NOP)); }
                 else perr(P, "syntax error in variable declaration");
             } else {
-                pp_node *v = decl_var(P, kind, P->cur.sigil, P->cur.s, P->cur.len);
-                advance(P);
-                node_add(m, v);
+                pp_tok *nx = peek(P);
+                if (kind == 'l' && (P->cur.sigil == '$' || P->cur.sigil == '@') && nx->type == T_OP && !nx->space_before
+                    && (!strcmp(nx->op, "{") || !strcmp(nx->op, "[") || !strcmp(nx->op, "->"))) {
+                    if (!mixed) {
+                        mixed = node(P, N_LIST);
+                        for (int i = 0; i < m->n; i++) {         /* the variables seen so far */
+                            if (m->list[i]->type != N_VAR) { node_add(mixed, m->list[i]); continue; }
+                            pp_node *one = node(P, N_MY); one->op = 'l'; node_add(one, m->list[i]);
+                            node_add(mixed, one);
+                        }
+                        m->n = 0;
+                    }
+                    pp_node *e = parse_term(P);
+                    if (e->type != N_HELEM && e->type != N_AELEM && e->type != N_HSLICE && e->type != N_ASLICE)
+                        perr(P, "Can't localize this kind of expression");
+                    pp_node *le = node(P, N_LOCALELEM); le->a = e;
+                    node_add(mixed, le);
+                } else {
+                    pp_node *v = decl_var(P, kind, P->cur.sigil, P->cur.s, P->cur.len);
+                    advance(P);
+                    if (mixed) { pp_node *one = node(P, N_MY); one->op = 'l'; node_add(one, v); node_add(mixed, one); }
+                    else node_add(m, v);
+                }
             }
             if (!accept_op(P, ",")) break;
         }
         expect_op(P, ")");
+        if (mixed) return mixed;
         m->flags |= 1;
         if (kind == 's') state_assign(P, m);
         return m;

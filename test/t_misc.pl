@@ -91,4 +91,15 @@ print "local after: ", lh_show(), "\n";
 # utf8:: の関数 (use utf8 なしで呼べる)
 my $u8 = "abc"; my $u8r = utf8::encode($u8);
 print "utf8 functions: ", chr(utf8::unicode_to_native(65)), utf8::native_to_unicode(66), " ", (utf8::is_utf8("abc") ? "flagged" : "bytes"), " ", (utf8::valid("abc") ? "valid" : "invalid"), " $u8\n";
+# local のリストに要素とスライスを書く
+our %ll = (a => 1, b => 2); our ($ls, @lr) = ("g", 1, 2, 3);
+sub ll_show { "$ls " . join(",", map { "$_=" . ($ll{$_} // "undef") } sort keys %ll) . " [@lr]" }
+sub ll_plain  { local($ls, $ll{a}, @lr[0, 1]); $ls = "L"; $ll{a} = 9; ll_show() }
+sub ll_assign { local($ll{a}, $ls, $ll{new}) = ("la", "ls", "ln"); ll_show() }
+sub ll_mixed  { local($ls, $lr[0], @lr[1, 2]) = (6, 7, 8, 9); ll_show() }
+print "local list: ", ll_plain(), " / ", ll_show(), "\n";
+print "local list assign: ", ll_assign(), " / ", ll_show(), "\n";
+print "local list mixed: ", ll_mixed(), " / ", ll_show(), "\n";
+sub ll_guard { local($@, $!, $SIG{__DIE__}); eval { die "inner\n" }; "inside: $@" }
+$@ = "outer"; (my $ll_r = ll_guard()) =~ s/\n//; print "local \$\@ in a list: $ll_r / after: $@\n";
 print "done\n";

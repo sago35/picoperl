@@ -900,6 +900,23 @@ static NOINLINE void eval_local_elem(pp_interp *I, pp_node *n) {
 static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_node *a = n->a, *b = n->b;
     if (a->type == N_GLOB && n->op == OP_NONE) return eval_glob_assign(I, n);
+    if (a->type == N_LIST && n->op == OP_NONE && a->n <= 32) {
+        /* local($x, $h{k}) = LIST: localize the elements, then assign to the list with the
+           elements themselves in their places */
+        int has = 0;
+        for (int i = 0; i < a->n; i++) if (a->list[i]->type == N_LOCALELEM) has = 1;
+        if (has) {
+            pp_node *items[32];
+            for (int i = 0; i < a->n; i++) {
+                pp_node *c = a->list[i];
+                if (c->type == N_LOCALELEM) { eval_local_elem(I, c); if (I->ctl) return pp_undef(); c = c->a; }
+                items[i] = c;
+            }
+            pp_node tl = *a; tl.list = items; tl.flags &= ~PP_NODE_HEAP;
+            pp_node tn = *n; tn.a = &tl; tn.flags &= ~PP_NODE_HEAP;
+            return eval_assign(I, &tn, ctx, out);
+        }
+    }
     if (a->type == N_LOCALELEM) {   /* local $h{k} = v: localize, then assign to the element itself */
         eval_local_elem(I, a);
         if (I->ctl) return pp_undef();
