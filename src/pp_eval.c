@@ -767,7 +767,9 @@ static int declare_my(pp_interp *I, pp_node *m) {
             if (!(v->flags & PP_VAR_LEX)) continue;
             pp_env *e = I->env;
             for (int d = v->aux; d > 0; d--) e = e->parent;
-            pp_env_reset(e, v->op, v->sym->name[0]);    /* a fresh variable each time `my` runs */
+            /* a fresh variable each time `my` runs. Not in the file scope, where it runs once
+               and a BEGIN block may have given the variable its value already. */
+            if (e->parent) pp_env_reset(e, v->op, v->sym->name[0]);
             existed = 0;
         }
         else if (m->op == 's') {

@@ -120,4 +120,16 @@ sub pu_before { "before:$pu_var" }
 use List::Util qw(sum);
 sub pu_after { "after:$pu_var" }
 print "subs around use: ", pu_before(), " ", pu_after(), " ", sum(1, 2), "\n";
+# BEGIN ブロックからファイルの my 変数を使う
+my ($bl_scalar, @bl_list, %bl_hash, $bl_code);
+BEGIN { $bl_scalar = 5; @bl_list = (1, 2); $bl_hash{k} = "v"; my $inner = 3; $bl_code = sub { $inner * 2 } }
+my $bl_after = $bl_scalar + @bl_list;
+print "begin sets file lexicals: $bl_scalar @bl_list $bl_hash{k} ", $bl_code->(), " $bl_after\n";
+my $bl_init = "run";
+BEGIN { print "begin sees: ", (defined $bl_init ? "a value" : "undef"), "\n"; $bl_init = "begin" }
+print "initializer wins: $bl_init\n";
+my %bl_reg; BEGIN { $bl_reg{a} = 1 } use constant BL_KEY => "k"; BEGIN { $bl_reg{+BL_KEY} = 2 }
+print "begin and use constant: ", join(",", map { "$_=$bl_reg{$_}" } sort keys %bl_reg), "\n";
+my @bl_order; { my $blk = 2; BEGIN { push @bl_order, "begin" } push @bl_order, $blk } for my $i (1 .. 2) { my $t = $i; push @bl_order, $t }
+print "begin inside a block: @bl_order\n";
 print "done\n";

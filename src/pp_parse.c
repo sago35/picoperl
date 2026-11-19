@@ -153,7 +153,19 @@ static void scope_finalize(pp_parser *P, int from, int min_target) {
     for (int i = from; i < S->nrecs; i++) {
         pp_node *node = S->recs[i].node;
         int own = S->recs[i].own, target = S->recs[i].target;
-        if (target < min_target) { node->flags &= ~PP_VAR_LEX; continue; }
+        if (target < min_target) {
+            /* a variable from outside a BEGIN / use subtree that runs now. A `my` of the file
+               scope is reachable: the subtree runs in that scope (pending_env), directly
+               below its own scopes, whatever blocks the source nests it in. Variables of
+               enclosing blocks and subs do not exist yet and become globals. */
+            if (target == S->st[0].id && node->sym != P->I->sym_args) {
+                int depth = 0;
+                for (int id = own; id >= min_target; id = S->parent_of[id]) if (!S->collapsed[id]) depth++;
+                node->aux = (uint8_t)depth;
+            }
+            else node->flags &= ~PP_VAR_LEX;
+            continue;
+        }
         int depth = 0, id = own;
         while (id != target && id >= 0) { if (!S->collapsed[id]) depth++; id = S->parent_of[id]; }
         if (id < 0 || depth > 250) perr(P, "internal: lexical scope chain broken");
@@ -753,8 +765,11 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
     pp_interp *I = P->I;
     scope_finalize(P, rec_start, id_start);
     predefine_subs(P);
-    pp_env *saved = I->env; int made = 0;
-    if (!I->env) { I->env = pp_env_new(NULL, 0); made = 1; }
+    /* it runs in the file scope, so that it can use the file's `my` variables */
+    pp_env *saved = I->env;
+    if (!I->pending_env) I->pending_env = pp_env_new(NULL, 0);
+    pp_env_grow(I->pending_env, P->sc->st[0].n);
+    I->env = I->pending_env;
     const char *sf = I->file; int sl = I->line;
     const char *sp = I->file_pkg;       /* BEGIN / use run in the package being parsed */
     I->file_pkg = strcmp(P->pkg, "main") ? pp_intern(I, P->pkg, (int)strlen(P->pkg))->name : NULL;
@@ -762,7 +777,6 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
     pp_val v = pp_eval(I, n, CTX_VOID, NULL);
     pp_release(v);
     I->file = sf; I->line = sl; I->file_pkg = sp;
-    if (made) pp_env_decref(I->env);
     I->env = saved;
     if (I->ctl == CTL_DIE) {
         pp_str *s = pp_to_str(I->err);
