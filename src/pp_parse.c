@@ -1691,6 +1691,22 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
    an arity check plus `my` bindings from @_, prepended to the body block b
    (whose scope must already be open). Anything else is a prototype and is
    ignored, as before. Returns the number of statements added to b. */
+/* at the '(' after `sub NAME`: if the parentheses hold a prototype (only sigils and the like:
+   ($$) (&$) (\@\@) (;$) (_)), skip to the ')' in the source, because prototype text does not
+   lex as perl code. Returns 1 if it did. An empty () is left to parse_sub_params. */
+static int skip_prototype(pp_parser *P) {
+    if (P->has_nxt) return 0;
+    pp_lex *L = &P->L;
+    int i = L->pos, seen = 0;
+    while (i < L->len && L->src[i] != ')') {
+        if (!strchr("$@%&*;+\\[]_ \t", L->src[i])) return 0;
+        if (L->src[i] != ' ' && L->src[i] != '\t') seen = 1;
+        i++;
+    }
+    if (i >= L->len || !seen) return 0;
+    L->pos = i;
+    return 1;
+}
 static int parse_sub_params(pp_parser *P, pp_node *b, const char *subname, int *noargs) {
     if (noargs) *noargs = cur_is_op(P, ")");
     if (!(P->cur.type == T_VAR && P->cur.len > 0 && is_ident_start((unsigned char)P->cur.s[0])) && !cur_is_op(P, ":")) {
@@ -2041,7 +2057,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
-        if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        if (cur_is_op(P, "(")) { skip_prototype(P); advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
         parse_block_stmts(P, b);
         if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
         int nv = scope_pop(P);
@@ -2093,6 +2109,20 @@ static pp_node *parse_ident_term(pp_parser *P) {
         advance(P);
         pp_node *n = node(P, N_RETURN);
         if (!at_list_end(P)) n->a = adopt(P, parse_comma_list(P));
+        return n;
+    }
+    if (len == 4 && !memcmp(id, "goto", 4)) {
+        /* goto &sub / goto &$code / goto \&sub: leave this sub by calling the other one with the
+           current @_. Done as `return &sub;`, so the caller's context is passed on but the
+           frame of this sub stays on the stack until the other one returns. */
+        advance(P);
+        if (P->cur.type == T_IDENT) perr(P, "goto LABEL is not supported (only goto &sub)");
+        pp_node *e = adopt(P, parse_assign(P));
+        if (!((e->type == N_CALL || e->type == N_CALLREF) && (e->flags & 2))) {   /* an expression giving a code ref */
+            pp_node *c = node(P, N_CALLREF); c->a = e; c->flags |= 2; e = c;
+        }
+        pp_node *n = node(P, N_RETURN);
+        n->a = e;
         return n;
     }
     if (len == 4 && !memcmp(id, "redo", 4)) {
@@ -2366,7 +2396,11 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *b = node(P, N_BLOCK);
             scope_push(P, SCOPE_BLOCK);
             int noargs = 0, nsig = 0;
-            if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs); }
+            if (cur_is_op(P, "(")) {
+                int proto = skip_prototype(P);
+                advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs);
+                if (proto) noargs = 0;   /* a non-empty prototype takes arguments */
+            }
             declare_sub(P, n->sym, noargs);
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
                 advance(P);

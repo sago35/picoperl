@@ -39,3 +39,25 @@ sub args_count { scalar @_ } print args_count(), args_count(1), args_count(1, 2,
 sub str_ret { "abc" . shift } print str_ret("d"), "\n";
 my @ws; my $wi = 0; while (my $x = ++$wi <= 3 ? $wi : 0) { push @ws, sub { $x } } print join(",", map { $_->() } @ws), "\n";
 my @fs; for my $i (1 .. 3) { my $y = $i * 10; push @fs, sub { $y } } print join(",", map { $_->() } @fs), "\n";
+# goto &sub
+sub g_target { "target(@_) " . (wantarray ? "list" : defined(wantarray) ? "scalar" : "void") }
+sub g_named { goto &g_target }
+sub g_ref   { my $c = \&g_target; goto &$c }
+sub g_block { goto &{ \&g_target } }
+sub g_bsref { goto \&g_target }
+sub g_shift { shift; unshift @_, "x"; goto &g_target }
+sub g_cond  { goto &g_target if $_[0]; "not taken" }
+my @gl = g_named(1, 2); my $gs = g_ref(3);
+print "goto: $gl[0] / $gs / ", scalar(g_block(4)), " / ", scalar(g_bsref(5)), " / ", scalar(g_shift(6, 7)), " / ", scalar(g_cond(0)), " / ", scalar(g_cond(8)), "\n";
+{ no strict 'refs'; no warnings; sub g_sym { my $n = "g_target"; goto &$n } print "goto sym: ", scalar(g_sym(9)), "\n"; }
+sub g_fact { my ($n, $acc) = @_; return $acc if $n <= 1; @_ = ($n - 1, $acc * $n); goto &g_fact }
+print "goto tail: ", g_fact(10, 1), "\n";
+# プロトタイプ (無視される)
+sub p_two($$) { "$_[0]+$_[1]" }
+sub p_code(&$) { my ($c, $v) = @_; $c->($v) }
+sub p_refs(\@\@) { scalar(@_) }
+sub p_opt($;$) { scalar(@_) }
+sub p_under(_) { "u:$_[0]" }
+my $p_anon = sub ($$) { $_[0] * $_[1] };
+print "proto: ", p_two(1, 2), " ", p_code(sub { $_[0] * 2 }, 21), " ", p_opt(1), p_opt(1, 2), " ", p_under("v"), " ", $p_anon->(6, 7), "\n";
+print "done\n";
