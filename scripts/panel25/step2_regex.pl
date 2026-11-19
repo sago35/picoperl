@@ -3,8 +3,8 @@ use v5.40;
 use Panel25;
 
 while (<STDIN>) {
-    if (/red/i) {
-        put_color('red');
+    if (/green/i) {
+        put_color('green');
     } elsif (/blue/i) {
         put_color('blue');
     } else {

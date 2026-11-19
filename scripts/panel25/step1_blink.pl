@@ -3,7 +3,7 @@ use v5.40;
 use Panel25;
 
 while (1) {
-    put_color('red');
+    put_color('green');
     sleep 0.5;
     put_color('black');
     sleep 0.5;

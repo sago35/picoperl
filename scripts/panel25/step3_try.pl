@@ -4,8 +4,8 @@ use Panel25;
 
 while (<STDIN>) {
     try {
-        if (/red/i) {
-            put_color('red');
+        if (/green/i) {
+            put_color('green');
         } elsif (/blue/i) {
             put_color('blue');
         } else {

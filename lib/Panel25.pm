@@ -2,7 +2,7 @@ package Panel25;
 # panel25 (10x10 の SK6812MINI-E、データピン GPIO26) を 1 色で塗るための小さなモジュール。
 #
 #   use Panel25;
-#   put_color('red');      # 100 個すべてを赤に
+#   put_color('green');    # 100 個すべてを緑に
 #   put_color('black');    # 消灯
 #
 # 色名: red green blue yellow cyan magenta white black
