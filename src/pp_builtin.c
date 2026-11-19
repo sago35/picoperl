@@ -1336,6 +1336,421 @@ static pp_val time_parts(pp_list *a, int ctx, pp_list *out, int local) {
 }
 static pp_val n_localtime(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; return time_parts(a, ctx, out, 1); }
 static pp_val n_gmtime(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; return time_parts(a, ctx, out, 0); }
+/* ------------------------------------------------------------------ */
+/* vec / pack / unpack                                                 */
+/* ------------------------------------------------------------------ */
+
+/* vec(STR, OFFSET, BITS): element OFFSET of STR seen as a row of BITS-wide unsigned numbers
+   (BITS: 1 2 4 8 16 32 64; below 8 the low bits of a byte come first, from 8 up big-endian) */
+static int vec_bits_ok(pp_interp *I, int64_t bits) {
+    if (bits == 1 || bits == 2 || bits == 4 || bits == 8 || bits == 16 || bits == 32 || bits == 64) return 1;
+    pp_die(I, "Illegal number of bits in vec");
+    return 0;
+}
+static pp_val n_vec(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 3) return pp_die(I, "Not enough arguments for vec");
+    int64_t off = pp_to_int(a->v[1]), bits = pp_to_int(a->v[2]);
+    if (!vec_bits_ok(I, bits)) return pp_undef();
+    if (off < 0) return pp_die(I, "Negative offset to vec in lvalue context");
+    pp_str *s = pp_to_str(a->v[0]);
+    uint64_t r = 0;
+    if (bits < 8) {
+        int64_t bit = off * bits;
+        if (bit / 8 < s->len) r = ((unsigned char)s->d[bit / 8] >> (bit % 8)) & ((1u << bits) - 1);
+    } else {
+        int64_t nb = bits / 8, start = off * nb;
+        /* an element that reaches past the end reads as if the string went on with zero bytes */
+        if (start < s->len) for (int64_t i = 0; i < nb; i++) r = (r << 8) | (start + i < s->len ? (unsigned char)s->d[start + i] : 0);
+    }
+    pp_str_decref(s);
+    return bits == 64 && r > (uint64_t)INT64_MAX ? pp_num((double)r) : pp_int((int64_t)r);
+}
+static uint64_t pack_arg_uint(pp_val v);
+/* vec(STR, OFFSET, BITS) = VALUE is parsed as STR = __vec_set(STR, OFFSET, BITS, VALUE) */
+static pp_val n_vec_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 4) return pp_die(I, "Not enough arguments for vec");
+    int64_t off = pp_to_int(a->v[1]), bits = pp_to_int(a->v[2]);
+    uint64_t val = pack_arg_uint(a->v[3]);
+    if (!vec_bits_ok(I, bits)) return pp_undef();
+    if (off < 0 || off > 0x3fffffff / bits) return pp_die(I, "Negative offset to vec in lvalue context");
+    pp_str *src = a->v[0].t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(a->v[0]);
+    pp_str *s = pp_str_new(src->d, src->len);
+    pp_str_decref(src);
+    int need = (int)((off * bits + bits + 7) / 8);
+    if (need > s->len) {
+        s = pp_str_reserve(s, need - s->len);
+        memset(s->d + s->len, 0, (size_t)(need - s->len));
+        s->len = need; s->d[need] = 0;
+    }
+    if (bits < 8) {
+        int64_t bit = off * bits;
+        unsigned mask = ((1u << bits) - 1) << (bit % 8);
+        s->d[bit / 8] = (char)(((unsigned char)s->d[bit / 8] & ~mask) | (((unsigned)val << (bit % 8)) & mask));
+    } else {
+        int64_t nb = bits / 8, start = off * nb;
+        for (int64_t i = nb - 1; i >= 0; i--) { s->d[start + i] = (char)(val & 0xff); val >>= 8; }
+    }
+    return pp_str_val(s);
+}
+
+/* (kept out of line and uncloned: left alone, the compiler unrolls the recursion for groups
+   into itself and the two functions grow to 30 KB of firmware) */
+#define PACK_FN __attribute__((noinline, noclone))
+/* one item of a pack template: a letter (or a group), its modifiers and its repeat count */
+typedef struct {
+    char type;                 /* the letter; '(' for a group */
+    const char *sub; int sublen;   /* group body */
+    int big, little, bang;     /* > < ! */
+    int star, has_count;       /* '*', or an explicit count */
+    int64_t count;
+    int slash;                 /* followed by '/': this item packs the length of the next one */
+} pack_item;
+
+/* reads the next item at *pos; 0 at the end of the template, -1 after a die */
+PACK_FN static int pack_next(pp_interp *I, const char *t, int tl, int *pos, pack_item *it) {
+    int p = *pos;
+    for (;;) {
+        while (p < tl && isspace((unsigned char)t[p])) p++;
+        if (p < tl && t[p] == '#') { while (p < tl && t[p] != '\n') p++; continue; }
+        break;
+    }
+    if (p >= tl) { *pos = p; return 0; }
+    memset(it, 0, sizeof *it);
+    it->type = t[p++];
+    it->count = 1;
+    if (it->type == '(') {
+        int depth = 1, start = p;
+        while (p < tl && depth) { if (t[p] == '(') depth++; else if (t[p] == ')') depth--; p++; }
+        if (depth) { pp_die(I, "No group ending character ')' found in template"); return -1; }
+        it->sub = t + start; it->sublen = p - 1 - start;
+    }
+    for (;; p++) {
+        if (p < tl && t[p] == '<') it->little = 1;
+        else if (p < tl && t[p] == '>') it->big = 1;
+        else if (p < tl && t[p] == '!') it->bang = 1;
+        else break;
+    }
+    if (p < tl && t[p] == '*') { it->star = 1; p++; }
+    else if (p < tl && (isdigit((unsigned char)t[p]) || t[p] == '[')) {
+        int br = t[p] == '[';
+        if (br) p++;
+        int64_t c = 0;
+        while (p < tl && isdigit((unsigned char)t[p]) && c < 0x7ffffff) c = c * 10 + (t[p++] - '0');
+        if (br) { if (p >= tl || t[p] != ']') { pp_die(I, "No group ending character ']' found in template"); return -1; } p++; }
+        it->count = c; it->has_count = 1;
+    }
+    int q = p;
+    while (q < tl && isspace((unsigned char)t[q])) q++;
+    if (q < tl && t[q] == '/') { it->slash = 1; p = q + 1; }
+    *pos = p;
+    return 1;
+}
+/* size in bytes of an integer letter (0: not one), whether it is signed, and its byte order */
+PACK_FN static int pack_int_size(const pack_item *it, int *is_signed, int *big) {
+    *big = it->big;
+    *is_signed = 0;
+    switch (it->type) {
+    case 'c': *is_signed = 1; return 1;
+    case 'C': return 1;
+    case 's': *is_signed = 1; return 2;
+    case 'S': return 2;
+    case 'l': *is_signed = 1; return it->bang ? (int)sizeof(long) : 4;
+    case 'L': return it->bang ? (int)sizeof(long) : 4;
+    case 'i': *is_signed = 1; return 4;
+    case 'I': return 4;
+    case 'q': case 'j': *is_signed = 1; return 8;
+    case 'Q': case 'J': return 8;
+    case 'n': *big = 1; *is_signed = it->bang; return 2;
+    case 'N': *big = 1; *is_signed = it->bang; return 4;
+    case 'v': *big = 0; *is_signed = it->bang; return 2;
+    case 'V': *big = 0; *is_signed = it->bang; return 4;
+    default: return 0;
+    }
+}
+PACK_FN static void pack_put_int(pp_str **buf, uint64_t v, int size, int big) {
+    char b[8];
+    for (int i = 0; i < size; i++) b[big ? size - 1 - i : i] = (char)((v >> (8 * i)) & 0xff);
+    str_append(buf, b, size);
+}
+PACK_FN static void pack_put_utf8(pp_str **buf, uint64_t cp) {
+    char b[4]; int n;
+    if (cp < 0x80) { b[0] = (char)cp; n = 1; }
+    else if (cp < 0x800) { b[0] = (char)(0xc0 | (cp >> 6)); b[1] = (char)(0x80 | (cp & 0x3f)); n = 2; }
+    else if (cp < 0x10000) { b[0] = (char)(0xe0 | (cp >> 12)); b[1] = (char)(0x80 | ((cp >> 6) & 0x3f)); b[2] = (char)(0x80 | (cp & 0x3f)); n = 3; }
+    else { b[0] = (char)(0xf0 | ((cp >> 18) & 7)); b[1] = (char)(0x80 | ((cp >> 12) & 0x3f)); b[2] = (char)(0x80 | ((cp >> 6) & 0x3f)); b[3] = (char)(0x80 | (cp & 0x3f)); n = 4; }
+    str_append(buf, b, n);
+}
+static uint64_t pack_arg_uint(pp_val v) {
+    if (v.t == PP_NUM && v.u.n >= 18446744073709551615.0) return UINT64_MAX;
+    if (v.t == PP_NUM && v.u.n >= 9223372036854775808.0) return (uint64_t)v.u.n;
+    return (uint64_t)pp_to_int(v);
+}
+#define PACK_MAX (1 << 24)     /* no packed string or repeat count beyond this */
+
+/* packs the items of t into *buf, taking arguments from args[*ai...]; 0 after a die */
+PACK_FN static int pack_run(pp_interp *I, const char *t, int tl, pp_list *args, int *ai, pp_str **buf, int base, int depth) {
+    int pos = 0;
+    pack_item it;
+    if (depth > 20) { pp_die(I, "Too deeply nested ()-groups in pack"); return 0; }
+    for (;;) {
+        int r = pack_next(I, t, tl, &pos, &it);
+        if (r <= 0) return r == 0;
+        if (it.count > PACK_MAX || (*buf)->len > PACK_MAX) { pp_die(I, "pack: result too large"); return 0; }
+        int is_signed, big;
+        int isz = pack_int_size(&it, &is_signed, &big);
+        if (it.slash) {     /* LENGTH/STRING: the length of the string that follows, then the string */
+            pack_item si;
+            int sr = pack_next(I, t, tl, &pos, &si);
+            if (sr < 0) return 0;
+            if (sr == 0) { pp_die(I, "Code missing after '/' in pack"); return 0; }
+            if (!strchr("aAZ", si.type) || !isz) { pp_die(I, "pack: '/' needs a number before it and a string type (a, A, Z) after it"); return 0; }
+            pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
+            pp_str *s = v.t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(v);
+            int64_t len = s->len;
+            if (si.has_count && si.count < len) len = si.count;
+            int nul = si.type == 'Z' && !si.has_count;
+            pack_put_int(buf, (uint64_t)(len + nul), isz, big);
+            str_append(buf, s->d, (int)len);
+            if (nul) str_append(buf, "", 1);
+            pp_str_decref(s);
+            continue;
+        }
+        switch (it.type) {
+        case '(': {
+            int gbase = (*buf)->len;
+            for (int64_t k = 0; it.star ? *ai < args->n : k < it.count; k++) {
+                int before = *ai;
+                if (!pack_run(I, it.sub, it.sublen, args, ai, buf, gbase, depth + 1)) return 0;
+                if (it.star && *ai == before) break;      /* a group that takes no argument would never end */
+                if ((*buf)->len > PACK_MAX) { pp_die(I, "pack: result too large"); return 0; }
+            }
+            break;
+        }
+        case 'a': case 'A': case 'Z': {
+            pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
+            pp_str *s = v.t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(v);
+            int64_t want = it.star ? s->len + (it.type == 'Z') : it.count;
+            int64_t take = s->len < want ? s->len : want;
+            if (it.type == 'Z' && !it.star && take == want && want > 0) take = want - 1;   /* always room for the NUL */
+            str_append(buf, s->d, (int)take);
+            for (int64_t k = take; k < want; k++) str_append(buf, it.type == 'A' ? " " : "", 1);
+            pp_str_decref(s);
+            break;
+        }
+        case 'b': case 'B': case 'h': case 'H': {
+            pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
+            pp_str *s = v.t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(v);
+            int per = it.type == 'b' || it.type == 'B' ? 8 : 2;      /* digits per byte */
+            int64_t digits = it.star ? s->len : it.count;
+            for (int64_t d = 0; d < digits; d += per) {
+                unsigned byte = 0;
+                for (int k = 0; k < per && d + k < digits; k++) {
+                    int ch = d + k < s->len ? (unsigned char)s->d[d + k] : '0';
+                    unsigned val = per == 8 ? (unsigned)(ch & 1) : isalpha(ch) ? (unsigned)((ch + 9) & 0xf) : (unsigned)(ch & 0xf);
+                    if (it.type == 'b') byte |= val << k;
+                    else if (it.type == 'B') byte |= val << (7 - k);
+                    else if (it.type == 'h') byte |= val << (4 * k);
+                    else byte |= val << (4 * (1 - k));
+                }
+                char c = (char)byte;
+                str_append(buf, &c, 1);
+            }
+            pp_str_decref(s);
+            break;
+        }
+        case 'x':
+            if (it.bang) { int64_t al = it.count; while (al > 0 && ((*buf)->len - base) % al) str_append(buf, "", 1); break; }
+            for (int64_t k = 0; k < (it.star ? 0 : it.count); k++) str_append(buf, "", 1);
+            break;
+        case 'X': {
+            int64_t back = it.star ? 0 : it.count;
+            if (back > (*buf)->len) { pp_die(I, "'X' outside of string in pack"); return 0; }
+            (*buf)->len -= (int)back; (*buf)->d[(*buf)->len] = 0;
+            break;
+        }
+        case '@': {
+            int64_t to = base + (it.star ? 0 : it.count);
+            while ((*buf)->len < to) str_append(buf, "", 1);
+            (*buf)->len = (int)to; (*buf)->d[to] = 0;
+            break;
+        }
+        default: {
+            int isfloat = it.type == 'f' || it.type == 'd' || it.type == 'F';
+            if (!isz && !isfloat && it.type != 'U' && it.type != 'W' && it.type != 'w') { pp_die(I, "Invalid type '%c' in pack", it.type); return 0; }
+            for (int64_t k = 0; it.star ? *ai < args->n : k < it.count; k++) {
+                pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
+                if (isfloat) {
+                    char b[8]; int n;
+                    if (it.type == 'f') { float f = (float)pp_to_num(v); memcpy(b, &f, 4); n = 4; }
+                    else { double d = pp_to_num(v); memcpy(b, &d, 8); n = 8; }
+                    if (it.big) for (int x = 0; x < n / 2; x++) { char tmp = b[x]; b[x] = b[n - 1 - x]; b[n - 1 - x] = tmp; }
+                    str_append(buf, b, n);
+                }
+                else if (it.type == 'U') pack_put_utf8(buf, pack_arg_uint(v));
+                else if (it.type == 'W') { uint64_t c = pack_arg_uint(v); if (c < 256) pack_put_int(buf, c, 1, 0); else pack_put_utf8(buf, c); }
+                else if (it.type == 'w') {      /* BER compressed integer: 7 bits per byte, high bit on all but the last */
+                    uint64_t u = pack_arg_uint(v);
+                    char b[10]; int n = 0;
+                    do { b[n++] = (char)(u & 0x7f); u >>= 7; } while (u);
+                    while (n--) { char c = (char)(b[n] | (n ? 0x80 : 0)); str_append(buf, &c, 1); }
+                }
+                else pack_put_int(buf, pack_arg_uint(v), isz, big);
+            }
+            break;
+        }
+        }
+    }
+}
+static pp_val n_pack(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 1) return pp_die(I, "Not enough arguments for pack");
+    pp_str *t = pp_to_str(a->v[0]);
+    pp_str *buf = pp_str_new(NULL, 0);
+    int ai = 1;
+    int ok = pack_run(I, t->d, t->len, a, &ai, &buf, 0, 0);
+    pp_str_decref(t);
+    if (!ok) { pp_str_decref(buf); return pp_undef(); }
+    return pp_str_val(buf);
+}
+
+/* unpacks d[*dp...] by the items of t, pushing the values; 0 after a die */
+PACK_FN static int unpack_run(pp_interp *I, const char *t, int tl, const unsigned char *d, int dl, int *dp, pp_list *res, int base, int depth) {
+    int pos = 0;
+    pack_item it;
+    int64_t forced = -1;        /* count taken from a LENGTH/ item, for the next item */
+    if (depth > 20) { pp_die(I, "Too deeply nested ()-groups in unpack"); return 0; }
+    for (;;) {
+        int r = pack_next(I, t, tl, &pos, &it);
+        if (r <= 0) return r == 0;
+        if (res->n > PACK_MAX) { pp_die(I, "unpack: too many values"); return 0; }
+        if (forced >= 0) { it.count = forced; it.star = 0; it.has_count = 1; forced = -1; }
+        int is_signed, big;
+        int isz = pack_int_size(&it, &is_signed, &big);
+        int left = dl - *dp;
+        switch (it.type) {
+        case '(': {
+            for (int64_t k = 0; it.star ? *dp < dl : k < it.count; k++) {
+                int before = *dp;
+                if (!unpack_run(I, it.sub, it.sublen, d, dl, dp, res, *dp, depth + 1)) return 0;
+                if (it.star && *dp == before) break;      /* a group that reads nothing would never end */
+            }
+            break;
+        }
+        case 'a': case 'A': case 'Z': {
+            int64_t n = it.star ? left : it.count;
+            if (n > left) n = left;
+            int64_t keep = n;
+            if (it.type == 'Z') { const void *z = memchr(d + *dp, 0, (size_t)n); if (z) { keep = (const unsigned char *)z - (d + *dp); if (it.star) n = keep + 1; } }
+            else if (it.type == 'A') while (keep > 0 && (d[*dp + keep - 1] == ' ' || d[*dp + keep - 1] == 0 || d[*dp + keep - 1] == '\n' || d[*dp + keep - 1] == '\t' || d[*dp + keep - 1] == '\r')) keep--;
+            pp_list_push(res, pp_strn((const char *)d + *dp, (int)keep));
+            *dp += (int)n;
+            break;
+        }
+        case 'b': case 'B': case 'h': case 'H': {
+            int per = it.type == 'b' || it.type == 'B' ? 8 : 2;
+            int64_t digits = it.star ? (int64_t)left * per : it.count;
+            if (digits > (int64_t)left * per) digits = (int64_t)left * per;
+            pp_str *s = pp_str_new(NULL, 0);
+            for (int64_t k = 0; k < digits; k++) {
+                unsigned byte = d[*dp + k / per];
+                unsigned val;
+                if (it.type == 'b') val = (byte >> (k % 8)) & 1;
+                else if (it.type == 'B') val = (byte >> (7 - k % 8)) & 1;
+                else if (it.type == 'h') val = (byte >> (4 * (k % 2))) & 0xf;
+                else val = (byte >> (4 * (1 - k % 2))) & 0xf;
+                char c = "0123456789abcdef"[val];
+                str_append(&s, &c, 1);
+            }
+            *dp += (int)((digits + per - 1) / per);
+            pp_list_push(res, pp_str_val(s));
+            break;
+        }
+        case 'x':
+            if (it.bang) { int64_t al = it.count; while (al > 0 && (*dp - base) % al && *dp < dl) (*dp)++; break; }
+            if (!it.star && it.count > left) { pp_die(I, "'x' outside of string in unpack"); return 0; }
+            *dp += it.star ? left : (int)it.count;
+            break;
+        case 'X':
+            if (!it.star && it.count > *dp) { pp_die(I, "'X' outside of string in unpack"); return 0; }
+            *dp -= it.star ? 0 : (int)it.count;
+            break;
+        case '@': {
+            int64_t to = base + (it.star ? 0 : it.count);
+            if (to > dl) { pp_die(I, "'@' outside of string in unpack"); return 0; }
+            *dp = (int)to;
+            break;
+        }
+        default: {
+            int isfloat = it.type == 'f' || it.type == 'd' || it.type == 'F';
+            if (!isz && !isfloat && it.type != 'U' && it.type != 'W' && it.type != 'w') { pp_die(I, "Invalid type '%c' in unpack", it.type); return 0; }
+            int64_t last = 0;
+            for (int64_t k = 0; it.star ? *dp < dl : k < it.count; k++) {
+                left = dl - *dp;
+                if (isfloat) {
+                    int n = it.type == 'f' ? 4 : 8;
+                    if (left < n) break;
+                    char b[8];
+                    for (int x = 0; x < n; x++) b[x] = (char)d[*dp + (it.big ? n - 1 - x : x)];
+                    if (n == 4) { float f; memcpy(&f, b, 4); pp_list_push(res, pp_num(f)); }
+                    else { double v; memcpy(&v, b, 8); pp_list_push(res, pp_num(v)); }
+                    *dp += n;
+                }
+                else if (it.type == 'U' || (it.type == 'W' && 0)) {
+                    if (left < 1) break;
+                    unsigned c = d[*dp]; int n = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+                    if (n > left) n = 1;
+                    uint64_t cp = n == 1 ? c : c & (0xff >> (n + 1));
+                    for (int x = 1; x < n; x++) cp = (cp << 6) | (d[*dp + x] & 0x3f);
+                    pp_list_push(res, pp_int((int64_t)cp));
+                    *dp += n;
+                }
+                else if (it.type == 'W') { if (left < 1) break; pp_list_push(res, pp_int(d[(*dp)++])); }
+                else if (it.type == 'w') {
+                    if (left < 1) break;
+                    uint64_t u = 0; int more = 1;
+                    while (more && *dp < dl) { unsigned c = d[(*dp)++]; u = (u << 7) | (c & 0x7f); more = c & 0x80; }
+                    pp_list_push(res, pp_int((int64_t)u));
+                }
+                else {
+                    if (left < isz) break;
+                    uint64_t u = 0;
+                    for (int x = 0; x < isz; x++) u |= (uint64_t)d[*dp + (big ? isz - 1 - x : x)] << (8 * x);
+                    *dp += isz;
+                    if (is_signed && isz < 8 && (u >> (8 * isz - 1))) u |= ~(uint64_t)0 << (8 * isz);
+                    last = (int64_t)u;
+                    if (it.slash) continue;                 /* a length: used below, not returned */
+                    if (!is_signed && isz == 8 && u > (uint64_t)INT64_MAX) pp_list_push(res, pp_num((double)u));
+                    else pp_list_push(res, pp_int((int64_t)u));
+                }
+            }
+            if (it.slash) forced = last < 0 ? 0 : last;
+            break;
+        }
+        }
+    }
+}
+static pp_val n_unpack(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    if (a->n < 1) return pp_die(I, "Not enough arguments for unpack");
+    pp_str *t = pp_to_str(a->v[0]);
+    pp_str *d = a->n > 1 ? pp_to_str(a->v[1]) : pp_to_str(I->g_underscore->u.scalar);
+    pp_list res = {0};
+    int dp = 0;
+    int ok = unpack_run(I, t->d, t->len, (const unsigned char *)d->d, d->len, &dp, &res, 0, 0);
+    pp_str_decref(t); pp_str_decref(d);
+    if (!ok) { pp_list_free(&res); return pp_undef(); }
+    if (ctx == CTX_LIST && out) {
+        for (int i = 0; i < res.n; i++) { pp_list_push(out, res.v[i]); res.v[i] = pp_undef(); }
+        pp_list_free(&res);
+        return pp_no_value();
+    }
+    pp_val first = res.n ? res.v[0] : pp_undef();      /* scalar context: the first value */
+    if (res.n) res.v[0] = pp_undef();
+    pp_list_free(&res);
+    return first;
+}
+
 /* fileno(HANDLE): 0 / 1 / 2 for the standard handles, 3 for any other open file, undef otherwise */
 static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)ctx; (void)out;
@@ -1347,6 +1762,10 @@ static pp_val n_fileno(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "fileno", n_fileno);
+    pp_register(I, "vec", n_vec);
+    pp_register(I, "__vec_set", n_vec_set);
+    pp_register(I, "pack", n_pack);
+    pp_register(I, "unpack", n_unpack);
     pp_register(I, "localtime", n_localtime);
     pp_register(I, "gmtime", n_gmtime);
     pp_register(I, "builtin::ceil", n_bi_ceil);

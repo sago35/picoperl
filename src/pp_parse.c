@@ -1580,6 +1580,17 @@ static pp_node *parse_assign(pp_parser *P) {
         node_add(lhs, parse_assign(P));
         return lhs;
     }
+    if (op == OP_NONE && lhs->type == N_CALL && lhs->n == 3 && lhs->sym && !strcmp(lhs->sym->name, "&vec")) {
+        /* vec($s, OFF, BITS) = VALUE is $s = __vec_set($s, OFF, BITS, VALUE) */
+        advance(P);
+        pp_node *n = node(P, N_ASSIGN);
+        n->op = OP_NONE;
+        n->a = lhs->list[0];
+        lhs->sym = pp_intern(P->I, "&__vec_set", 10);
+        node_add(lhs, parse_assign(P));
+        n->b = lhs;
+        return n;
+    }
     if (op >= 0) {
         if (op == OP_REPEAT) advance(P);
         advance(P);
