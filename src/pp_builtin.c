@@ -726,11 +726,11 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         for (int i = 0; i < args.n; i++) { pp_str *t; const char *p = pp_to_cstr(args.v[i], &t); str_append(&r, p, t ? t->len : args.v[i].u.s->len); if (t) pp_str_decref(t); }
         pp_list_free(&args);
         if (r->len == 0) { pp_str_decref(r); r = pp_str_new(n->op == B_DIE ? "Died" : "Warning: something's wrong", n->op == B_DIE ? 4 : 26); }
-        msg = pp_str_val(r);
-        if (n->op == B_DIE) return pp_die_val(I, msg);
+        if (n->op == B_DIE) return pp_die_val(I, pp_str_val(r));
+        /* (the tail may move r: take the value only afterwards) */
         if (r->d[r->len - 1] != '\n') { char tail[160]; int tn = pp_snprintf(tail, sizeof tail, " at %s line %d.\n", I->file ? I->file : "-", I->line); str_append(&r, tail, tn); }
         pp_emit_warning(I, r->d, r->len);
-        pp_release(msg);
+        pp_str_decref(r);
         return ret(ctx, out, pp_int(1));
     }
     case B_SUBSTR: {
