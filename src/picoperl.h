@@ -87,6 +87,9 @@ struct pp_obj {
 };
 
 /* symbols: interned, sigil included in name ("$x", "@x", "%x", "&x") */
+/* a labelled loop that is being run; the chain lives on the C stack */
+struct pp_looplabel { struct pp_looplabel *up; pp_sym *label; };
+
 /* a statement list that is being run; the chain lives on the C stack of exec_stmts */
 struct pp_stmts { struct pp_stmts *up; pp_node *blk; };
 
@@ -320,6 +323,7 @@ struct pp_interp {
     uint8_t  in_dispatch;        /* a handler is running: no nested dispatch */
     uint8_t  hook_busy;          /* bit 1: __WARN__ handler running, bit 2: __DIE__ */
     pp_obj  *cur_code;           /* code object being executed (for `state`); NULL at file level */
+    struct pp_looplabel *loop_labels;   /* labelled loops being run, innermost first (for last/next LABEL) */
     struct pp_stmts *stmts;      /* statement lists being run, innermost first (for goto LABEL) */
     pp_node *main_unit;          /* the program given to pp_run: INIT blocks run when it starts */
     uint8_t  init_ran;           /* ... and after that it is too late for more of them */

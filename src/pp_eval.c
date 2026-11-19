@@ -1343,6 +1343,16 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
     return pp_undef();
 }
 
+/* a loop with a label: note it while it runs, so that last/next LABEL can tell whether the
+   label exists */
+static NOINLINE pp_val eval_labeled_loop(pp_interp *I, pp_node *n) {
+    struct pp_looplabel here = { I->loop_labels, n->sym };
+    I->loop_labels = &here;
+    pp_val r = n->type == N_WHILE ? eval_while(I, n) : n->type == N_FOR ? eval_for(I, n) : eval_foreach(I, n);
+    I->loop_labels = here.up;
+    return r;
+}
+
 static NOINLINE pp_val eval_if(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_env *env = NULL, *saved = I->env;
     if (n->flags & 4) { env = pp_env_new(I->env, n->aux); I->env = env; }
@@ -2318,9 +2328,9 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_BUILTIN: I->line = n->line; return pp_builtin(I, n, ctx, out);
     case N_BLOCK: return exec_block(I, n, ctx, out);
     case N_IF: return eval_if(I, n, ctx, out);
-    case N_WHILE: return eval_while(I, n);
-    case N_FOR: return eval_for(I, n);
-    case N_FOREACH: return eval_foreach(I, n);
+    case N_WHILE: if (n->sym) return eval_labeled_loop(I, n); return eval_while(I, n);
+    case N_FOR: if (n->sym) return eval_labeled_loop(I, n); return eval_for(I, n);
+    case N_FOREACH: if (n->sym) return eval_labeled_loop(I, n); return eval_foreach(I, n);
     case N_SUBDEF: return eval_subdef(I, n);
     case N_RETURN: return eval_return(I, n);
     case N_GOTO: {
@@ -2333,8 +2343,14 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return pp_undef();
     }
     case N_LABEL: return n->a ? pp_eval(I, n->a, ctx, out) : pp_undef();
-    case N_LAST: I->ctl = CTL_LAST; I->ctl_label = n->sym; return pp_undef();
-    case N_NEXT: I->ctl = CTL_NEXT; I->ctl_label = n->sym; return pp_undef();
+    case N_LAST: case N_NEXT:
+        if (n->sym) {   /* the label must belong to a loop that is running (here or in a caller) */
+            struct pp_looplabel *l = I->loop_labels;
+            while (l && l->label != n->sym) l = l->up;
+            if (!l) return pp_die(I, "Label not found for \"%s %s\"", n->type == N_LAST ? "last" : "next", n->sym->name);
+        }
+        I->ctl = n->type == N_LAST ? CTL_LAST : CTL_NEXT; I->ctl_label = n->sym;
+        return pp_undef();
     case N_NOP: return pp_undef();
     case N_DOBLOCK: return exec_block(I, n->a, ctx, out);
     case N_EVALBLOCK: return eval_evalblock(I, n, ctx, out);

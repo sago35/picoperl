@@ -88,4 +88,12 @@ print "in eval string: ", eval('my $k = 0; top: $k++; goto top if $k < 4; $k'), 
 # 三項演算子やハッシュのコロンはラベルではない
 my %h = (a => 1); my $t = $n ? "yes" : "no";
 print "not labels: $t $h{a} ", ($n > 1 ? "big" : "small"), "\n";
+# last / next で存在しないラベルを指定すると die する (eval で受けられる)
+no warnings;    # perl は "Exiting eval via last" などの警告を出す
+sub lb_term { eval { last NO_SUCH_LOOP_LABEL; }; (my $e = $@) =~ s/ at .*//s; $e }
+print "missing loop label: [", lb_term(), "]\n";
+eval { next ALSO_MISSING }; print "missing next label: ", ($@ =~ /^Label not found for "next ALSO_MISSING"/ ? "dies" : "no: $@"), "\n";
+my @lb; LB_OUT: for my $i (1 .. 3) { for my $j (1 .. 3) { next LB_OUT if $j == 2; push @lb, "$i$j" } }
+sub lb_inner { no warnings; last LB_CALLER } my $lb_n = 0; LB_CALLER: for (1 .. 3) { $lb_n++; lb_inner(); $lb_n += 10 }
+print "existing labels still work: @lb / $lb_n\n";
 print "done\n";
