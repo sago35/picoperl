@@ -30,6 +30,9 @@
   #oled { image-rendering: pixelated; background: #000; border-radius: 3px; display: block; }
   #leds { display: flex; gap: 7px; padding: .3rem 0; }
   #leds span { width: 18px; height: 18px; border-radius: 50%; background: #1a1a1a; border: 1px solid #0006; }
+  /* panel25: 10x10, each LED placed by its column / row (see panel25Pos) */
+  #leds.panel25 { display: grid; grid-template-columns: repeat(10, 18px); grid-template-rows: repeat(10, 18px); gap: 6px; }
+  #leds.panel25 span { border-radius: 4px; }
   #buzz-rows { font-family: ui-monospace, monospace; }
   #hidpane div { margin: .15rem 0; }
   #hidpane b { font-family: ui-monospace, monospace; font-weight: 600; }
@@ -196,6 +199,101 @@ sub hue {
 }
 </script>
 
+<script type="text/x-perl" id="sample-panel25 (10x10 LED)" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
+use Ws2812;
+use Time::HiRes qw(usleep);
+
+# panel25: 10x10 の LED パネル (GPIO26)。LED は上半分の 5 行を左の列から縦に 0..49、
+# 続けて下半分の 5 行を同じ順に 50..99 と並んでいる:
+#    0  5 .. 45
+#    1  6 .. 46
+#    :  :     :
+#    4  9 .. 49
+#   50 55 .. 95
+#    :  :     :
+#   54 59 .. 99
+my $ws = Ws2812->new(26);
+
+# 座標 (左上が 0,0) -> LED の番号
+sub led { my ($x, $y) = @_; return $y < 5 ? $x * 5 + $y : $x * 5 + ($y - 5) + 50 }
+
+# 毎フレーム計算すると実機では遅いので、先に表を作っておく:
+#   @color  色相環を 60 等分した色
+#   @shift  LED ごとの色のずれ (斜めに x + y が大きいほど先の色)
+my @color = map { hue($_ * 6) } 0 .. 59;
+my @shift;
+for my $y (0 .. 9) { for my $x (0 .. 9) { $shift[led($x, $y)] = ($x + $y) * 3 } }
+
+my $t = 0;
+while (1) {
+    $ws->write_raw(map { $color[($t + $_) % 60] } @shift);    # 斜めに流れる虹
+    $t = ($t + 2) % 60;
+    usleep(60_000);
+}
+
+# 色相 (0..359) -> 0xGGRRBBxx。明るさ控えめの r -> g -> b -> r の色相環
+sub hue {
+    my $h = int(shift) % 360;
+    my $up = int(44 * ($h % 120) / 120);
+    my ($r, $g, $b) = $h < 120 ? (44 - $up, $up, 0)
+                    : $h < 240 ? (0, 44 - $up, $up)
+                    :            ($up, 0, 44 - $up);
+    return Ws2812::rgb($r, $g, $b);
+}
+</script>
+
+<script type="text/x-perl" id="sample-panel25 (L チカ)" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
+use Panel25;      # put_color('red') で 100 個すべてを 1 色に (lib/Panel25.pm)
+
+# 色名: red green blue yellow cyan magenta white black
+while (1) {
+    put_color('red');
+    sleep 0.5;
+    put_color('black');
+    sleep 0.5;
+}
+</script>
+
+<script type="text/x-perl" id="sample-panel25 (文字スクロール)" data-env='{"PICOPERL_SIM_QUIET":"1"}'>use strict;
+use Gfx;
+use Tinyfont;
+use Ws2812;
+use Time::HiRes qw(usleep);
+
+my $text  = "hello picoperl";    # 日本語も書けます ("こんにちは" など)
+my $green = Ws2812::rgb(0, 24, 0);     # 文字の色 (赤, 緑, 青)
+my $ws    = Ws2812->new(26);
+
+# 座標 (左上が 0,0) -> LED の番号
+sub led { my ($x, $y) = @_; return $y < 5 ? $x * 5 + $y : $x * 5 + ($y - 5) + 50 }
+
+# 文字は最初に 1 回だけ、画面の無いバッファに東雲フォント (12px) で描く。
+# 文字の高さは 11 ドットあるので、いちばん上の 1 行を落として 10 行に収める
+my $w = Gfx::text_width(Tinyfont::SHNMK12, $text);
+my $g = Gfx->new(width => $w, height => 16);
+$g->write_line(Tinyfont::SHNMK12, 0, 12, $text, 1);
+
+# @col: 文字列の 1 列ぶんの点を 10 ビットの数にしたもの (y 行目がビット y)。前後に空白を 10 列ずつ
+my @col = ((0) x 10);
+for my $x (0 .. $w - 1) {
+    my $bits = 0;
+    $bits |= $g->get_pixel($x, $_ + 3) << $_ for 0 .. 9;
+    push @col, $bits;
+}
+push @col, (0) x 10;
+
+# LED の番号ごとの「何列目か」と「その行のビット」
+my (@x, @bit);
+for my $y (0 .. 9) { for my $x (0 .. 9) { my $i = led($x, $y); $x[$i] = $x; $bit[$i] = 1 << $y } }
+
+my $t = 0;      # 左端に見えている列
+while (1) {
+    $ws->write_raw(map { $col[$t + $x[$_]] & $bit[$_] ? $green : 0 } 0 .. 99);
+    $t = ($t + 1) % (@col - 9);
+    usleep(50_000);
+}
+</script>
+
 <script type="text/x-perl" id="sample-ブザー (ドレミ)">use strict;
 use Tone;
 use Time::HiRes qw(usleep);
@@ -343,6 +441,7 @@ function boardReset() {
   for (const id of ['p-oled', 'p-leds', 'p-buzzer', 'p-hid', 'p-inputs']) $(id).hidden = true;
   $('inputs').textContent = '';
   $('leds').textContent = '';
+  $('leds').classList.remove('panel25');
   $('buzz-rows').textContent = '-';
   $('hid-kbd').textContent = '-';
   $('hid-consumer').textContent = '-';
@@ -374,12 +473,29 @@ function drawOled(m) {
   ctx.putImageData(board.oledImg, 0, 0);
 }
 
+/* panel25 (100 LEDs on GPIO26): the chain runs down each column of the upper half
+   (0-4, 5-9, ... 45-49), then down each column of the lower half (50-54, ... 95-99).
+   Returns the 0-based [column, row] of LED i. */
+function panel25Pos(i) {
+  const j = i < 50 ? i : i - 50;
+  return [Math.floor(j / 5), (i < 50 ? 0 : 5) + j % 5];
+}
+
 function drawLeds(m) {
   $('p-leds').hidden = false;
   const box = $('leds');
   const n = m.data.length / 3;
   while (box.children.length < n) box.appendChild(document.createElement('span'));
   while (box.children.length > n) box.removeChild(box.lastChild);
+  const panel = m.pin === 26 && n === 100;       /* any other strip is drawn as one row */
+  if (box.classList.contains('panel25') !== panel) {
+    box.classList.toggle('panel25', panel);
+    for (let i = 0; i < n; i++) {
+      const [x, y] = panel ? panel25Pos(i) : [0, 0];
+      box.children[i].style.gridColumn = panel ? String(x + 1) : '';
+      box.children[i].style.gridRow = panel ? String(y + 1) : '';
+    }
+  }
   const boost = (v) => Math.round(255 * Math.pow(v / 255, 0.45));
   for (let i = 0; i < n; i++) {
     const r = m.data[i * 3], g = m.data[i * 3 + 1], b = m.data[i * 3 + 2];
