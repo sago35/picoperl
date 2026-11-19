@@ -2195,6 +2195,13 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             }
             pp_str_decref(cur);
             start = NULL;
+        } else if (strstr(name, "::")) {
+            /* $obj->Pkg::method(...): start the search in Pkg, whatever the object's class is */
+            const char *last = NULL;
+            for (const char *p = name; *p; p++) if (p[0] == ':' && p[1] == ':') last = p;
+            char pkgbuf[200];
+            snprintf(pkgbuf, sizeof pkgbuf, "%.*s", (int)(last - name), name);
+            code = find_method(I, pkgbuf, last + 2, 0);
         } else code = find_method(I, start, mname, 0);
         if (code) code->refcnt++;
         else if (strcmp(mname, "isa") == 0) {
@@ -2212,7 +2219,10 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             return scalar_or_push(ctx, out, r);
         } else {
             pp_list_free(&args);
-            pp_val e = pp_die(I, "Can't locate object method \"%s\" via package \"%s\"", mname, cls);
+            const char *q = NULL;                    /* $obj->Pkg::method: the search was in Pkg */
+            if (strncmp(mname, "SUPER::", 7)) for (const char *p = mname; *p; p++) if (p[0] == ':' && p[1] == ':') q = p;
+            pp_val e = q ? pp_die(I, "Can't locate object method \"%s\" via package \"%.*s\"", q + 2, (int)(q - mname), mname)
+                         : pp_die(I, "Can't locate object method \"%s\" via package \"%s\"", mname, cls);
             if (dyn) pp_str_decref(dyn);
             return e;
         }
