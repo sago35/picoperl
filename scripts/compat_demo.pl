@@ -1,4 +1,4 @@
-# 互換性まわりの実機確認: 正規表現 (後読み、アトミックグループ)、tie、演算子オーバーロードなど
+# 互換性まわりの実機確認: 正規表現 (後読み、アトミックグループ)、tie、演算子オーバーロード、DESTROY など
 #
 # シリアルで Enter を送るたびに一通り試して結果を表示します。
 # 各行が "ok" なら期待どおり、"NG" なら食い違いです。ドライブには何も書きません。
@@ -57,6 +57,11 @@ sub new { my ($c, $x, $y) = @_; bless { x => $x, y => $y }, $c }
 package Ver;        # <=> だけ: 残りの比較はそこから作られる
 use overload fallback => 1, '<=>' => sub { my ($a, $b, $sw) = @_; my $r = $a->{n} <=> (ref $b ? $b->{n} : $b); $sw ? -$r : $r }, '""' => sub { "v$_[0]{n}" };
 sub new { bless { n => $_[1] }, $_[0] }
+
+package Guard;      # DESTROY が呼ばれた順を記録する
+our @log;
+sub new     { my ($c, $n) = @_; bless { n => $n }, $c }
+sub DESTROY { push @log, $_[0]{n} }
 
 package StubPkg;
 BEGIN { no strict 'refs'; *is_pos = \&is_positive }     # 定義より前に別名を付ける
@@ -137,6 +142,33 @@ sub run {
     my $aref = [1, 2, 3]; check('"@$ref" in a string', "<@$aref>", "<1 2 3>");
     my $flag = not 0; check("not as a term", ($flag ? 1 : 0), 1);
     check("-t on STDIN is defined",        (defined(-t STDIN) ? 1 : 0), 1);
+
+    # DESTROY
+    @Guard::log = ();
+    { my $g = Guard->new("scope"); }
+    my $g2 = Guard->new("undef"); undef $g2;
+    my $g3 = Guard->new("first"); my $g4 = $g3; undef $g3;
+    check("DESTROY at scope end and undef", "@Guard::log", "scope undef");
+    undef $g4; check("DESTROY after the last reference", "@Guard::log", "scope undef first");
+    my @gl = map { Guard->new("i$_") } 1 .. 2; @gl = ();
+    check("DESTROY for a cleared array",    "@Guard::log[3, 4]", "i2 i1");
+
+    # メモリ上のファイル、$/、print $fh @list
+    my $buf = ''; open(my $mfh, '>', \$buf) or die; my @parts = ("a", "b"); print $mfh @parts, "\n"; printf $mfh "%02d\n", 7; close $mfh;
+    check("in-memory file, print \$fh \@list", $buf, "ab\n07\n");
+    open(my $rfh, '<', \$buf) or die; my @lines = <$rfh>; close $rfh;
+    check("in-memory file, read lines",     scalar(@lines) . ":" . $lines[1], "2:07\n");
+    { open(my $sfh, '<', \$buf) or die; local $/; my $all = <$sfh>; check("slurp with \$/ undef", length($all), 6); }
+
+    # 左辺値、pos、文字列
+    my @la = (1, 2, 3, 4); $#la = 1; my ($lx, $ly); (undef, $lx, $ly) = (7, 8, 9);
+    check("\$#a = N, undef in a list",        "@la $lx$ly", "1 2 89");
+    my $ps = "aXbXc"; pos($ps) = 2; $ps =~ /X/g; check("pos(\$s) = N", pos($ps), 4);
+    my @pa = ("x1y2"); my $pn = 0; while ($pa[0] =~ /\d/g) { $pn++; last if $pn > 9 }
+    check("//g on an array element",        $pn, 2);
+    check('"\\b", "\\cA", v-string',         join(",", map { ord } split //, "\b\cA" . v65.66), "8,1,65,66");
+    my %lh = (k => "A"); { local $lh{k} = $lh{k} . "x"; check("local \$h{k} = \$h{k} . ...", $lh{k}, "Ax"); }
+    my ($bn, $bs) = ("Foo::", "bar"); check("\${name} as a variable", ${bn} . ${bs}, "Foo::bar");
 
     print "-- done: $ok ok, $ng NG --\n\n";
 }
