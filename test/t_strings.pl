@@ -57,4 +57,13 @@ symbols in delimiter $hd_v
 -- end --
 # 空文字列の split は、制限数にかかわらず要素なし
 print "split empty: ", join("", map { scalar(@$_) } [split /,/, "", -1], [split /,/, ""], [split ",", "", 5], [split //, ""], [split /,/, "a", -1], [split " ", ""], [split /,/, ",", -1]), "\n";
+# \U \L \u \l \Q \E
+my $cm = "msWin"; my @cl = ("ab", "cd"); my %ch = (k => "val");
+print "case mods: _IS_\U$cm\E_end \LABC Def\E \uabc \lABC \u\L$cm\E! \Ua${cm}b\E \U@cl\E [\Qa.b*$cm\E] \u$cl[0]\n";
+print "case mods 2: \Uno end $cm\n";
+print "case mods 3: \u$ch{k} \U$ch{k}\E-\l\U$cm\E x\\Uy \$cm\n";
+my $cmh = <<"EOT";
+heredoc \U$cm\E and \u$ch{k}
+EOT
+print "case mods heredoc: $cmh";
 print "end\n";

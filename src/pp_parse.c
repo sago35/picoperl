@@ -1089,6 +1089,9 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
     pp_node *r = node_tmp(P, N_INTERP);
     char *buf = NULL; int n = 0, cap = 0;
     int line = P->cur.line;
+    /* \U \L \Q change the text up to \E (or the end), \u \l only the next character.
+       Literal text is converted here; an interpolated value is wrapped in uc() etc. */
+    int mode = 0, first = 0;
     for (int i = 0; i < len; ) {
         int c = (unsigned char)s[i];
         if (c == '\\' && i + 1 < len) {
@@ -1112,6 +1115,9 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
                 break;
             }
             case '\n': line++; break;
+            case 'U': case 'L': case 'Q': mode = d; break;
+            case 'E': mode = 0; break;
+            case 'u': case 'l': first = d; break;
             default: append_char(&buf, &n, &cap, d); break;
             }
             continue;
@@ -1128,12 +1134,27 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
                     node_add(j, ex);
                     ex = j;
                 }
+                if (mode) {
+                    pp_node *w = node(P, N_BUILTIN);
+                    w->op = (uint8_t)(mode == 'U' ? pp_builtin_id("uc", 2, NULL) : mode == 'L' ? pp_builtin_id("lc", 2, NULL) : pp_builtin_id("quotemeta", 9, NULL));
+                    node_add(w, ex); ex = w;
+                }
+                if (first) {
+                    pp_node *w = node(P, N_BUILTIN);
+                    w->op = (uint8_t)(first == 'u' ? pp_builtin_id("ucfirst", 7, NULL) : pp_builtin_id("lcfirst", 7, NULL));
+                    node_add(w, ex); ex = w;
+                    first = 0;
+                }
                 node_add(r, ex);
                 i = e;
                 continue;
             }
         }
         if (c == '\n') line++;
+        if (mode == 'U') c = toupper(c);
+        else if (mode == 'L') c = tolower(c);
+        else if (mode == 'Q' && !isalnum(c) && c != '_' && c < 0x80) append_char(&buf, &n, &cap, '\\');
+        if (first) { c = first == 'u' ? toupper(c) : tolower(c); first = 0; }
         append_char(&buf, &n, &cap, c);
         i++;
     }
