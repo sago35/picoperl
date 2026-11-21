@@ -256,6 +256,7 @@ struct pp_node {
 };
 #define PP_NODE_HEAP 0x80
 #define PP_SUB_EARLY 0x08          /* N_SUBDEF: already defined while parsing (a BEGIN block or `use` needed it) */
+#define PP_CALL_GOTO 0x10          /* N_CALL / N_CALLREF: written as goto &sub */
 #define PP_SUB_INPLACE 0x10        /* N_SUBDEF: not defined up front, see N_SUBCLOSE */
 #define PP_UNIT_GOTO 0x08          /* file-level N_BLOCK: the file uses goto, keep its statements after they ran */
 #define PP_BLOCK_WARGS 0x04        /* body of a sub that writes to $_[N]: its caller copies the changes back */
@@ -352,6 +353,7 @@ struct pp_interp {
                                     needs the subs defined so far; pp_exec_unit runs the file in it */
     const char *file_pkg;        /* package of the file-level code being run (NULL = main), for caller */
     pp_list  wb;                 /* arguments a sub changed through @_: (index, value) pairs for the caller */
+    int      goto_call;          /* the call being made is `goto &sub`: it takes the place of the running sub for caller() */
     pp_obj  *wb_code;            /* ... and the sub that left them */
     struct pp_frame *frame;      /* innermost sub call (frames live on the C stack of pp_call) */
     pp_val   try_err;            /* error being handed to a catch block */

@@ -2816,6 +2816,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (!((e->type == N_CALL || e->type == N_CALLREF) && (e->flags & 2))) {   /* an expression giving a code ref */
             pp_node *c = node(P, N_CALLREF); c->a = e; c->flags |= 2; e = c;
         }
+        e->flags |= PP_CALL_GOTO;
         pp_node *n = node(P, N_RETURN);
         n->a = e;
         return n;

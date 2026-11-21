@@ -1749,6 +1749,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
         return pp_copy(code->u.code.constval);
     }
     if (code->u.code.native) {
+        I->goto_call = 0;
         /* natives return one scalar; in list context it becomes a one-element list */
         pp_val r = code->u.code.native(I, args, ctx, out);
         if (r.t == PP_UNDEF && r.u.i == PP_NO_VALUE) return pp_undef();          /* an empty list */
@@ -1775,13 +1776,21 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->depth++;
     code->refcnt++;
     struct pp_frame fr = { I->frame, saved_code, I->file_pkg, I->file, code, saved_line, ctx, argv, 0 };
+    struct pp_frame *prev_frame = I->frame;
+    const char *prev_pkg = I->file_pkg;
+    if (I->goto_call) {
+        /* goto &sub: for caller(), this call replaces the sub that is running (its frame stays
+           on the C stack, but is skipped) */
+        I->goto_call = 0;
+        if (prev_frame) { fr.up = prev_frame->up; fr.caller_code = prev_frame->caller_code; fr.caller_pkg = prev_frame->caller_pkg; fr.file = prev_frame->file; fr.line = prev_frame->line; }
+    }
     I->frame = &fr;
     const char *saved_file = I->file;
     if (code->u.code.body->type == N_BLOCK && code->u.code.body->sym) I->file = code->u.code.body->sym->name + 1;
     pp_val r = exec_block(I, code->u.code.body, ctx, out);
     I->file = saved_file;
-    I->frame = fr.up;
-    I->file_pkg = fr.caller_pkg;         /* a `package` statement inside the sub ends with it */
+    I->frame = prev_frame;
+    I->file_pkg = prev_pkg;              /* a `package` statement inside the sub ends with it */
     I->depth--;
     I->cur_code = saved_code;
     if (I->ctl == CTL_RETURN) {
@@ -1841,7 +1850,9 @@ static NOINLINE pp_val call_named(pp_interp *I, pp_node *n, int ctx, pp_list *ou
         }
     }
     I->line = n->line;
+    I->goto_call = (n->flags & PP_CALL_GOTO) != 0;
     pp_val r = pp_call(I, code, &args, ctx, out);
+    I->goto_call = 0;
     if (I->wb_code == code && !(n->flags & 2)) args_writeback(I, NULL, n->list, n->n);
     pp_list_free(&args);
     return r;
@@ -1865,7 +1876,9 @@ static NOINLINE pp_val eval_callref(pp_interp *I, pp_node *n, int ctx, pp_list *
         for (int i = 0; i < n->n; i++) { pp_eval(I, n->list[i], CTX_LIST, &args); if (I->ctl) { pp_list_free(&args); pp_release(cv); return pp_undef(); } }
     }
     I->line = n->line;
+    I->goto_call = (n->flags & PP_CALL_GOTO) != 0;
     pp_val r = pp_call(I, cv.u.o, &args, ctx, out);
+    I->goto_call = 0;
     if (I->wb_code == cv.u.o && !(n->flags & 2)) args_writeback(I, NULL, n->list, n->n);
     pp_list_free(&args);
     pp_release(cv);

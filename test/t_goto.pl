@@ -97,3 +97,21 @@ my @lb; LB_OUT: for my $i (1 .. 3) { for my $j (1 .. 3) { next LB_OUT if $j == 2
 sub lb_inner { no warnings; last LB_CALLER } my $lb_n = 0; LB_CALLER: for (1 .. 3) { $lb_n++; lb_inner(); $lb_n += 10 }
 print "existing labels still work: @lb / $lb_n\n";
 print "done\n";
+
+# goto &sub: 移った先のサブから見た caller は、元のサブの呼び出し元
+{
+    package GotoLib;
+    sub real { my @c = caller; my @c0 = caller(0); my @c1 = caller(1); "pkg=$c[0] line=$c[2] sub=$c0[3] up=" . (defined $c1[3] ? $c1[3] : "none") . " args=@_" }
+    sub front { unshift @_, "added"; goto &real }
+    sub viaref { my $code = \&real; goto &$code }
+    sub chain { goto &front }
+    sub normal { real(@_) }
+    package main;
+    sub wrap { GotoLib::front("x") }
+    print GotoLib::front("a", "b"), "\n";
+    print GotoLib::viaref("c"), "\n";
+    print GotoLib::chain("d"), "\n";
+    print wrap(), "\n";
+    print GotoLib::normal("e"), "\n";
+    print GotoLib::front("after"), "\n";
+}

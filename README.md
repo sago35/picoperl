@@ -278,8 +278,8 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 メッセージ (`Can't use string ("x") as an ARRAY ref while "strict refs" in use`) で die します。
 
 **`goto &sub`** (`goto &name`、`goto &$code`、`goto &{...}`、`goto \&name`) は、現在の `@_` を渡して
-別のサブに移ります。内部的には `return &sub;` として動くので、呼び出し元のコンテキストは引き継がれますが、
-`caller` から元のサブが消えることはなく、スタックも 1 段消費します (深い末尾再帰には使えません)。
+別のサブに移ります。移った先のサブから見た `caller` は、perl と同じく元のサブの呼び出し元です。
+内部的には `return &sub;` として動くので、スタックは 1 段消費します (深い末尾再帰には使えません)。
 
 **`caller`** に対応しています: `caller` / `caller()` は呼び出し元の (パッケージ, ファイル, 行)、
 `caller(N)` は N 段上のフレームでさらに (サブ名, hasargs, wantarray) を返します。スカラーコンテキストでは
