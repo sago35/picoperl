@@ -221,7 +221,7 @@ static int lex_glob_position(pp_lex *L) {
 static int is_special_var(char sigil, const char *name, int len) {
     if (len == 1) {
         char c = name[0];
-        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '.' || c == '<' || c == '>' || c == '|' || c == '^' || c == ']' || c == '?')) return 1;
+        if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '.' || c == '<' || c == '>' || c == '|' || c == '^' || c == ']' || c == '?' || c == '%' || c == '=' || c == '~' || c == ':' || c == '-' || c == '+')) return 1;
         if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
         if (sigil == '%' && c == '+') return 1;
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
@@ -660,7 +660,8 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         else if (c1 == '^' && isupper(peekc(L, 2))) {   /* $^O, $^W, ...: the name is "^O" */
             L->pos += 3; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
         }
-        else if (c1 == '?' || c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-' || c1 == '.' || c1 == '<' || c1 == '>') {
+        else if (c1 == '?' || c1 == ']' || c1 == '@' || c1 == '!' || c1 == ',' || c1 == '/' || c1 == '\\' || c1 == '"' || c1 == '&' || c1 == ';' || c1 == '|' || c1 == '^' || c1 == '+' || c1 == '-' || c1 == '.' || c1 == '<' || c1 == '>'
+                 || c1 == '%' || c1 == '=' || c1 == '~' || (c1 == ':' && peekc(L, 2) != ':')) {   /* ... and the format variables $% $= $~ $: */
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
@@ -1037,6 +1038,23 @@ static void apply_proto(pp_parser *P, pp_node *n) {
         node_add(sc, a);
         n->list[i] = sc;
     }
+}
+/* Does a sub of this name take the place of the builtin? Only one that was imported into the
+   package (Time::HiRes's time, a native). A sub the package defines itself does not, as in
+   perl: IO::Handle has `sub close { ... close($fh) ... }`, and that inner close is the builtin. */
+static int overrides_builtin(pp_parser *P, pp_sym *s, const char *id, int len) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return 0;      /* sub NAME { } in this file */
+    pp_obj *c = pp_lookup_sub(P->I, s);
+    if (!c) return 0;
+    if (c->u.code.native || !c->u.code.name) return 1;
+    const char *nm = c->u.code.name;                                        /* "Pkg::name" where it was defined */
+    const char *last = NULL;
+    for (const char *p = nm; *p; p++) if (p[0] == ':' && p[1] == ':') last = p;
+    const char *base = last ? last + 2 : nm;
+    if ((int)strlen(base) != len || memcmp(base, id, (size_t)len)) return 1;   /* imported under another name */
+    size_t pl = strlen(P->pkg);
+    int own = last ? ((size_t)(last - nm) == pl && !memcmp(nm, P->pkg, pl)) : !strcmp(P->pkg, "main");
+    return !own;
 }
 /* 0: unknown, 1: declared (list operator), 2: declared with no args */
 static int is_declared(pp_parser *P, pp_sym *s) {
@@ -2638,6 +2656,22 @@ static pp_node *parse_ident_term(pp_parser *P) {
             pp_node *n = node(P, N_LOCALGLOB); n->a = g;
             return n;
         }
+        if (cur_is_op(P, "(")) {                     /* local(*FH) / local(*A, *B): globs in parentheses */
+            pp_tok *nx = peek(P);
+            if ((nx->type == T_VAR && nx->sigil == '*') || (nx->type == T_CAST && !strcmp(nx->op, "*"))) {
+                advance(P);
+                pp_node *l = node(P, N_LIST);
+                while (!cur_is_op(P, ")")) {
+                    pp_node *g = parse_term(P);
+                    if (g->type != N_GLOB) perr(P, "Can't localize this kind of expression");
+                    pp_node *n = node(P, N_LOCALGLOB); n->a = g;
+                    node_add(l, n);
+                    if (!accept_op(P, ",")) break;
+                }
+                expect_op(P, ")");
+                return l->n == 1 ? l->list[0] : l;
+            }
+        }
         return parse_var_decl_list(P, 'l');
     }
     if (len == 3 && !memcmp(id, "sub", 3)) {
@@ -2882,7 +2916,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         static const char *core_only[] = { "print", "printf", "say", "defined", "undef", "scalar", "exists", "delete", "bless", "die", "warn", "sort", "map", "grep", "push", "pop", "shift", "unshift", "keys", "values", "each", "split", "join", "ref", NULL };
         int core = 0;
         for (int i = 0; core_only[i]; i++) if ((int)strlen(core_only[i]) == len && !memcmp(core_only[i], id, len)) core = 1;
-        if (!core && !forced_core && is_declared(P, sym_sigil(P, '&', id, len))) bid = 0;
+        if (!core && !forced_core && overrides_builtin(P, sym_sigil(P, '&', id, len), id, len)) bid = 0;
     }
     if (bid > 0) {
         advance(P);
@@ -2965,15 +2999,15 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
 
     pp_sym *s = sym_sigil(P, '&', id, len);
-    if (strcmp(P->pkg, "main") != 0 && !has_pkg_sep(id, len) && !pp_lookup_sub(P->I, s)) {
-        /* a native registered without a package (chdir) works like a builtin: every package
-           calls the one in main, unless it defines a sub of that name itself */
+    if (strcmp(P->pkg, "main") != 0 && !has_pkg_sep(id, len)) {
+        /* a native registered without a package (chdir, fileno: perl builtins) works like a
+           builtin: every package calls the one in main. A sub of that name which the package
+           defines itself does not replace it (IO::Handle's `sub fileno { fileno($_[0]) }`),
+           only one that was imported does. */
         char buf[128];
         int bn = pp_snprintf(buf, sizeof buf, "&%.*s", len, id);
         pp_sym *m = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
-        int local_decl = 0;
-        for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) local_decl = 1;
-        if (m && m->sub && m->sub->u.code.native && !local_decl) s = m;
+        if (m && m->sub && m->sub->u.code.native && !overrides_builtin(P, s, id, len)) s = m;
     }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);
