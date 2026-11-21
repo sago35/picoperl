@@ -763,6 +763,7 @@ lexed:
 /* Parser helpers                                                      */
 /* ------------------------------------------------------------------ */
 
+static void shrink_ast(pp_arena *arena, pp_node *n);
 static pp_node *const_str(pp_parser *P, const char *s, int len);
 static pp_node *node(pp_parser *P, int type) {
     pp_node *n;
@@ -2168,7 +2169,7 @@ static pp_node *parse_var_decl_list(pp_parser *P, int kind) {
                             pp_node *one = node(P, N_MY); one->op = 'l'; node_add(one, m->list[i]);
                             node_add(mixed, one);
                         }
-                        m->n = 0;
+                        free(m->list); m->list = NULL; m->n = 0;
                     }
                     pp_node *e = parse_term(P);
                     if (e->type != N_HELEM && e->type != N_AELEM && e->type != N_HSLICE && e->type != N_ASLICE)
@@ -2455,6 +2456,11 @@ static pp_node *parse_term(pp_parser *P) {
             int std = (len == 5 && !memcmp(name, "STDIN", 5)) || (len == 6 && (!memcmp(name, "STDOUT", 6) || !memcmp(name, "STDERR", 6)));
             if (std || has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = pp_snprintf(buf, sizeof buf, "%.*s", len, name);
             else bl = pp_snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
+            if (g->b) {                               /* (node() put the current package there) */
+                pp_node *pk = g->b;
+                if (pk->type == N_CONST) { pp_release(pk->val); pk->val = pp_undef(); }
+                if (pk->flags & PP_NODE_HEAP) { free(pk); pp_stat_nodes--; }
+            }
             g->b = NULL;
             g->a = const_str(P, buf, bl);
             return glob_slot(P, g);
@@ -2751,7 +2757,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
                     if (!accept_op(P, ",")) break;
                 }
                 expect_op(P, ")");
-                return l->n == 1 ? l->list[0] : l;
+                return l->n == 1 ? unwrap_single(l) : l;
             }
         }
         return parse_var_decl_list(P, 'l');
@@ -3429,6 +3435,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             I->all_subdefs[I->nall_subdefs++] = n;
             if (in_place) {
                 n->flags |= PP_SUB_INPLACE;
+                shrink_ast(P->sc->arena, n);          /* not under the file's tree: its lists go into the arena now */
                 pp_node *c = node(P, N_SUBCLOSE); c->sym = n->sym;
                 return c;
             }
