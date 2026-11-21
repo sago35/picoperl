@@ -9,6 +9,10 @@
 #     (after は run() の中で測るので、まだ生きている変数のぶん数百バイト少なく出ます。
 #      実機では before が 131080 で一定、after との差は 400 バイト前後でした)
 # 直す前のファームウェアでは、1 回の Enter で 10 万バイト以上減ってメモリ不足になります。
+#
+# 構文エラーからの復帰も確かめられます: main.pl の適当な行を壊して (括弧を 1 つ消すなど) 保存すると
+# エラーが表示され、直して保存し直すと最初の行 "closure test: ... heap free N" がまた出ます。
+# 壊す、直すを繰り返しても、この N が減っていかないことを見てください。
 use strict;
 use warnings;
 
@@ -35,6 +39,8 @@ sub nested   { my $n = shift; return sub { my $k = shift; my $in = sub { $n + $k
 sub recur    { my $n = shift; my $f; $f = sub { my $k = shift; $k ? $k + $f->($k - 1) : 0 }; $f->($n) }
 sub holder   { my $p = Probe->new(shift); my $cb = sub { $p->{n} }; $cb->() }
 sub kept     { my $p = Probe->new(shift); my $c = sub { $p->{n} }; return $c }
+
+{ my $calls = 0; sub count_call { ++$calls } }                             # ブロックの変数を使う名前付きサブ
 
 sub heap { defined &Board::_heap_free ? Board::_heap_free() : 0 }
 
@@ -63,11 +69,13 @@ sub run {
     check("kept closures stay alive", join(",", map { $_->() } @keep) . " live=" . Probe::live(), "1,2,3,4,5 live=5");
     @keep = ();
     check("... and go when dropped", "live=" . Probe::live(), "live=0");
+    my $c0 = count_call(); count_call() for 1 .. 4;
+    check("named sub in a block", count_call() - $c0, 5);
     my $after = heap();
     print "$ok ok, $ng NG\n";
     print "heap free: $before before, $after after (", $before - $after, " bytes lost)\n" if $before;
     print "press Enter to run again\n";
 }
 
-print "closure test: press Enter\n";
+print "closure test: press Enter (heap free ", heap(), ")\n";
 while (defined(my $l = <STDIN>)) { run() }
