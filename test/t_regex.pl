@@ -243,3 +243,11 @@ my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos(
     my $e = "a\nb\n"; my $cnt = () = $e =~ /$/mg; (my $d = $e) =~ s/$/!/mg; $d =~ s/\n/\\n/g; print "$cnt [$d]\n";
     print "end: ", ("a\n" =~ /a\n^/m ? "match" : "no"), " ", ("a\nb" =~ /a\n^b/m ? "match" : "no"), "\n";
 }
+
+# 8 進のエスケープ: 文字クラスの中 ([\0-\037\177-\377])、\101 (グループが足りなければ文字)
+{
+    my $s = "a\x01b\x7fc\xffd e"; (my $t = $s) =~ s/([\0-\037\177-\377])/sprintf("\\x%02x", ord($1))/ge; print "octal class: $t\n";
+    print "octal: ", join(",", map { /^[\101-\103]$/ ? 1 : 0 } qw(A C D)), " ", ("\0" =~ /[\0]/ ? 1 : 0), ("a\tb" =~ /a[\011]b/ ? 1 : 0), ("x8" =~ /x[\60-\71]/ ? 1 : 0),
+          ("\x01" =~ /\001/ ? 1 : 0), ("A" =~ /\101/ ? 1 : 0), ("ab" =~ /(a)\1?b/ ? 1 : 0), ("aa" =~ /(a)\1/ ? 1 : 0),
+          ("abcdefghijkk" =~ /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)\11/ ? 1 : 0), ("a\x08" =~ /(a)\10/ ? 1 : 0), ("z\x53" =~ /z\123/ ? 1 : 0), "\n";
+}

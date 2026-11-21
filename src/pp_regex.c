@@ -231,6 +231,11 @@ static int parse_escape(rparser *P, int *cls) {
         if (P->p >= P->end) { rfail(P, "missing control character name in regex"); return 0; }
         return toupper((unsigned char)*P->p++) ^ 64;
     case '0': { int v = 0, k = 0; while (k < 2 && P->p < P->end && *P->p >= '0' && *P->p <= '7') { v = v * 8 + (*P->p - '0'); P->p++; k++; } return v; }
+    case '1': case '2': case '3': case '4': case '5': case '6': case '7': {   /* \177: octal (in a class, or where it is no backreference) */
+        int v = c - '0', k = 1;
+        while (k < 3 && P->p < P->end && *P->p >= '0' && *P->p <= '7') { v = v * 8 + (*P->p - '0'); P->p++; k++; }
+        return v & 255;
+    }
     case 'x': {
         int v = 0;
         if (P->p < P->end && *P->p == '{') { P->p++; while (P->p < P->end && *P->p != '}') { v = v * 16 + hexv((unsigned char)*P->p); P->p++; } if (P->p < P->end) P->p++; }
@@ -395,8 +400,13 @@ static rnode *parse_atom(rparser *P, int depth) {
         if (d == 'Z') { P->p++; return rnew(P, R_EOSNL); }
         if (d == 'G') { P->p++; return rnew(P, R_EMPTY); }
         if (d >= '1' && d <= '9') {
-            int v = 0; while (P->p < P->end && isdigit((unsigned char)*P->p)) { v = v * 10 + (*P->p - '0'); P->p++; }
-            n = rnew(P, R_BACKREF); if (n) n->c = v; return n;
+            const char *at = P->p;
+            int v = 0, octal = 1, nd = 0;
+            while (P->p < P->end && isdigit((unsigned char)*P->p)) { if (*P->p > '7') octal = 0; v = v * 10 + (*P->p - '0'); P->p++; nd++; }
+            /* \1 .. \9 are backreferences; \10 and up only when that many groups are open,
+               otherwise an octal character (\101 is "A") */
+            if (nd == 1 || v <= P->ncap || !octal) { n = rnew(P, R_BACKREF); if (n) n->c = v; return n; }
+            P->p = at;
         }
         int letter; int ch = parse_escape(P, &letter);
         if (P->failed) return NULL;
