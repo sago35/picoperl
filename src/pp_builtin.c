@@ -830,9 +830,11 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
     int fd = 1;
     pp_obj *fh = NULL;
     pp_val f = pp_undef();
-    if (n->a) { f = pp_eval(I, n->a, CTX_SCALAR, NULL); if (I->ctl) { pp_release(f); return pp_undef(); } }
+    int has = n->a != NULL;
+    if (has) { f = pp_eval(I, n->a, CTX_SCALAR, NULL); if (I->ctl) { pp_release(f); return pp_undef(); } }
+    else if (I->g_sel && I->g_sel->u.scalar.t != PP_UNDEF) { f = pp_copy(I->g_sel->u.scalar); has = 1; }   /* select(FH) was called */
     if (pp_tie_count) {   /* print {$tied} LIST is $obj->PRINT(LIST); say adds the newline. No handle: STDOUT */
-        pp_val probe = n->a ? pp_copy(f) : pp_int(1);
+        pp_val probe = has ? pp_copy(f) : pp_int(1);
         if (tied_handle(I, probe)) {
             pp_release(f);
             pp_list targs = {0};
@@ -844,7 +846,7 @@ static pp_val do_print(pp_interp *I, pp_node *n, int id) {
         }
         pp_release(probe);
     }
-    if (n->a) {
+    if (has) {
         int hfd;
         pp_obj *hf = handle_of(I, f, &hfd);
         if (hf) {
@@ -1640,6 +1642,29 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (n->op == B_BINMODE && args.n > 1 && !(I->compat_warn & 16)) {
             I->compat_warn |= 16;
             pp_warn(I, "picoperl: IO layers are ignored, files are bytes");
+        }
+        if (n->op == B_SELECT && args.n <= 1) {
+            /* select(FH): print / printf / say without a handle write to FH from now on. Returns
+               what was selected before: that handle, or the name "main::STDOUT". */
+            if (!I->g_sel && args.n) I->g_sel = pp_global(I, pp_intern(I, "$ SELECT", 8));
+            pp_val *sel = I->g_sel ? &I->g_sel->u.scalar : NULL;
+            pp_val old = sel && sel->t != PP_UNDEF ? pp_copy(*sel) : pp_cstr("main::STDOUT");
+            if (args.n) {
+                pp_val v = args.v[0];
+                int fd; pp_obj *f = handle_of(I, v, &fd);
+                int is_stdout = !f && !(pp_tie_count && tied_handle(I, v))
+                                && (fd == 1 || (v.t == PP_STR && v.u.s->len >= 6 && !strcmp(v.u.s->d + v.u.s->len - 6, "STDOUT")));
+                pp_release(*sel);
+                if (is_stdout) *sel = pp_undef();
+                else if (v.t == PP_STR && v.u.s->len < 200) {        /* a name: kept as perl reports it, "main::FOO" */
+                    const char *nm = v.u.s->d + (v.u.s->d[0] == '*');
+                    char nb[256]; int nl = pp_snprintf(nb, sizeof nb, "%s%s", strstr(nm, "::") ? "" : "main::", nm);
+                    *sel = pp_strn(nb, nl);
+                }
+                else *sel = pp_copy(v);
+            }
+            pp_list_free(&args);
+            return ret(ctx, out, old);
         }
         pp_list_free(&args);
         return ret(ctx, out, pp_int(1));

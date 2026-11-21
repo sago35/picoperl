@@ -313,6 +313,7 @@ struct pp_interp {
     unsigned stmt_counter;
     pp_obj  *loaded;             /* hash of required files */
     pp_obj  *g_underscore;       /* $_ cell (SCALAR obj) */
+    pp_obj    *g_sel;             /* select(FH): the handle print writes to without one (undef: STDOUT). NULL until select(FH) is first called */
     pp_obj  *g_a, *g_b;          /* $a, $b for sort */
     pp_obj  *g_at;               /* $@ */
     pp_obj  *g_argv;             /* @ARGV */
