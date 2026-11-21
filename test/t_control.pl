@@ -55,3 +55,11 @@ my $m = 0; my @u; do { $m++; push @u, $_ } for 1 .. 2; print "@u $m\n";
 my $q = 0; foreach (1 .. 2) { $q++; $_ == 1 && $q < 3 and redo; } print "q=$q\n";
 { no warnings "exiting"; eval { for (1) { redo NOPE } } }; print "err: $@";
 }
+
+# foreach の変数を書き換えると、元の変数に反映される (スカラー変数、要素、配列の混在)
+{
+my $s = " <a b> "; for ($s) { s/[<>]//g; s/^\s+//; s/\s+$//; } print "[$s]\n";
+my ($p, $q) = ("a", "b"); for ($p, $q) { $_ .= "!" } print "$p $q\n";
+my %h = (k => "v"); my @arr = (1, 2); for ($h{k}, $arr[1], $p) { $_ .= "+" } print "$h{k} @arr $p\n";
+for my $e ($p, @arr, $q) { $e x= 2 } print "$p @arr $q\n";
+}

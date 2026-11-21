@@ -1678,9 +1678,17 @@ static void arg_store(pp_interp *I, pp_node *n, int k, pp_val v) {
     if (slot && !I->ctl) { pp_release(*slot); *slot = pp_copy(v); }
 }
 /* nodes[0..nn): the argument expressions; first: the invocant of a method call (argument 0) */
+static int list_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn, pp_list wb);
 static NOINLINE void args_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn) {
     pp_list wb = I->wb;                              /* detach: storing may call subs (tie) */
     memset(&I->wb, 0, sizeof I->wb); I->wb_code = NULL;
+    list_writeback(I, first, nodes, nn, wb);
+}
+/* wb: (index, value) pairs, by index; the values go to the variables that the list expressions
+   nodes[] name (foreach uses this too: its loop variable is a copy of the element as well).
+   Consumes wb; returns how many values found their variable. */
+static int list_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn, pp_list wb) {
+    int stored = 0;
     int saved_ctl = I->ctl; pp_sym *saved_label = I->ctl_label;   /* also after die: perl's aliases were written before it */
     I->ctl = CTL_NONE;
     int pos = 0, w = 0;                              /* pos: index of the first value of the current expression */
@@ -1698,11 +1706,13 @@ static NOINLINE void args_writeback(pp_interp *I, pp_node *first, pp_node **node
         for (; w < wb.n && wb.v[w].u.i < pos + cnt; w += 2) {
             if (wb.v[w].u.i < pos || !arg_pure_lv(a)) continue;
             arg_store(I, a, (int)(wb.v[w].u.i - pos), wb.v[w + 1]);
+            stored++;
         }
         pos += cnt;
     }
     if (!I->ctl) { I->ctl = saved_ctl; I->ctl_label = saved_label; }
     pp_list_free(&wb);
+    return stored;
 }
 
 pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out) {
@@ -2038,10 +2048,20 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                 pp_val *slot = &src_arr->u.arr.v[i];
                 if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
             }
-            else if (nv == 1 && !src_arr && !(I->compat_warn & 4) && !I->ctl && !pp_val_same(cell->u.scalar, items.v[i])) {
-                /* perl aliases the loop variable to the list element; we only write back for a single array */
-                I->compat_warn |= 4;
-                pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating one array");
+            else if (nv == 1 && !src_arr && !pp_val_same(cell->u.scalar, items.v[i])) {
+                /* perl aliases the loop variable to the list element; here the changed value is
+                   written back to the variable it came from: for ($x, @list, $h{k}) { s/..// } */
+                pp_list wb = {0};
+                pp_list_push(&wb, pp_int(i)); pp_list_push(&wb, pp_copy(cell->u.scalar));
+                int direct = n->b->type != N_LIST;
+                pp_env *loop_env = I->env;
+                I->env = saved;                      /* the list was written in the enclosing scope */
+                int stored = list_writeback(I, NULL, direct ? &n->b : n->b->list, direct ? 1 : n->b->n, wb);
+                I->env = loop_env;
+                if (!stored && !(I->compat_warn & 4) && !I->ctl) {
+                    I->compat_warn |= 4;
+                    pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating variables");
+                }
             }
             if (brk) break;
             if (env && env->refcnt > 1 && i + nv < items.n) {
