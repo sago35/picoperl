@@ -23,3 +23,9 @@ print "closure names itself: ", (eval q{ my $rec = sub { $rec }; 1 } ? "compiled
   package AlKid; our @ISA = ("AlMid"); BEGIN { *AUTOLOAD = \&AlMid::AUTOLOAD; *is_neg = \&is_negative; }
   package main; my $k = AlKid->new; no warnings 'once';
   print "aliased AUTOLOAD: ", $k->is_neg, " | ", AlKid::plainfn(1), " | ", $k->meth, " | ", (defined $AlKid::AUTOLOAD ? "kid set" : "kid unset"), "\n"; }
+# f($v = EXPR): サブが @_ 経由で書き換えると、代入先の変数が変わる (元の値は変わらない)
+{ sub esc { foreach my $e (@_) { $e =~ s/"/&quot;/g } return } my %src = (k => q{a"b}); my $v; esc($v = $src{k}); print "assign as arg: $v $src{k}\n";
+  esc(my $w = q{c"d}); my @arr; esc($arr[1] = q{"}); my %g; esc($g{z} = q{""}, my $t = q{"x}); print "more: $w $arr[1] $g{z} $t\n";
+  sub up { $_[0] = uc $_[0]; $_[1] .= "!" } my ($p, $q) = ("a", "b"); up($p .= "x", $q = "new"); print "op assign: $p $q\n"; }
+# use base で自分自身を継承しようとすると、警告だけ出て @ISA は変わらない
+{ my $w = ""; local $SIG{__WARN__} = sub { $w = shift }; eval q{package SelfBase; use base "SelfBase";}; no warnings 'once'; print "self base: [$w] isa=[", join(",", @SelfBase::ISA), "] err=[$@]\n"; }

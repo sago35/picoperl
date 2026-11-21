@@ -2723,6 +2723,12 @@ static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
         for (int i = 0; i < args.n && !I->ctl; i++) {
             pp_str *c = pp_to_str(args.v[i]);
             if (strcmp(c->d, "-norequire") == 0) { norequire = 1; pp_str_decref(c); continue; }
+            if ((n->flags & 4) && !strcmp(c->d, pkg->d)) {      /* use base of the class itself: a warning, and nothing else */
+                char w[320]; int wl = pp_snprintf(w, sizeof w, "Class '%.250s' tried to inherit from itself\n", c->d);
+                pp_emit_warning(I, w, wl);
+                pp_str_decref(c);
+                continue;
+            }
             if (!norequire) {
                 char f[256]; int fl = 0;
                 for (int k = 0; k < c->len && fl < 240; k++) { if (c->d[k] == ':' && c->d[k+1] == ':') { f[fl++] = '/'; k++; } else f[fl++] = c->d[k]; }
