@@ -3633,12 +3633,34 @@ static pp_node *parse_use(pp_parser *P) {
     return NULL;
 }
 
+/* A statement that starts with `{`: a block, or an anonymous hash? Perl guesses from what
+   follows, and so does this: `}` right away, or a word / string and then `,` or `=>`,
+   make it a hash ({}, { a => 1 }: what eval "{ ... }" of dumped data needs). */
+static int brace_is_hash(const pp_lex *L) {
+    int i = L->pos, n = L->len;
+    const char *s = L->src;
+    while (i < n && isspace((unsigned char)s[i])) i++;
+    if (i >= n) return 0;
+    if (s[i] == '}') return 1;
+    if (s[i] == '\'' || s[i] == '"') {
+        char q = s[i++];
+        while (i < n && s[i] != q) { if (s[i] == '\\') i++; i++; }
+        if (i >= n) return 0;
+        i++;
+    } else {
+        if (i >= n || !(isalnum((unsigned char)s[i]) || s[i] == '_')) return 0;
+        while (i < n && (isalnum((unsigned char)s[i]) || s[i] == '_')) i++;
+    }
+    while (i < n && isspace((unsigned char)s[i])) i++;
+    return i < n && (s[i] == ',' || (s[i] == '=' && i + 1 < n && s[i + 1] == '>'));
+}
 static pp_node *parse_statement_inner(pp_parser *P) {
     pp_tok *t = &P->cur;
     pp_sym *label = P->pending_label;
     P->pending_label = NULL;
     int term_brace = P->term_brace;       /* applies to this statement only */
     P->term_brace = 0;
+    if (t->type == T_OP && !strcmp(t->op, "{") && !term_brace && !P->has_nxt) term_brace = brace_is_hash(&P->L);
     if (t->type == T_OP) {
         if (!strcmp(t->op, ";")) { advance(P); return NULL; }
         if (!strcmp(t->op, "{") && !term_brace) {
