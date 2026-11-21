@@ -1115,6 +1115,29 @@ static int is_block_only_proto(pp_parser *P, pp_sym *s) {
 /* A '$' in a prototype gives its argument scalar context: is(grep(...), 1) compares a count,
    ok($s =~ /re/, $name) passes one value even when the match fails. Arguments that are one
    value anyway are left alone. */
+/* the slot of a '_' in a prototype text (that argument is $_ when left out), or -1 */
+static int proto_underscore(const char *t, int len) {
+    for (int j = 0, k = 0; j < len && k < 7; j++) {
+        char c = t[j];
+        if (c == ' ' || c == '\t' || c == ';') continue;
+        if (c == '_') return k;
+        if (c == '@' || c == '%') break;
+        if (c == '\\') { j++; if (j < len && t[j] == '[') while (j < len && t[j] != ']') j++; }
+        k++;
+    }
+    return -1;
+}
+/* a call that stops just before the '_' slot of its sub's prototype gets $_ there */
+static void proto_default(pp_parser *P, pp_node *n) {
+    int at = -1, known = 0;
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) { known = 1; at = ((P->declnoargs[i] >> 4) & 7) - 1; }
+    if (!known) {
+        pp_obj *c = pp_lookup_sub(P->I, n->sym);
+        pp_node *b = c && !c->u.code.native ? c->u.code.body : NULL;
+        if (b && b->type == N_BLOCK && b->b && b->b->type == N_CONST && b->b->val.t == PP_STR) at = proto_underscore(b->b->val.u.s->d, b->b->val.u.s->len);
+    }
+    if (at >= 0 && n->n == at) node_add(n, mkvar(P, '$', "_", 1));
+}
 static void apply_proto(pp_parser *P, pp_node *n) {
     int mask = -1;
     for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) mask = P->declmask[i];
@@ -2286,7 +2309,7 @@ static void skip_attributes(pp_parser *P) {
         while (P->cur.type == T_IDENT) {
             int is_proto = P->cur.len == 9 && !memcmp(P->cur.s, "prototype", 9);
             advance(P);
-            if (cur_is_op(P, "(") && !P->has_nxt) {
+            if (cur_is_op(P, "(") && !P->has_nxt && !P->cur.space_before) {   /* (after a blank it is the signature: sub f :lvalue ($x)) */
                 pp_lex *L = &P->L;
                 int start = L->pos;
                 while (L->pos < L->len && L->src[L->pos] != ')') L->pos++;
@@ -2305,6 +2328,31 @@ static void keep_prototype(pp_parser *P, pp_node *body) {
     char buf[64]; int n = 0;
     for (int i = 0; i < P->proto_len && n < 63; i++) buf[n++] = P->proto_s[i];   /* as written, blanks included: what perl returns */
     body->b = const_str(P, buf, n);
+}
+/* the argument mask of a prototype text ($ and _ positions take a scalar); 2 if its first
+   argument is a block (&), else 1 */
+static int proto_scan(const char *t, int len, int *mask) {
+    int first = 0;
+    *mask = 0;
+    for (int j = 0, k = 0; j < len && k < 8; j++) {
+        char c = t[j];
+        if (c == ' ' || c == '\t' || c == ';') continue;
+        if (c == '@' || c == '%') break;                       /* the rest is a list */
+        if (c == '\\') { j++; if (j < len && t[j] == '[') while (j < len && t[j] != ']') j++; }
+        else if (c == '$' || c == '_') *mask |= 1 << k;
+        k++;
+    }
+    while (first < len && (t[first] == ' ' || t[first] == '\t')) first++;
+    return first < len && t[first] == '&' ? 2 : 1;
+}
+/* sub NAME :prototype(...) (SIGNATURE): the attributes come first, and then the parentheses
+   are a signature whatever they hold. Returns the prototype kind (0: none was given that way). */
+static void skip_attributes(pp_parser *P);
+static int attr_prototype(pp_parser *P, int *mask) {
+    if (!cur_is_op(P, ":")) return 0;
+    skip_attributes(P);
+    if (!P->has_proto) return 0;
+    return proto_scan(P->proto_s, P->proto_len, mask);
 }
 static int skip_prototype(pp_parser *P) {
     P->proto_mask = 0;
@@ -2865,7 +2913,13 @@ static pp_node *parse_ident_term(pp_parser *P) {
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
-        if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; n->aux = (uint8_t)P->proto_mask; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        int amask = 0, akind = attr_prototype(P, &amask);
+        if (akind) {                                 /* sub :prototype($) ($v) { ... } */
+            if (akind == 2) n->op = 1;
+            n->aux = (uint8_t)amask;
+            if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
+        }
+        else if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; n->aux = (uint8_t)P->proto_mask; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
         skip_attributes(P);
         keep_prototype(P, b);
         parse_block_stmts(P, b);
@@ -3224,7 +3278,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);
-    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
+    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); proto_default(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
     if (cur_is_op(P, "{") && !P->has_nxt && is_block_proto(P, s)) {
         /* name { ... } LIST for a sub with a (&...) prototype: the block is `sub { ... }`.
            Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
@@ -3243,6 +3297,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         /* (name [1, 2], ... and name { a => 1 }, ... pass an array / a hash reference: the sub is
            known, so the bracket cannot be a subscript or a block) */
         if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
+        proto_default(P, n);
         return parse_postfix(P, n);
     }
     if (P->cur.type == T_IDENT && !has_pkg_sep(id, len) && P->cur.len > 0
@@ -3517,7 +3572,16 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *b = node(P, N_BLOCK);
             scope_push(P, SCOPE_BLOCK);
             int noargs = 0, nsig = 0;
-            if (cur_is_op(P, "(")) {
+            int amask = 0, akind = attr_prototype(P, &amask);
+            if (akind) {                             /* sub name :prototype(_) ($arg) { ... } */
+                int empty = 1, only = 1;
+                for (int i = 0; i < P->proto_len; i++) { if (!strchr(" \t", P->proto_s[i])) empty = 0; if (!strchr("& \t", P->proto_s[i])) only = 0; }
+                n->aux = (uint8_t)amask;
+                noargs = empty;
+                if (akind == 2) { n->op = 1; noargs |= 4; if (only) noargs |= 8; }
+                if (cur_is_op(P, "(")) { advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, NULL); }
+            }
+            else if (cur_is_op(P, "(")) {
                 int proto = skip_prototype(P);
                 n->aux = (uint8_t)P->proto_mask;
                 advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs);
@@ -3530,6 +3594,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 }
             }
             skip_attributes(P);
+            if (P->has_proto) { int u = proto_underscore(P->proto_s, P->proto_len); if (u >= 0) noargs |= (u + 1) << 4; }
             keep_prototype(P, b);
             declare_sub(P, n->sym, noargs);
             for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) P->declmask[i] = n->aux;
