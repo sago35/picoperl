@@ -191,6 +191,14 @@ static int is_ident_start(int c);
 /* after "-e" (L->pos is at the '-'): does a path follow? Only a scalar or a string literal
    counts, so that -s => 1, -e, and -x(...) keep their old meaning. */
 static int is_ident_char(int c);
+/* x followed by digits only (x3, x256), where an operator is expected */
+static int lex_x_count(pp_lex *L) {
+    int i = L->pos + 1;
+    while (i < L->len && isdigit((unsigned char)L->src[i])) i++;
+    return i >= L->len || !(is_ident_char((unsigned char)L->src[i]));
+}
+static int is_declared(pp_parser *P, pp_sym *s);
+static pp_sym *sym_sigil(pp_parser *P, char sigil, const char *name, int len);
 static int lex_filetest_operand(pp_lex *L) {
     int i = L->pos + 2;
     while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
@@ -557,6 +565,11 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     if (isdigit(c) || (c == '.' && isdigit(peekc(L, 1)) && !L->prev_term)) {
         lex_number(P, t); term = 1;
     }
+    else if (c == 'x' && L->prev_term && isdigit(peekc(L, 1)) && lex_x_count(L)) {
+        /* "ab"x3, $s x3: the repetition operator written against its count */
+        t->type = T_IDENT; t->s = L->src + L->pos; t->len = 1;
+        L->pos++; term = 0;
+    }
     else if (is_ident_start(c)) {
         int start = L->pos;
         int len = lex_name(L);
@@ -624,6 +637,12 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         t->type = T_IDENT; t->s = id; t->len = len;
         term = 0;
         if ((len == 8 && memcmp(id, "__LINE__", 8) == 0) || (len == 8 && memcmp(id, "__FILE__", 8) == 0)) term = 1;
+        else if (!L->prev_arrow) {
+            /* a constant (use constant, sub name () {...}) takes no arguments: a / after it divides */
+            int i = L->pos;
+            while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+            if (i < L->len && L->src[i] == '/' && is_declared(P, sym_sigil(P, '&', id, len)) == 2) term = 1;
+        }
     }
     else if (c == '"') { L->pos++; int blen; t->s = lex_delimited(P, '"', &blen); t->len = blen; t->type = T_ISTR; term = 1; }
     else if (c == '\'') { L->pos++; int blen; t->s = lex_delimited(P, '\'', &blen); t->len = blen; t->type = T_STR; term = 1; }
@@ -1130,7 +1149,15 @@ static int is_declared(pp_parser *P, pp_sym *s) {
     for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return (P->declnoargs[i] & 1) ? 2 : 1;
     pp_obj *c = pp_lookup_sub(P->I, s);
     if (!c) return 0;
-    return (c->u.code.is_const || (c->u.code.native == NULL && c->u.code.body == NULL)) ? 2 : 1;
+    if (c->u.code.is_const || (c->u.code.native == NULL && c->u.code.body == NULL)) return 2;
+    /* an imported sub with an empty prototype (sub pi () { ... } in the module): takes no arguments either */
+    pp_node *b = c->u.code.native ? NULL : c->u.code.body;
+    if (b && b->type == N_BLOCK && b->b && b->b->type == N_CONST && b->b->val.t == PP_STR) {
+        const char *q = b->b->val.u.s->d;
+        while (*q == ' ') q++;
+        if (!*q) return 2;
+    }
+    return 1;
 }
 
 static pp_node *parse_block(pp_parser *P);
@@ -1559,6 +1586,9 @@ static pp_node *parse_pattern_term(pp_parser *P) {
         case 'r': op |= PP_M_R; trop |= PP_TR_R; break;
         case 'c': trop |= PP_TR_C; if (t.kind != 't') op |= PP_M_C; break;
         case 'd': trop |= PP_TR_D; break;
+        case 'a': case 'u': case 'l': case 'p':            /* character set modifiers: the classes are ASCII here anyway */
+            if (t.kind != 't') break;
+            /* fallthrough */
         default: perr(P, "Unknown regexp modifier \"/%c\"", *f);
         }
     }
