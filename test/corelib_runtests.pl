@@ -17,6 +17,7 @@
 # 最後に、合格数・スキップ数と、理由別・場所別の集計を出す。
 #
 # 合否は TAP として判定する (下の本体を参照)。1 テスト 10 秒で打ち切る。
+# 環境変数 CORELIB_SAVE=DIR を付けると、通らなかったテストの出力を DIR/配布物__テスト.out に残す。
 # picoperl の lib/ に代用品があるモジュールは、配布物に同梱の版ではなく代用品で実行する (下の説明を参照)。
 use strict; use warnings; use File::Find; use Cwd qw(getcwd);
 @ARGV == 3 or die "usage: cd PERL_SOURCE && perl $0 PICOPERL LIBDIR REPORT.tsv\n";
@@ -54,6 +55,7 @@ for my $d (sort keys %dist) {
         (my $tt = $t) =~ s{^\Q$d\E/}{} unless $d =~ /\.t$/;
         my $out = `cd '$dir' && PICOPERL_LIB='$lib' timeout 10 '$pico' '$tt' 2>&1 </dev/null`;
         my $code = $? >> 8; $nt++;
+        my $save = sub { return unless $ENV{CORELIB_SAVE}; (my $n = "$d|$tt") =~ s{[/|]}{__}g; open my $o, '>', "$ENV{CORELIB_SAVE}/$n.out" or return; print $o $out; close $o };
         # 合否は TAP として判定する: 終了コード 0、TODO でない not ok が無い、項目が 1 つ以上ある、
         # 計画 (1..N) があれば項目数と合う。全項目が TODO の失敗でも合格 (ok の行は無くてよい)。
         # 1..0 (全体をスキップ) は合格とは別に数える。
@@ -64,6 +66,7 @@ for my $d (sort keys %dist) {
         if ($code == 0 && @lines && !$bad && (!defined $plan || $plan == @lines)) { $pass++; print "PASS $t\n"; next }
         if ($code == 0 && @lines && !$bad && defined $plan && $plan != @lines) { $why{'計画した項目数と実行した項目数が合わない'}++; print "WHY\t$d|$tt\tplan mismatch ($plan planned, " . scalar(@lines) . " run)\t\n"; next }
         # 警告を除いた最初のエラー行で分類し、場所 (ファイル:行) も控える
+        $save->();                                   # CORELIB_SAVE=DIR: 通らなかったテストの出力を DIR に残す
         my @err = grep { / at \S+ line \d+/ && !/^Use of uninitialized|isn't numeric|^Useless use|redefined at|^picoperl: |^#/ } split /\n/, $out;
         my $first = $err[0] // (grep { /^not ok/ } split /\n/, $out)[0] // "exit $code (no message)";
         my ($loc) = $first =~ / at (\S+ line \d+)/; $loc //= "";
