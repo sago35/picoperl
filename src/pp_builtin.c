@@ -2225,12 +2225,69 @@ static const struct { const char *name; uint32_t val; } fcntl_consts[] = {
     {"S_IRWXO", 7u}, {"S_IREAD", 256u}, {"S_IWRITE", 128u}, {"S_IEXEC", 64u}, {"LOCK_SH", 1u},
     {"LOCK_EX", 2u}, {"LOCK_NB", 4u}, {"LOCK_UN", 8u}, {"SEEK_SET", 0u}, {"SEEK_CUR", 1u}, {"SEEK_END", 2u},
 };
+/* ... and the error numbers of Errno (lib/Errno.pm): ENOENT, EEXIST, ... as on Linux, which
+   are also the numbers $! takes here. "Errno::_NAMES" is all the names in one string, for
+   keys %!. */
+static const struct { const char *name; uint8_t val; } errno_consts[] = {
+    {"EPERM", 1}, {"ENOENT", 2}, {"ESRCH", 3}, {"EINTR", 4}, {"EIO", 5}, {"ENXIO", 6}, {"E2BIG", 7},
+    {"ENOEXEC", 8}, {"EBADF", 9}, {"ECHILD", 10}, {"EAGAIN", 11}, {"EWOULDBLOCK", 11}, {"ENOMEM", 12},
+    {"EACCES", 13}, {"EFAULT", 14}, {"ENOTBLK", 15}, {"EBUSY", 16}, {"EEXIST", 17}, {"EXDEV", 18},
+    {"ENODEV", 19}, {"ENOTDIR", 20}, {"EISDIR", 21}, {"EINVAL", 22}, {"ENFILE", 23}, {"EMFILE", 24},
+    {"ENOTTY", 25}, {"ETXTBSY", 26}, {"EFBIG", 27}, {"ENOSPC", 28}, {"ESPIPE", 29}, {"EROFS", 30},
+    {"EMLINK", 31}, {"EPIPE", 32}, {"EDOM", 33}, {"ERANGE", 34}, {"EDEADLK", 35}, {"EDEADLOCK", 35},
+    {"ENAMETOOLONG", 36}, {"ENOLCK", 37}, {"ENOSYS", 38}, {"ENOTEMPTY", 39}, {"ELOOP", 40}, {"ENOMSG", 42},
+    {"EIDRM", 43}, {"ECHRNG", 44}, {"EL2NSYNC", 45}, {"EL3HLT", 46}, {"EL3RST", 47}, {"ELNRNG", 48},
+    {"EUNATCH", 49}, {"ENOCSI", 50}, {"EL2HLT", 51}, {"EBADE", 52}, {"EBADR", 53}, {"EXFULL", 54},
+    {"ENOANO", 55}, {"EBADRQC", 56}, {"EBADSLT", 57}, {"EBFONT", 59}, {"ENOSTR", 60}, {"ENODATA", 61},
+    {"ETIME", 62}, {"ENOSR", 63}, {"ENONET", 64}, {"ENOPKG", 65}, {"EREMOTE", 66}, {"ENOLINK", 67},
+    {"EADV", 68}, {"ESRMNT", 69}, {"ECOMM", 70}, {"EPROTO", 71}, {"EMULTIHOP", 72}, {"EDOTDOT", 73},
+    {"EBADMSG", 74}, {"EOVERFLOW", 75}, {"ENOTUNIQ", 76}, {"EBADFD", 77}, {"EREMCHG", 78}, {"ELIBACC", 79},
+    {"ELIBBAD", 80}, {"ELIBSCN", 81}, {"ELIBMAX", 82}, {"ELIBEXEC", 83}, {"EILSEQ", 84}, {"ERESTART", 85},
+    {"ESTRPIPE", 86}, {"EUSERS", 87}, {"ENOTSOCK", 88}, {"EDESTADDRREQ", 89}, {"EMSGSIZE", 90},
+    {"EPROTOTYPE", 91}, {"ENOPROTOOPT", 92}, {"EPROTONOSUPPORT", 93}, {"ESOCKTNOSUPPORT", 94},
+    {"ENOTSUP", 95}, {"EOPNOTSUPP", 95}, {"EPFNOSUPPORT", 96}, {"EAFNOSUPPORT", 97}, {"EADDRINUSE", 98},
+    {"EADDRNOTAVAIL", 99}, {"ENETDOWN", 100}, {"ENETUNREACH", 101}, {"ENETRESET", 102}, {"ECONNABORTED", 103},
+    {"ECONNRESET", 104}, {"ENOBUFS", 105}, {"EISCONN", 106}, {"ENOTCONN", 107}, {"ESHUTDOWN", 108},
+    {"ETOOMANYREFS", 109}, {"ETIMEDOUT", 110}, {"ECONNREFUSED", 111}, {"EHOSTDOWN", 112},
+    {"EHOSTUNREACH", 113}, {"EALREADY", 114}, {"EINPROGRESS", 115}, {"ESTALE", 116}, {"EUCLEAN", 117},
+    {"ENOTNAM", 118}, {"ENAVAIL", 119}, {"EISNAM", 120}, {"EREMOTEIO", 121}, {"EDQUOT", 122},
+    {"ENOMEDIUM", 123}, {"EMEDIUMTYPE", 124}, {"ECANCELED", 125}, {"ENOKEY", 126}, {"EKEYEXPIRED", 127},
+    {"EKEYREVOKED", 128}, {"EKEYREJECTED", 129}, {"EOWNERDEAD", 130}, {"ENOTRECOVERABLE", 131},
+    {"ERFKILL", 132}, {"EHWPOISON", 133},
+};
 int pp_core_const(const char *name, pp_val *out) {
-    if (strncmp(name, "Fcntl::", 7) != 0) return 0;
-    name += 7;
-    for (size_t i = 0; i < sizeof fcntl_consts / sizeof fcntl_consts[0]; i++)
-        if (!strcmp(fcntl_consts[i].name, name)) { *out = pp_int((int64_t)fcntl_consts[i].val); return 1; }
+    if (!strncmp(name, "Fcntl::", 7)) {
+        name += 7;
+        for (size_t i = 0; i < sizeof fcntl_consts / sizeof fcntl_consts[0]; i++)
+            if (!strcmp(fcntl_consts[i].name, name)) { *out = pp_int((int64_t)fcntl_consts[i].val); return 1; }
+        return 0;
+    }
+    if (!strncmp(name, "Errno::", 7)) {
+        name += 7;
+        if (name[0] != 'E' && strcmp(name, "_NAMES")) return 0;
+        size_t n = sizeof errno_consts / sizeof errno_consts[0];
+        if (name[0] == '_') {
+            pp_str *all = pp_str_new(NULL, 0);
+            for (size_t i = 0; i < n; i++) { if (i) str_append(&all, " ", 1); str_append(&all, errno_consts[i].name, (int)strlen(errno_consts[i].name)); }
+            *out = pp_str_val(all);
+            return 1;
+        }
+        for (size_t i = 0; i < n; i++)
+            if (!strcmp(errno_consts[i].name, name)) { *out = pp_int(errno_consts[i].val); return 1; }
+    }
     return 0;
+}
+
+/* times: (user, system, child user, child system) CPU seconds. There are no processes to
+   tell apart here: the time since start counts as user time, the rest is 0. */
+static pp_val n_times(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)a;
+    double up = (double)pp_host_millis() / 1000.0;
+    if (ctx == CTX_LIST && out) {
+        pp_list_push(out, pp_num(up)); pp_list_push(out, pp_num(0)); pp_list_push(out, pp_num(0)); pp_list_push(out, pp_num(0));
+        return pp_no_value();
+    }
+    return pp_num(up);
 }
 
 /* read(FH, $buf, LEN, OFFSET): the parser passes \$buf. Returns the number of bytes read (0 at
@@ -2287,6 +2344,7 @@ static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_copy(a->v[1]);
 }
 void pp_core_natives_register(pp_interp *I) {
+    pp_register(I, "times", n_times);
     pp_register(I, "__read", n_read);
     pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);

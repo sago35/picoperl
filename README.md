@@ -335,6 +335,12 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 **`FindBin`** の picoperl 版 (`lib/FindBin.pm`): `use FindBin qw($Bin $Script);` で、実行中のスクリプトがあるディレクトリ (絶対パス) と
 ファイル名が取れます。シンボリックリンクはたどらないので `$RealBin` は `$Bin` と同じです。
 
+**`Errno`** の picoperl 版 (`lib/Errno.pm`): エラー番号の定数 (`ENOENT`、`EEXIST` など約 130 個、Linux の値) と `%!` です。
+`use Errno qw(ENOENT);` のあと `$! == ENOENT`、`use Errno;` のあと `$!{ENOENT}` と書けます。Fcntl と同じく、定数は使われたものだけ作られます。
+perl との違い: `%!` は `use Errno` (または `require Errno`) したあとでだけ使えます (perl は `%!` を書くと自動で読み込みます)。
+
+**`times`** は (起動からの秒数, 0, 0, 0) を返します (プロセスごとの CPU 時間の区別はありません)。
+
 **`Fcntl`** の picoperl 版 (`lib/Fcntl.pm`) は定数だけを返します (`O_RDONLY`、`LOCK_EX`、`SEEK_SET`、`S_IFMT`、`S_ISDIR($mode)` など。値は Linux のもの)。
 `seek` の `SEEK_*` は実際に使えますが、ロックやパーミッションの定数は番号として使えるだけです。
 約 100 個の定数はインタプリタが ROM に表を持っていて、スクリプトに書いた定数だけが作られます (`use Fcntl;` だけなら RAM はほとんど使いません)。

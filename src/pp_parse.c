@@ -223,7 +223,7 @@ static int is_special_var(char sigil, const char *name, int len) {
         char c = name[0];
         if (sigil == '$' && (c == '_' || c == 'a' || c == 'b' || c == '0' || c == '@' || c == '!' || c == ',' || c == '/' || c == '\\' || c == '"' || c == ';' || c == '&' || c == '$' || c == '.' || c == '<' || c == '>' || c == '|' || c == '^' || c == ']' || c == '?' || c == '%' || c == '=' || c == '~' || c == ':' || c == '-' || c == '+')) return 1;
         if (sigil == '@' && (c == '_' || c == '-' || c == '+')) return 1;
-        if (sigil == '%' && c == '+') return 1;
+        if (sigil == '%' && (c == '+' || c == '!')) return 1;
         if (sigil == '$' && (c == '+' || c == '-')) return 1;
     }
     if (sigil == '$' && len >= 1 && isdigit((unsigned char)name[0])) return 1;   /* $1 .. */
@@ -693,7 +693,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     else if (c == '%' && !L->prev_term && peekc(L, 1) == '^' && isupper(peekc(L, 2))) {   /* %^H */
         L->pos += 3; t->type = T_VAR; t->sigil = '%'; t->s = L->src + L->pos - 2; t->len = 2; term = 1;
     }
-    else if (c == '%' && (!L->prev_term || L->prev_brace) && peekc(L, 1) == '+') {   /* %+ : named captures */
+    else if (c == '%' && (!L->prev_term || L->prev_brace) && (peekc(L, 1) == '+' || (peekc(L, 1) == '!' && !L->prev_term))) {   /* %+ : named captures; %! : error names (Errno) */
         L->pos += 2; t->type = T_VAR; t->sigil = '%'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
     }
     else if (c == '%' && (!L->prev_term || L->prev_brace) && (is_ident_start(peekc(L, 1)) || peekc(L, 1) == '{' || peekc(L, 1) == '$')) {
