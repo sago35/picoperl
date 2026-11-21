@@ -104,13 +104,13 @@ sub pairfirst(&@) {
     return wantarray ? () : '';
 }
 
-sub head {
+sub head($@) {
     my $n = shift;
     my $end = $n >= 0 ? $n - 1 : $#_ + $n;
     $end = $#_ if $end > $#_;
     return $end < 0 ? () : @_[0 .. $end];
 }
-sub tail {
+sub tail($@) {
     my $n = shift;
     my $start = $n >= 0 ? @_ - $n : -$n;
     $start = 0 if $start < 0;

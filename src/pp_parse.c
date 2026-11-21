@@ -95,6 +95,7 @@ struct pp_parser {
     int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
     const char *proto_s; int proto_len; int has_proto;   /* text of the prototype just read (prototype() returns it) */
     int proto_mask;                              /* '$' positions of the prototype skip_prototype just read */
+    unsigned char *declargs;                     /* per declared sub: its prototype's argument count (low 4 bits: at least, high 4: at most, 15 = any; 0xFF: no prototype) */
     unsigned char *declmask;                     /* per declared sub (decl[]): that mask */
     int argw;                                    /* the sub being parsed writes to $_[N] (or loops over @_) */
 };
@@ -1088,8 +1089,10 @@ static void declare_sub(pp_parser *P, pp_sym *s, int noargs) {
         P->decl = pp_xrealloc(P->decl, P->capdecl * sizeof(pp_sym *));
         P->declnoargs = pp_xrealloc(P->declnoargs, P->capdecl);
         P->declmask = pp_xrealloc(P->declmask, P->capdecl);
+        P->declargs = pp_xrealloc(P->declargs, P->capdecl);
     }
     P->declmask[P->ndecl] = 0;
+    P->declargs[P->ndecl] = 0xFF;
     P->declnoargs[P->ndecl] = (unsigned char)noargs;
     P->decl[P->ndecl++] = s;
 }
@@ -1126,6 +1129,43 @@ static int proto_underscore(const char *t, int len) {
         k++;
     }
     return -1;
+}
+/* how many arguments a prototype takes: at least (low 4 bits) and at most (high 4 bits, 15 for
+   any number: it ends in @ or %, or is too long to tell) */
+static int proto_arity(const char *t, int len) {
+    int min = 0, max = 0, opt = 0, any = 0;
+    for (int j = 0; j < len; j++) {
+        char c = t[j];
+        if (c == ' ' || c == '\t') continue;
+        if (c == ';') { opt = 1; continue; }
+        if (c == '@' || c == '%') { any = 1; break; }
+        if (c == '\\') { j++; if (j < len && t[j] == '[') while (j < len && t[j] != ']') j++; }
+        if (c == '_') opt = 1;                        /* $_ when left out */
+        max++;
+        if (!opt) min++;
+    }
+    if (max > 14) { any = 1; if (min > 14) min = 14; }
+    return (any ? 15 : max) << 4 | min;
+}
+/* a call written with too few or too many arguments for its sub's prototype does not compile */
+static int proto_arity_of(pp_parser *P, pp_sym *s) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return P->declargs[i];
+    pp_obj *c = pp_lookup_sub(P->I, s);
+    pp_node *b = c && !c->u.code.native ? c->u.code.body : NULL;
+    if (b && b->type == N_BLOCK && b->b && b->b->type == N_CONST && b->b->val.t == PP_STR) return proto_arity(b->b->val.u.s->d, b->b->val.u.s->len);
+    return 0xFF;
+}
+static void proto_count_check(pp_parser *P, pp_node *n) {
+    int ar = proto_arity_of(P, n->sym);
+    if (ar == 0xFF) return;
+    int min = ar & 15, max = ar >> 4;
+    const char *nm = n->sym->name + 1;
+    {   /* an imported sub is reported under the name it was defined with (List::Util::head) */
+        pp_obj *c = pp_lookup_sub(P->I, n->sym);
+        if (c && c->u.code.name && strstr(c->u.code.name, "::")) nm = c->u.code.name;
+    }
+    if (n->n < min) perr(P, "Not enough arguments for %s%s", strstr(nm, "::") ? "" : "main::", nm);
+    if (max != 15 && n->n > max) perr(P, "Too many arguments for %s%s", strstr(nm, "::") ? "" : "main::", nm);
 }
 /* a call that stops just before the '_' slot of its sub's prototype gets $_ there */
 static void proto_default(pp_parser *P, pp_node *n) {
@@ -3278,7 +3318,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);
-    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); proto_default(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
+    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); proto_default(P, n); proto_count_check(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
     if (cur_is_op(P, "{") && !P->has_nxt && is_block_proto(P, s)) {
         /* name { ... } LIST for a sub with a (&...) prototype: the block is `sub { ... }`.
            Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
@@ -3297,8 +3337,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
         /* (name [1, 2], ... and name { a => 1 }, ... pass an array / a hash reference: the sub is
            known, so the bracket cannot be a subscript or a block. A minus starts an argument
            too, as in perl: head -1, @list is head(-1, @list)) */
-        if (starts_term(P) && !cur_is_op(P, "<") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
+        if (starts_term(P) && !cur_is_op(P, "<") && !cur_is_op(P, "?")) {
+            int ar = proto_arity_of(P, s);
+            if (ar != 0xFF && (ar >> 4) == 1) node_add(n, parse_binary(P, PREC_NAMED_UNARY));   /* a ($) prototype makes it a unary operator: f $x, $y is f($x), $y */
+            else parse_call_args(P, n);
+            apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line;
+        }
         proto_default(P, n);
+        proto_count_check(P, n);
         return parse_postfix(P, n);
     }
     if (P->cur.type == T_IDENT && !has_pkg_sep(id, len) && P->cur.len > 0
@@ -3597,9 +3643,10 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             }
             skip_attributes(P);
             if (P->has_proto) { int u = proto_underscore(P->proto_s, P->proto_len); if (u >= 0) noargs |= (u + 1) << 4; }
+            int had_proto = P->has_proto; const char *proto_text = P->proto_s; int proto_text_len = P->proto_len;
             keep_prototype(P, b);
             declare_sub(P, n->sym, noargs);
-            for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) P->declmask[i] = n->aux;
+            for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) { P->declmask[i] = n->aux; if (had_proto) P->declargs[i] = (unsigned char)proto_arity(proto_text, proto_text_len); }
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */
                 advance(P);
                 scope_pop(P); scope_pop(P);
@@ -3894,7 +3941,7 @@ static void parser_init(pp_parser *P, pp_interp *I, const char *file, const char
     P->I = I; P->file = file;
     strcpy(P->pkg, parent ? parent->pkg : "main");
     P->L.src = src; P->L.len = len; P->L.pos = 0; P->L.line = line;
-    if (parent) { P->sc = parent->sc; P->decl = parent->decl; P->ndecl = parent->ndecl; P->declnoargs = parent->declnoargs; P->declmask = parent->declmask; P->our_names = parent->our_names; P->our_syms = parent->our_syms; P->nours = parent->nours; }
+    if (parent) { P->sc = parent->sc; P->decl = parent->decl; P->ndecl = parent->ndecl; P->declnoargs = parent->declnoargs; P->declmask = parent->declmask; P->declargs = parent->declargs; P->our_names = parent->our_names; P->our_syms = parent->our_syms; P->nours = parent->nours; }
     else { P->sc = pp_xmalloc(sizeof(pscopes)); memset(P->sc, 0, sizeof(pscopes)); P->sc->arena = I->arena; P->owns_sc = 1; }
 }
 static void parser_free(pp_parser *P) {
@@ -3904,6 +3951,7 @@ static void parser_free(pp_parser *P) {
         free(P->decl);
         free(P->declnoargs);
         free(P->declmask);
+        free(P->declargs);
         for (int i = 0; i < P->nours; i++) free(P->our_names[i]);
         free(P->our_names); free(P->our_syms);
         pscopes *S = P->sc;
