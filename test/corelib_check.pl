@@ -108,6 +108,9 @@ for my $m (sort keys %mod) {
     if    ($code == 124)       { $status = 'timeout' }
     elsif ($sig || $code > 128 && $code != 255) { $status = 'crash'; $reason = "signal " . ($sig || $code - 128) }
     elsif ($code != 0)         { $status = 'fail'; $reason = normalize($last) }
+    # "Can't load module X, dynamic loading not available ..." は 3 行に分かれ、" at FILE line N" は
+    # 最後の行にだけ付く。理由が空になったら最初の行を使う (XS モジュールへの依存が見えるように)
+    $reason = normalize($lines[0] // '') if $status eq 'fail' && $reason eq '';
     # XS モジュールは読み込めなくても picoperl の Perl 対応度とは別の話なので別枠にする
     $status = 'xs' if $status ne 'ok' && $xs{$m} && !$shim{$m};
     $count{$status}++;
