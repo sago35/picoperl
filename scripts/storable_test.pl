@@ -1,6 +1,6 @@
 # Storable / pipe などの実機確認
 #
-# シリアルで Enter を送るたびに一通り試して、結果 (ok / NG) と空きメモリを表示します。
+# シリアルで Enter を送るたびに一通り試して (24 項目)、結果 (ok / NG) と空きメモリを表示します。
 # ドライブには storable_test.sto と storable_run.sto の 2 つを書きます (どちらも数十バイト)。
 #
 # 見るところ:
@@ -32,8 +32,17 @@ package Names;      # strict の下で、名前で指したサブを自分のパ
 sub mine { "m" }
 sub find { my $n = shift; no warnings; defined(&$n) ? 1 : 0 }
 
+package AlMid;      # 別名にした AUTOLOAD: $AUTOLOAD はサブが書かれたパッケージのものに入る
+our $AUTOLOAD;
+sub DESTROY {}
+sub AUTOLOAD { "auto[$AUTOLOAD]" }
+package AlKid;
+our @ISA = ("AlMid");
+BEGIN { *AUTOLOAD = \&AlMid::AUTOLOAD }
+
 package main;
 
+sub esc    { foreach my $e (@_) { $e =~ s/"/'/g } return }
 sub setit  { $_[0] = 5; $_[1] = 6 }
 sub viaref { my $r = \$_[0]; $$r = 7 }
 
@@ -87,6 +96,16 @@ sub run {
     my $x; viaref($x);
     check("\\\$_[0] writes back", $x, 7);
     check("defined &\$name in a package", Names::find("mine") . Names::find("other"), "10");
+
+    {   my $n = 5; my $got; { my $n = $n + 1; $got = $n }
+        check("my \$x = \$x + 1", "$got $n", "6 5"); }
+    {   my @a = (3, 4); my $j = 0; for my $i (@a) { $a[$j] += $i; $j++ }
+        check("foreach keeps direct writes", "@a", "6 8"); }
+    check("aliased AUTOLOAD", AlKid->nosuch, "auto[AlKid::nosuch]");
+    {   my %src = (k => 'a"b'); my $v; esc($v = $src{k});
+        check("f(\$v = EXPR) writes back", "$v $src{k}", "a'b a\"b"); }
+    {   no warnings; my $o = bless [], "Some::Class";
+        check("isa('ARRAY') / binmode", ($o->isa("ARRAY") ? 1 : 0) . ($o->isa("HASH") ? 1 : 0) . (defined binmode(NOT_OPEN) ? "def" : "undef"), "10undef"); }
 
     # 実行回数をファイルに持つ
     my $run = -e "storable_run.sto" ? retrieve("storable_run.sto") : { n => 0 };
