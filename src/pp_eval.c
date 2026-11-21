@@ -417,8 +417,10 @@ static NOINLINE pp_val eval_globslot(pp_interp *I, pp_node *n, int ctx, pp_list 
     else if (!strcmp(k->d, "CODE")) { pp_obj *code = pp_resolve_sub(I, glob_slot_sym(I, gs, '&')); if (code) r = pp_ref(code); }
     else if (!strcmp(k->d, "GLOB")) r = pp_ref(pp_glob_obj(I, gs));
     else if (!strcmp(k->d, "IO") || !strcmp(k->d, "FILEHANDLE")) {
-        /* there is no separate IO object: the handle is the glob itself */
-        if (glob_std_fd(gs) >= 0 || (gs->gcell && gs->gcell->u.glob.io)) r = pp_ref(pp_glob_obj(I, gs));
+        /* the open file itself, so that it outlives a `local *FH` around the open; the
+           standard handles have no file object, they are the glob */
+        if (gs->gcell && gs->gcell->kind == PP_OGLOB && gs->gcell->u.glob.io) r = pp_ref(gs->gcell->u.glob.io);
+        else if (glob_std_fd(gs) >= 0) r = pp_ref(pp_glob_obj(I, gs));
     }
     else if (!strcmp(k->d, "NAME") || !strcmp(k->d, "PACKAGE")) {
         const char *name = gs->name + 1, *last = NULL;

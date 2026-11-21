@@ -209,3 +209,13 @@ print((-e join "", "/", "tmp") ? "y\n":"n\n");
     print open(IN2, "<$f.none") ? "opened\n" : "fail\n";
     unlink $f;
 }
+
+# *FH{IO}: 開いているファイルそのもの。local *FH の外でも読める
+{
+    sub open_it { my $path = shift; my $src; { local *PODSRC; open(PODSRC, "<$path") or die "open: $!"; $src = *PODSRC{IO}; } $src }
+    my $fh = open_it($0); my $first = <$fh>; my @rest = <$fh>; close $fh;
+    print "first: $first", "rest: ", (@rest > 3 ? "many" : "few"), "\n";
+    my $a = open_it($0); my $b = open_it($0); my $la = <$a>; $la = <$a>; my $lb = <$b>; print "independent: ", ($la ne $lb ? "yes" : "no"), "\n";
+    print "std: ", (defined *STDOUT{IO} ? "def" : "undef"), "\n";
+    open(GI, '<', $0) or die; my $io = *GI{IO}; my $l1 = <$io>; my $l2 = <GI>; close GI; print "shared: ", ($l1 ne $l2 ? "yes" : "no"), " eof: ", (eof($io) ? 1 : 0), "\n";
+}
