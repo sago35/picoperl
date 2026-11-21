@@ -2279,7 +2279,11 @@ static int is_handle_name(const char *id, int len) {
 static pp_node *handle_const(pp_parser *P, const char *id, int len) {
     char buf[264];
     int std = (len == 5 && !memcmp(id, "STDIN", 5)) || (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6)));
-    int n = pp_snprintf(buf, sizeof buf, "*%s::%.*s", std ? "main" : P->pkg, len, id);
+    /* without strict subs a bareword FH elsewhere (open(FH, ...), close(FH)) is the plain string
+       "FH", which names main's handle: print FH and <FH> must mean the same one */
+    pscope *top = scope_top(P);
+    int own = len == 4 && !memcmp(id, "DATA", 4);       /* (each package has its own DATA) */
+    int n = pp_snprintf(buf, sizeof buf, "*%s::%.*s", std || (!own && !(top && top->strict_subs)) ? "main" : P->pkg, len, id);
     return const_str(P, buf, n);
 }
 /* after *name: a {SLOT} subscript makes it *name{SLOT} */
