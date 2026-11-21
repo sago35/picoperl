@@ -2558,7 +2558,8 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
     pp_node **outer_subs = I->subdefs; int outer_nsubs = I->nsubdefs;
     pp_env *outer_pending = I->pending_env;
     I->subdefs = NULL; I->nsubdefs = 0; I->pending_env = NULL;
-    pp_node *unit = pp_parse(I, fname, src, &err);
+    char errbuf[512]; errbuf[0] = 0;
+    pp_node *unit = pp_parse_required(I, fname, src, &err, errbuf, (int)sizeof errbuf);
     free(src);
     if (err) {
         free(fname);
@@ -2570,7 +2571,8 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
             pp_val *slot = pp_hash_slot(pp_global(I, pp_intern(I, "%INC", 4)), fn, fnlen);
             pp_release(*slot); *slot = pp_undef();
         }
-        return pp_die(I, "Compilation failed in require");
+        /* what went wrong, then perl's "Compilation failed in require at ..." */
+        return pp_die(I, "%sCompilation failed in require", errbuf);
     }
     track_unit(I, unit, fname);
     const char *saved_file = I->file; int saved_line = I->line;

@@ -937,7 +937,7 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
     if (I->ctl == CTL_DIE) {
         pp_str *s = pp_to_str(I->err);
         int len = s->len; while (len > 0 && s->d[len - 1] == '\n') len--;
-        snprintf(P->errmsg, sizeof P->errmsg, "%.*s", len, s->d);
+        snprintf(P->errmsg, sizeof P->errmsg, "%.*s\nBEGIN failed--compilation aborted at %s line %d.", len, s->d, P->file, P->last_line ? P->last_line : P->cur.line);
         pp_str_decref(s);
         pp_release(I->err); I->err = pp_undef();
         I->ctl = CTL_NONE;
@@ -4132,6 +4132,11 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
 }
 pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err) {
     return parse_unit(I, filename, src, err, NULL, NULL, 0, NULL);
+}
+/* a required file: a compile error goes into errbuf (it becomes part of what require dies with,
+   so that an eval around the require keeps it quiet and finds it in $@) */
+pp_node *pp_parse_required(pp_interp *I, const char *filename, const char *src, int *err, char *errbuf, int errcap) {
+    return parse_unit(I, filename, src, err, NULL, errbuf, errcap, NULL);
 }
 pp_node *pp_parse_eval(pp_interp *I, const char *filename, const char *src, pp_node *site, char *errbuf, int errcap, pp_arena **arena) {
     int err = 0;

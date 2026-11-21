@@ -108,6 +108,7 @@ int     pp_val_same(pp_val a, pp_val b);   /* same type and value (strings/refs 
 
 /* parser */
 pp_node *pp_parse(pp_interp *I, const char *filename, const char *src, int *err);
+pp_node *pp_parse_required(pp_interp *I, const char *filename, const char *src, int *err, char *errbuf, int errcap);
 /* parse the code of an eval STRING at node `site` (N_EVALSTR); NULL with the message in errbuf */
 pp_node *pp_parse_eval(pp_interp *I, const char *filename, const char *src, pp_node *site, char *errbuf, int errcap, pp_arena **arena);
 pp_node *pp_parse_expr_string(pp_interp *I, const char *src, int len, int line, const char *file, int *err);

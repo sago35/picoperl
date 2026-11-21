@@ -315,6 +315,10 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 読み込み済みのモジュールが定義した) 継承だけを設定します。どこにも無ければ `Base class package "X" is empty.` で die します。
 `use parent` は必ずファイルを読み込みます (`-norequire` を付ければ読み込みません)。
 
+**`require` / `use` したモジュールがコンパイルできないとき**、理由 (構文エラーや `BEGIN` の中の die) は perl と同じ形で `$@` に入ります:
+`理由` / `BEGIN failed--compilation aborted at FILE line N.` / `Compilation failed in require at FILE line N.`。
+`eval { require Optional::Module }` で捕まえれば何も表示されません。
+
 `shift->[0]`、`shift->{key}`、`shift->method(...)` のように、引数なしの `shift` / `pop` に `->` を続けられます。
 
 **`%ENV`** はホスト版ではプロセスの環境変数のコピーです (書き換えても実際の環境は変わりません)。
