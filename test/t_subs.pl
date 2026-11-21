@@ -266,3 +266,13 @@ print "in string: ${\(RT)} / ${\ RT} / ${\ rf()}\n";
 my $re = qr{^\Q${\(RT)}\E$}; print "regex: ", ("a.b" =~ $re ? "m" : "n"), ("axb" =~ $re ? "m" : "n"), "\n";
 sub later { "defined later" } print $r6->(), "\n";
 }
+
+# x という名前のサブ: 項の位置の x(...) は呼び出し、項の後ろの x は繰り返し演算子
+{
+    sub x { "<@_>" }
+    sub show { join("|", @_) }
+    print show( x("a"), x("b", "c") ), "\n";
+    print show(x(1)), " ", "ab" x 2, " ", join(",", (1, 2) x 2), "\n";
+    my $n = 3; my $s = "-" x $n; my @l = ("z") x (2); print "$s @l ", x($n) x 2, "\n";
+    print show("q" x 3, x()), "\n";
+}

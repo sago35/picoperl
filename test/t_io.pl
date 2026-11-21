@@ -219,3 +219,10 @@ print((-e join "", "/", "tmp") ? "y\n":"n\n");
     print "std: ", (defined *STDOUT{IO} ? "def" : "undef"), "\n";
     open(GI, '<', $0) or die; my $io = *GI{IO}; my $l1 = <$io>; my $l2 = <GI>; close GI; print "shared: ", ($l1 ne $l2 ? "yes" : "no"), " eof: ", (eof($io) ? 1 : 0), "\n";
 }
+
+# print $fh ${$ref} / print $fh $$ref: ハンドルの後ろがデリファレンス
+{
+    my $text = "chunk\n"; my $chunk = [\$text]; my $sref = \$text;
+    open(my $out, '>', \my $buf) or die; print $out ${$chunk->[-1]}; print $out $$sref; print {$out} ${$sref}; close $out;
+    print $buf; my ($p, $q) = (6, 4); print $p % $q, " ", $p - $q, "\n";
+}

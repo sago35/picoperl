@@ -28,3 +28,12 @@ print 1e21, " ", 1.5e-7, " ", 123456789012345678, " ", 0.1 + 0.7, " ", 1e15, " "
 print 9 ** 0.5, " ", 2 ** -1, " ", (-8) ** (1/3) eq "NaN" ? "nan" : "num", "\n";
 print 3 . 4 + 1, "\n";
 print "done\n";
+
+# 連続したカンマ: 空の要素は消える
+{
+    my @a = (1,, 2, , 3,); print scalar(@a), ": @a\n";
+    my %h = map { /^(\w+)=(\w+)$/ ? ($1, => "<$2>", "/$1", => "</$2>") : () } qw(b=bold i=em); print join(" ", map { "$_$h{$_}" } sort keys %h), "\n";
+    my @b = ("x", => "y",, "z"); print scalar(@b), "\n";
+    sub cnt { scalar @_ } print cnt(1,, 2), cnt("a", => "b"), "\n";
+    my $r = [1,, 2]; my $hr = { a => 1,, b => 2, }; print scalar(@$r), scalar(keys %$hr), "\n";
+}

@@ -1722,6 +1722,11 @@ static pp_node *parse_assign(pp_parser *P) {
     return lhs;
 }
 
+/* `x(` where a term is expected, with a sub named x declared: a call of that sub, not the
+   repetition operator */
+static int sub_x_call(pp_parser *P, pp_tok *nx) {
+    return nx->type == T_OP && !strcmp(nx->op, "(") && is_declared(P, sym_sigil(P, '&', "x", 1));
+}
 static int at_list_end(pp_parser *P) {
     pp_tok *t = &P->cur;
     if (t->type == T_EOF) return 1;
@@ -1734,7 +1739,7 @@ static int at_list_end(pp_parser *P) {
         if (nx->type == T_OP && !strcmp(nx->op, "=>")) return 0;
         return tok_is_ident(t, "if") || tok_is_ident(t, "unless") || tok_is_ident(t, "while") || tok_is_ident(t, "until")
             || tok_is_ident(t, "for") || tok_is_ident(t, "foreach") || tok_is_ident(t, "or") || tok_is_ident(t, "and")
-            || tok_is_ident(t, "xor") || tok_is_ident(t, "x") || tok_is_ident(t, "eq") || tok_is_ident(t, "ne")
+            || tok_is_ident(t, "xor") || (tok_is_ident(t, "x") && !sub_x_call(P, nx)) || tok_is_ident(t, "eq") || tok_is_ident(t, "ne")
             || tok_is_ident(t, "lt") || tok_is_ident(t, "gt") || tok_is_ident(t, "le") || tok_is_ident(t, "ge") || tok_is_ident(t, "cmp");
     }
     return 0;
@@ -1744,7 +1749,11 @@ static pp_node *parse_comma_list(pp_parser *P) {
     pp_node *l = node_tmp(P, N_LIST);
     while (!at_list_end(P)) {
         node_add(l, parse_assign(P));
-        if (cur_is_op(P, ",") || cur_is_op(P, "=>")) { advance(P); continue; }
+        if (cur_is_op(P, ",") || cur_is_op(P, "=>")) {
+            advance(P);
+            while (cur_is_op(P, ",") || cur_is_op(P, "=>")) advance(P);   /* (1,, 2) and ($k, => $v): empty elements vanish */
+            continue;
+        }
         break;
     }
     return l;
@@ -2873,7 +2882,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
                 int word = nx2->type == T_IDENT;
                 for (int i = 0; word && opwords[i]; i++) if (tok_is_ident(nx2, opwords[i])) word = 0;
                 if (nx2->type == T_STR || nx2->type == T_ISTR || nx2->type == T_NUM || nx2->type == T_QW ||
-                    nx2->type == T_VAR || nx2->type == T_READLINE || word) {
+                    nx2->type == T_VAR || nx2->type == T_READLINE || word || (nx2->type == T_CAST && !strcmp(nx2->op, "$"))) {   /* print $fh ${$ref} */
                     n->a = mkvar(P, '$', P->cur.s, P->cur.len);
                     advance(P);
                 }
@@ -3338,7 +3347,11 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 expect_op(P, ")");
                 pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); note_argw(P, n->b); n->c = parse_block(P);
                 int nv = scope_pop(P);
-                if (nv) perr(P, "internal: unexpected declaration in foreach list");
+                if (nv) {   /* for (my ($k, $v) = each %h) { ... }: the variables live in a scope around the loop */
+                    pp_node *b = node(P, N_BLOCK); node_add(b, n);
+                    b->flags |= 1; b->aux = (uint8_t)nv;
+                    return b;
+                }
                 return n;
             }
             pp_node *n = node(P, N_FOREACH); n->sym = label;
