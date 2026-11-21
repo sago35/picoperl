@@ -944,6 +944,12 @@ static void tok_desc(pp_tok *t, char *buf, int cap) {
     default: pp_snprintf(buf, cap, "'%s'", t->op); break;
     }
 }
+/* the end of a `use` / `no` statement: a semicolon, or the end of the block or of the code
+   (eval "use strict") */
+static int cur_is_op(pp_parser *P, const char *op);
+static int at_use_end(pp_parser *P) { return P->cur.type == T_EOF || cur_is_op(P, ";") || cur_is_op(P, "}"); }
+static void expect_op(pp_parser *P, const char *op);
+static void end_use(pp_parser *P) { if (P->cur.type != T_EOF && !cur_is_op(P, "}")) expect_op(P, ";"); }
 static void expect_op(pp_parser *P, const char *op) {
     if (!cur_is_op(P, op)) {
         char d[64]; tok_desc(&P->cur, d, sizeof d);
@@ -3241,13 +3247,13 @@ static pp_node *parse_use(pp_parser *P) {
         pscope *top = scope_top(P);
         if (minor >= 11) top->strict_vars = top->strict_subs = top->strict_refs = 1;
         if (minor >= 35) top->warnings = 1;
-        expect_op(P, ";");
+        end_use(P);
         return NULL;
     }
     if (cur_is_ident(P, "integer")) {   /* use integer / no integer: for the rest of the enclosing block */
         advance(P);
         scope_top(P)->integer = !is_no;
-        expect_op(P, ";");
+        end_use(P);
         return NULL;
     }
     if (cur_is_ident(P, "strict") || cur_is_ident(P, "warnings")) {
@@ -3255,7 +3261,7 @@ static pp_node *parse_use(pp_parser *P) {
         pscope *top = scope_top(P);
         int vars = 1, subs = 1, refs = 1;
         advance(P);
-        if (!cur_is_op(P, ";")) {   /* use strict 'vars'; use strict qw(subs refs); */
+        if (!at_use_end(P)) {   /* use strict 'vars'; use strict qw(subs refs); */
             vars = subs = refs = 0;
             pp_node *l = wrap_list(P, parse_expr(P));
             for (int i = 0; i < l->n; i++) {
@@ -3275,24 +3281,24 @@ static pp_node *parse_use(pp_parser *P) {
             if (subs) top->strict_subs = !is_no;
             if (refs) top->strict_refs = !is_no;
         } else top->warnings = !is_no;
-        expect_op(P, ";");
+        end_use(P);
         return NULL;
     }
     if (cur_is_ident(P, "lib")) {   /* use lib LIST: unshift @INC, LIST (runs now, like every use) */
         advance(P);
-        if (is_no || cur_is_op(P, ";")) { while (!cur_is_op(P, ";") && P->cur.type != T_EOF) advance(P); accept_op(P, ";"); return NULL; }
+        if (is_no || at_use_end(P)) { while (!cur_is_op(P, ";") && P->cur.type != T_EOF) advance(P); accept_op(P, ";"); return NULL; }
         pp_node *u = node(P, N_BUILTIN);
         u->op = (uint8_t)pp_builtin_id("unshift", 7, NULL);
         pp_node *inc = node(P, N_VAR);
         inc->sym = pp_intern(P->I, "@INC", 4);
         node_add(u, inc);
         take_children(u, wrap_list(P, parse_expr(P)));
-        expect_op(P, ";");
+        end_use(P);
         return u;
     }
     if (cur_is_ident(P, "vars") && !is_no) {   /* use vars qw($x @y %z): package globals, like `our` */
         advance(P);
-        if (!cur_is_op(P, ";")) {
+        if (!at_use_end(P)) {
             pp_node *l = wrap_list(P, parse_expr(P));
             for (int i = 0; i < l->n; i++) {
                 if (l->list[i]->type != N_CONST || l->list[i]->val.t != PP_STR) continue;
@@ -3301,7 +3307,7 @@ static pp_node *parse_use(pp_parser *P) {
             }
             pp_free_ast(l);
         }
-        expect_op(P, ";");
+        end_use(P);
         return NULL;
     }
     if (cur_is_ident(P, "constant") && !is_no) {
@@ -3317,7 +3323,7 @@ static pp_node *parse_use(pp_parser *P) {
                 if (e->list[i]->type == N_CONST && e->list[i]->val.t == PP_STR)
                     declare_sub(P, sym_sigil(P, '&', e->list[i]->val.u.s->d, e->list[i]->val.u.s->len), 1);
         }
-        expect_op(P, ";");
+        end_use(P);
         return n;
     }
     if (P->cur.type == T_IDENT && !is_no) {
@@ -3338,8 +3344,8 @@ static pp_node *parse_use(pp_parser *P) {
             if (P->cur.type == T_NUM) advance(P);   /* version */
             /* use Module (); / use Module qw(); -- an empty list written out: load, import nothing */
             if ((cur_is_op(P, "(") && is_op(peek(P), ")")) || (P->cur.type == T_QW && P->cur.len == 0)) n->flags |= 2;
-            if (!cur_is_op(P, ";")) take_children(n, wrap_list(P, parse_expr(P)));
-            expect_op(P, ";");
+            if (!at_use_end(P)) take_children(n, wrap_list(P, parse_expr(P)));
+            end_use(P);
             return n;
         }
     }
