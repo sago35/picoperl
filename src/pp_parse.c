@@ -675,6 +675,9 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             L->pos += 2; t->type = T_VAR; t->sigil = '$'; t->s = L->src + L->pos - 1; t->len = 1; term = 1;
         }
         else if (c1 == '*' && L->prev_arrow) { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }   /* $r->$* */
+        else if (c1 == '(' && !is_ident_start(peekc(L, 2)) && peekc(L, 2) != '$' && peekc(L, 2) != '@' && peekc(L, 2) != '\\') {   /* $( : the real group ids, "0 0" here */
+            L->pos += 2; t->type = T_STR; t->s = "0 0"; t->len = 3; term = 1;
+        }
         else if (c1 == ')') { L->pos++; t->type = T_CAST; strcpy(t->op, "$"); term = 0; }                    /* sub f ($x, $): a nameless parameter */
         else perr(P, "unexpected character after '$'");
     }
@@ -2441,6 +2444,12 @@ static pp_node *parse_term(pp_parser *P) {
     case T_CAST: {
         char op[4]; strcpy(op, t->op);
         advance(P);
+        if (!strcmp(op, "$") && cur_is_op(P, ")")) {
+            /* $) : the effective group ids. There are no groups here: always "0 0" (the lexer
+               hands '$' and ')' over separately, because of sub f ($x, $)) */
+            advance(P);
+            return const_str(P, "0 0", 3);
+        }
         if (!strcmp(op, "$")) {
             pp_node *inner = parse_cast_target(P);
             if (cur_is_op(P, "[")) { advance(P); pp_node *av = node(P, N_RV2AV); av->a = inner; pp_node *n = node(P, N_AELEM); n->a = av; n->b = parse_expr(P); expect_op(P, "]"); return parse_subscripts(P, n, 1); }
@@ -3044,14 +3053,20 @@ static pp_node *parse_ident_term(pp_parser *P) {
     }
 
     pp_sym *s = sym_sigil(P, '&', id, len);
-    if (strcmp(P->pkg, "main") != 0 && !has_pkg_sep(id, len)) {
+    if ((strcmp(P->pkg, "main") != 0 || forced_core) && !has_pkg_sep(id, len)) {
         /* a native registered without a package (chdir, fileno: perl builtins) works like a
            builtin: every package calls the one in main. A sub of that name which the package
            defines itself does not replace it (IO::Handle's `sub fileno { fileno($_[0]) }`),
-           only one that was imported does. */
+           only one that was imported does. When main has redefined the name, the native is
+           kept as CORE::name (pp_define_sub). */
         char buf[128];
         int bn = pp_snprintf(buf, sizeof buf, "&%.*s", len, id);
         pp_sym *m = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
+        if (m && m->sub && !m->sub->u.code.native) {
+            bn = pp_snprintf(buf, sizeof buf, "&CORE::%.*s", len, id);
+            pp_sym *c = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
+            if (c && c->sub) m = c;
+        }
         if (m && m->sub && m->sub->u.code.native && (forced_core || !overrides_builtin(P, s, id, len))) s = m;
     }
     advance(P);

@@ -490,6 +490,15 @@ void pp_define_sub(pp_interp *I, pp_sym *sym, pp_obj *code) {
         size_t nl = strlen(sym->name);
         if (nl >= 8 && !strcmp(sym->name + nl - 7, "DESTROY") && (nl == 8 || sym->name[nl - 8] == ':')) pp_destroy_on = 1;
     }
+    if (sym->sub && sym->sub != code && sym->sub->u.code.native && !code->u.code.native && sym->name[0] == '&' && !strstr(sym->name, "::")) {
+        /* main redefines a perl function that is a native here (autodie wraps chown, mkdir ...):
+           the native stays reachable as CORE::name, for CORE::name(...) and for the other
+           packages, which still mean the builtin */
+        char buf[80];
+        int n = pp_snprintf(buf, sizeof buf, "&CORE::%s", sym->name + 1);
+        pp_sym *core = n < (int)sizeof buf ? pp_intern(I, buf, n) : NULL;
+        if (core && !core->sub) { pp_obj *nat = sym->sub; nat->refcnt++; pp_define_sub(I, core, nat); }
+    }
     pp_obj *cell = pp_global(I, sym);   /* SCALAR cell holding a CODE ref keeps it alive */
     if (cell->u.scalar.t == PP_REF && cell->u.scalar.u.o != code && is_sub_stub(cell->u.scalar.u.o)
         && code->refcnt == 1 && code->u.code.body && !code->u.code.is_const) {

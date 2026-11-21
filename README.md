@@ -348,6 +348,8 @@ Test2 や autodie がサブの素性を知るのに使う範囲で、構文木�
 `use Errno qw(ENOENT);` のあと `$! == ENOENT`、`use Errno;` のあと `$!{ENOENT}` と書けます。Fcntl と同じく、定数は使われたものだけ作られます。
 perl との違い: `%!` は `use Errno` (または `require Errno`) したあとでだけ使えます (perl は `%!` を書くと自動で読み込みます)。
 
+**`umask`** は値を覚えるだけです (既定 022。ファイルのパーミッションには効きません)。`$(` と `$)` (グループ ID) は常に `"0 0"` です。
+
 **`times`** は (起動からの秒数, 0, 0, 0) を返します (プロセスごとの CPU 時間の区別はありません)。
 
 **`Fcntl`** の picoperl 版 (`lib/Fcntl.pm`) は定数だけを返します (`O_RDONLY`、`LOCK_EX`、`SEEK_SET`、`S_IFMT`、`S_ISDIR($mode)` など。値は Linux のもの)。

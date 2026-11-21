@@ -2387,6 +2387,15 @@ int pp_core_const(const char *name, pp_val *out) {
     return 0;
 }
 
+/* umask: there are no file permissions to mask here; the value is only remembered */
+static pp_val n_umask(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    static int mask = 022;
+    int old = mask;
+    if (a->n > 0 && a->v[0].t != PP_UNDEF) mask = (int)pp_to_int(a->v[0]) & 0777;
+    return pp_int(old);
+}
+
 /* times: (user, system, child user, child system) CPU seconds. There are no processes to
    tell apart here: the time since start counts as user time, the rest is 0. */
 static pp_val n_times(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
@@ -2454,6 +2463,7 @@ static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
 }
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "times", n_times);
+    pp_register(I, "umask", n_umask);
     pp_register(I, "__read", n_read);
     pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);
