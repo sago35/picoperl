@@ -92,6 +92,7 @@ pp_obj *pp_global(pp_interp *I, pp_sym *s);        /* find/create global; borrow
 #define PP_VAR_ERRNO  0x10 /* N_VAR flag: this is $! */
 #define PP_VAR_ERRNUM 0x20 /* ... read as a number */
 #define PP_STMT_WARN 0x40  /* statement flag: `use warnings` in effect */
+void    pp_global_unalias(pp_interp *I, pp_obj *cell);       /* undo one pp_global_alias of cell */
 void    pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell);   /* make s refer to an existing cell */
 
 /* conversions */

@@ -858,6 +858,19 @@ pp_obj *pp_glob_obj(pp_interp *I, pp_sym *gsym) {
     globals_push(I->globals, g);
     return g;
 }
+/* local *name = \$x ends: the cell that stood in for the name leaves the list of globals again
+   (it would stay there, and alive, until the interpreter ends: a leak in a sub that is called
+   again and again) */
+void pp_global_unalias(pp_interp *I, pp_obj *cell) {
+    pp_env *g = I->globals;
+    for (int i = g->n - 1; i >= 0; i--) {
+        if (g->cells[i] != cell) continue;
+        memmove(&g->cells[i], &g->cells[i + 1], (size_t)(g->n - i - 1) * sizeof *g->cells);
+        g->n--;
+        pp_obj_decref(cell);
+        return;
+    }
+}
 void pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell) {
     cell->refcnt++;
     globals_push(I->globals, cell);

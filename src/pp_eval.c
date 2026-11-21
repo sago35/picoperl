@@ -682,8 +682,10 @@ static void local_unwind(pp_interp *I, int height) {
         I->nlocals--;
         pp_obj *cell = I->locals[I->nlocals].cell;
         if (I->locals[I->nlocals].kind == 4) {               /* local *name: the name stands for its old cell again */
+            pp_obj *cur = I->locals[I->nlocals].sym->gcell;
             I->locals[I->nlocals].sym->gcell = cell;
             if (cell && I->locals[I->nlocals].sym == I->sym_underscore) I->g_underscore = cell;
+            if (cur && cur != cell) pp_global_unalias(I, cur);       /* what `*name = \$x` put there in the scope */
             if (!cell) continue;
         } else if (I->locals[I->nlocals].kind == 5) {        /* ... and names its old sub (or none) */
             pp_sym *cs = I->locals[I->nlocals].sym;
