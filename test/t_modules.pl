@@ -104,3 +104,13 @@ print "caller in a required file: $TestCaller::top / $TestCaller::modulino / $Te
     my $r2 = require "Test" . "Mod.pm";
     print "require expr: $r1 $r2\n";
 }
+
+# 失敗した require は「読み込み済み」にならない。%INC には undef が残り、次の require も失敗する
+{
+    my $try = sub { my $f = shift; my $ok = eval { require $f; 1 }; (my $e = $@) =~ s/\n.*//s; $e =~ s/ at .*//; ($ok ? "loaded" : "failed: $e") . " inc=" . (exists $INC{$f} ? (defined $INC{$f} ? "set" : "undef") : "none") };
+    print "bad 1: ", $try->("TestBadRun.pm"), "\n";
+    print "bad 2: ", $try->("TestBadRun.pm"), "\n";
+    delete $INC{"TestBadRun.pm"};
+    print "bad 3: ", $try->("TestBadRun.pm"), "\n";
+    print "good: ", $try->("TestMod.pm"), "\n";
+}

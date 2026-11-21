@@ -2370,6 +2370,10 @@ void pp_request_exit(pp_interp *I, int code) {
 static pp_val do_require(pp_interp *I, const char *fn, int force) {
     int fnlen = (int)strlen(fn);
     if (!force && pp_hash_find(I->loaded, fn, fnlen)) return pp_int(1);
+    if (!force) {   /* it did not compile before (%INC keeps the name with undef): not tried again */
+        pp_val *prev = pp_hash_find(pp_global(I, pp_intern(I, "%INC", 4)), fn, fnlen);
+        if (prev && prev->t == PP_UNDEF) return pp_die(I, "Attempt to reload %s aborted.\nCompilation failed in require", fn);
+    }
     /* the directories in @INC (use lib 'dir'; unshift @INC, ...) come first, then the places
        the host looks in by itself. A path that says where it is (/abs, ./rel) is taken as is. */
     char *src = NULL;
@@ -2405,6 +2409,11 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
         if (I->pending_env) pp_env_decref(I->pending_env);
         free(I->subdefs);
         I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
+        if (I->ctl != CTL_EXIT) {   /* not loaded after all; %INC remembers the failure, as in perl */
+            pp_hash_delete(I->loaded, fn, fnlen, NULL);
+            pp_val *slot = pp_hash_slot(pp_global(I, pp_intern(I, "%INC", 4)), fn, fnlen);
+            pp_release(*slot); *slot = pp_undef();
+        }
         return pp_die(I, "Compilation failed in require");
     }
     track_unit(I, unit, fname);
@@ -2417,6 +2426,11 @@ static pp_val do_require(pp_interp *I, const char *fn, int force) {
     I->frame = &fr;
     pp_val r = pp_exec_unit(I, unit, CTX_SCALAR, NULL);
     I->frame = fr.up;
+    if (I->ctl == CTL_DIE) {   /* it died while running: not loaded, and remembered as failed like a compile error */
+        pp_hash_delete(I->loaded, fn, fnlen, NULL);
+        pp_val *slot = pp_hash_slot(pp_global(I, pp_intern(I, "%INC", 4)), fn, fnlen);
+        pp_release(*slot); *slot = pp_undef();
+    }
     free(I->subdefs);
     I->subdefs = outer_subs; I->nsubdefs = outer_nsubs; I->pending_env = outer_pending;
     I->env = saved_env;
