@@ -3295,8 +3295,9 @@ static pp_node *parse_ident_term(pp_parser *P) {
     if (decl) {
         if (decl == 2) return parse_postfix(P, n);
         /* (name [1, 2], ... and name { a => 1 }, ... pass an array / a hash reference: the sub is
-           known, so the bracket cannot be a subscript or a block) */
-        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
+           known, so the bracket cannot be a subscript or a block. A minus starts an argument
+           too, as in perl: head -1, @list is head(-1, @list)) */
+        if (starts_term(P) && !cur_is_op(P, "<") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
         proto_default(P, n);
         return parse_postfix(P, n);
     }
