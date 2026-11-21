@@ -1881,7 +1881,7 @@ static pp_node *parse_assign(pp_parser *P) {
         node_add(c, parse_assign(P));
         return c;
     }
-    if (op == OP_NONE && lhs->type == N_CALL && lhs->n == 3 && lhs->sym && !strcmp(lhs->sym->name, "&vec")) {
+    if (op == OP_NONE && lhs->type == N_CALL && lhs->n == 3 && lhs->sym && (!strcmp(lhs->sym->name, "&vec") || !strcmp(lhs->sym->name, "&CORE::vec"))) {
         /* vec($s, OFF, BITS) = VALUE is $s = __vec_set($s, OFF, BITS, VALUE) */
         advance(P);
         pp_node *n = node(P, N_ASSIGN);
@@ -3200,7 +3200,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
             pp_sym *c = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
             if (c && c->sub) m = c;
         }
-        if (m && m->sub && m->sub->u.code.native && (forced_core || !overrides_builtin(P, s, id, len))) s = m;
+        if (m && m->sub && m->sub->u.code.native && (forced_core || !overrides_builtin(P, s, id, len))) {
+            /* bound to CORE::name, not to main's name: main may take a sub of that name later
+               (use File::stat exports stat), and this call must keep meaning the builtin */
+            bn = pp_snprintf(buf, sizeof buf, "&CORE::%.*s", len, id);
+            pp_sym *c = bn < (int)sizeof buf && m->name[1] != 'C' ? pp_intern(P->I, buf, bn) : NULL;
+            if (c && !c->sub) { pp_obj *nat = m->sub; nat->refcnt++; pp_define_sub(P->I, c, nat); }
+            s = c && c->sub ? c : m;
+        }
     }
     if (!has_pkg_sep(id, len) && scope_top(P) && scope_top(P)->builtins && !is_declared(P, s)) {
         /* under use v5.40: blessed, trim, true ... are the builtin:: functions, unless the
