@@ -1867,6 +1867,11 @@ static int list_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn,
     for (int i = first ? -1 : 0; i < nn && w < wb.n && !I->ctl; i++) {
         pp_node *a = i < 0 ? first : nodes[i];
         if (i >= 0 && a->type == N_MY && a->n == 1 && a->list[0]->type == N_VAR) a = a->list[0];   /* f(my $x): the variable just declared */
+        if (i >= 0 && a->type == N_ASSIGN && a->a) {     /* f($x = EXPR): the variable that was assigned to */
+            pp_node *l = a->a;
+            if (l->type == N_MY && l->n == 1 && l->list[0]->type == N_VAR) l = l->list[0];
+            if ((l->type == N_VAR && l->sym->name[0] == '$') || l->type == N_AELEM || l->type == N_HELEM) a = l;
+        }
         int cnt;
         if (i < 0) cnt = 1;                          /* the invocant is one value, whatever it is */
         else if (a->type == N_VAR && a->sym->name[0] == '@') {
