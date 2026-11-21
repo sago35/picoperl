@@ -335,6 +335,11 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 **`FindBin`** の picoperl 版 (`lib/FindBin.pm`): `use FindBin qw($Bin $Script);` で、実行中のスクリプトがあるディレクトリ (絶対パス) と
 ファイル名が取れます。シンボリックリンクはたどらないので `$RealBin` は `$Bin` と同じです。
 
+**`B`** の picoperl 版 (`lib/B.pm`): 本物は perl の内部を覗く XS ですが、サブについて調べる部分だけを用意しています。
+`B::svref_2object(\&f)` から、サブの名前 (`->GV->NAME`)、パッケージ (`->GV->STASH->NAME`)、定義されたファイル (`->FILE`)、
+最初と最後の文の行番号 (`->START` から `->line` / `->next`) が取れます。`B::perlstring` / `B::cstring` もあります。
+Test2 や autodie がサブの素性を知るのに使う範囲で、構文木をたどる機能はありません。
+
 **`Errno`** の picoperl 版 (`lib/Errno.pm`): エラー番号の定数 (`ENOENT`、`EEXIST` など約 130 個、Linux の値) と `%!` です。
 `use Errno qw(ENOENT);` のあと `$! == ENOENT`、`use Errno;` のあと `$!{ENOENT}` と書けます。Fcntl と同じく、定数は使われたものだけ作られます。
 perl との違い: `%!` は `use Errno` (または `require Errno`) したあとでだけ使えます (perl は `%!` を書くと自動で読み込みます)。
