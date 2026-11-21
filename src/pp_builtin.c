@@ -1972,6 +1972,25 @@ PACK_FN static int pack_run(pp_interp *I, const char *t, int tl, pp_list *args, 
             pp_str_decref(s);
             break;
         }
+        case 'u': {                                  /* uuencode: lines of COUNT bytes (45 without one), each as a length character + 4 characters per 3 bytes */
+            pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
+            pp_str *s = v.t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(v);
+            int per = it.star || !it.has_count || it.count <= 2 ? 45 : it.count >= 64 ? 63 : (int)(it.count / 3 * 3);
+            for (int o = 0; o < s->len; o += per) {
+                int n = s->len - o < per ? s->len - o : per;
+                char line[90]; int ll = 0;
+                line[ll++] = (char)(' ' + n);
+                for (int k = 0; k < n; k += 3) {
+                    unsigned a = (unsigned char)s->d[o + k], b = k + 1 < n ? (unsigned char)s->d[o + k + 1] : 0, c = k + 2 < n ? (unsigned char)s->d[o + k + 2] : 0;
+                    unsigned q[4] = { a >> 2, ((a << 4) | (b >> 4)) & 63, ((b << 2) | (c >> 6)) & 63, c & 63 };
+                    for (int m = 0; m < 4; m++) line[ll++] = q[m] ? (char)(' ' + q[m]) : '`';
+                }
+                line[ll++] = '\n';
+                str_append(buf, line, ll);
+            }
+            pp_str_decref(s);
+            break;
+        }
         case 'b': case 'B': case 'h': case 'H': {
             pp_val v = *ai < args->n ? args->v[(*ai)++] : pp_undef();
             pp_str *s = v.t == PP_UNDEF ? pp_str_new(NULL, 0) : pp_to_str(v);
@@ -2085,6 +2104,28 @@ PACK_FN static int unpack_run(pp_interp *I, const char *t, int tl, const unsigne
             else if (it.type == 'A') while (keep > 0 && (d[*dp + keep - 1] == ' ' || d[*dp + keep - 1] == 0 || d[*dp + keep - 1] == '\n' || d[*dp + keep - 1] == '\t' || d[*dp + keep - 1] == '\r')) keep--;
             pp_list_push(res, pp_strn((const char *)d + *dp, (int)keep));
             *dp += (int)n;
+            break;
+        }
+        case 'u': {                                  /* uudecode: every line that is there, as one string */
+#define UUCH(c) ((c) >= ' ' && (c) < 'a')
+            if (left <= 0) { pp_list_push(res, pp_undef()); break; }   /* nothing left: undef, like perl */
+            pp_str *o = pp_str_new(NULL, 0);
+            const unsigned char *s = d + *dp, *e = d + dl;
+            while (s < e && *s != ' ' && UUCH(*s)) {
+                int len = (*s++ - ' ') & 63;
+                while (len > 0) {
+                    unsigned q[4];
+                    for (int m = 0; m < 4; m++) q[m] = s < e && UUCH(*s) ? (unsigned)(*s++ - ' ') & 63 : 0;
+                    char hunk[3] = { (char)((q[0] << 2) | (q[1] >> 4)), (char)((q[1] << 4) | (q[2] >> 2)), (char)((q[2] << 6) | q[3]) };
+                    str_append(&o, hunk, len > 3 ? 3 : len);
+                    len -= 3;
+                }
+                if (s < e && *s == '\n') s++;
+                else if (s + 1 < e && s[1] == '\n') s += 2;      /* (a checksum character before the newline) */
+            }
+#undef UUCH
+            *dp = (int)(s - d);
+            pp_list_push(res, pp_str_val(o));
             break;
         }
         case 'b': case 'B': case 'h': case 'H': {
