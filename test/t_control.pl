@@ -63,3 +63,16 @@ my ($p, $q) = ("a", "b"); for ($p, $q) { $_ .= "!" } print "$p $q\n";
 my %h = (k => "v"); my @arr = (1, 2); for ($h{k}, $arr[1], $p) { $_ .= "+" } print "$h{k} @arr $p\n";
 for my $e ($p, @arr, $q) { $e x= 2 } print "$p @arr $q\n";
 }
+
+# eval ブロックの中の return は、eval だけを抜ける (外側のサブは続く)
+{
+    sub er1 { my $v = eval { return "inner"; "not reached" }; "after:$v" }
+    sub er2 { my @l = eval { return (1, 2, 3) }; scalar(@l) . ":@l" }
+    sub er3 { my $w = eval { my $f = 0 or return ''; "set" } || 'default'; wantarray ? "list:$w" : "scalar:$w" }
+    sub er4 { for my $i (1 .. 3) { eval { return if $i == 2; die "x\n" if $i == 3; 1 } or return "died at $i"; } "end" }
+    sub er5 { my $c = eval { wantarray ? "list" : defined(wantarray) ? "scalar" : "void" }; my @c = eval { wantarray ? "list" : "scalar" }; "$c/@c" }
+    sub er6 { eval { return 5 }; "sub continues, \$\@=[" . $@ . "]" }
+    sub er7 { my $x = eval { eval { return 1 }; return 2; 3 }; "nested:$x" }
+    print er1(), "\n", er2(), "\n", scalar(er3()), " ", er3(), "\n", er4(), "\n", er5(), "\n", er6(), "\n", er7(), "\n";
+    my %h = (a => er1()); print "hash: $h{a}\n";
+}

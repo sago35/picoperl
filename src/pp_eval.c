@@ -2656,7 +2656,26 @@ static NOINLINE pp_val eval_evalblock(pp_interp *I, pp_node *n, int ctx, pp_list
     pp_env *saved_env = I->env; int saved_depth = I->depth, saved_ctx = I->call_ctx;
     int lh = I->nlocals;
     int outn = out ? out->n : 0;
+    I->call_ctx = ctx;                           /* return and wantarray inside see the eval's context */
     pp_val r = exec_block(I, n->a, ctx, out);
+    I->call_ctx = saved_ctx;
+    if (I->ctl == CTL_RETURN) {
+        /* `return` inside eval { } leaves the eval, not the sub around it: the returned
+           values are the value of the eval */
+        I->ctl = CTL_NONE;
+        pp_release(r);
+        pp_list rv = I->ret;
+        memset(&I->ret, 0, sizeof I->ret);
+        if (ctx == CTX_LIST && out) {
+            for (int i = 0; i < rv.n; i++) pp_list_push(out, rv.v[i]);
+            rv.n = 0;
+            r = pp_undef();
+        } else {
+            r = rv.n ? rv.v[rv.n - 1] : pp_undef();
+            if (rv.n) rv.n--;
+        }
+        pp_list_free(&rv);
+    }
     if (I->ctl == CTL_DIE) {
         I->ctl = CTL_NONE;
         pp_release(r); r = pp_undef();
