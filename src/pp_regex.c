@@ -6,6 +6,14 @@
 #include <stdio.h>
 #include <ctype.h>
 
+/* small allocations whose failure is not handled where they are made: stop with the
+   interpreter's "out of memory" (on the board that restarts it) instead of using NULL */
+void pp_host_fatal(const char *msg);
+static void *re_need(void *p) {
+    if (!p) { pp_host_fatal("picoperl: out of memory\n"); abort(); }
+    return p;
+}
+
 /* ------------------------------------------------------------------ */
 /* AST                                                                 */
 /* ------------------------------------------------------------------ */
@@ -95,7 +103,7 @@ static void rfail(rparser *P, const char *msg) {
 static int new_class(rparser *P) {
     if (P->nclasses == P->capclasses) {
         P->capclasses = P->capclasses ? P->capclasses * 2 : 4;
-        P->classes = realloc(P->classes, (size_t)P->capclasses * 32);
+        P->classes = re_need(realloc(P->classes, (size_t)P->capclasses * 32));
     }
     memset(P->classes + P->nclasses * 32, 0, 32);
     return P->nclasses++;
@@ -536,7 +544,7 @@ static void gen_repeat(emitter *E, const rnode *n) {
     }
     /* optional copies: SPLIT L1, L2 ; L1: body ; (next optional) ; L2: */
     int count = n->max - n->min;
-    int *fix = count ? malloc((size_t)count * sizeof(int)) : NULL;
+    int *fix = count ? re_need(malloc((size_t)count * sizeof(int))) : NULL;
     for (int i = 0; i < count; i++) {
         fix[i] = emit(E, I_SPLIT); emit(E, 0); emit(E, 0);
         gen(E, body);
@@ -571,7 +579,7 @@ static void gen(emitter *E, const rnode *n) {
     case R_CAT: for (const rnode *c = n->child; c; c = c->next) gen(E, c); break;
     case R_ALT: {
         int nalt = 0; for (const rnode *c = n->child; c; c = c->next) nalt++;
-        int *jmps = malloc((size_t)nalt * sizeof(int)); int nj = 0;
+        int *jmps = re_need(malloc((size_t)(nalt ? nalt : 1) * sizeof(int))); int nj = 0;
         for (const rnode *c = n->child; c; c = c->next) {
             if (c->next) {
                 int sp = emit(E, I_SPLIT); emit(E, sp + 3); emit(E, 0);
@@ -616,13 +624,13 @@ pp_regex *pp_re_compile(const char *pat, int len, int flags, char *err, int errc
         free(E.prog); free(P.classes);
         return NULL;
     }
-    pp_regex *re = calloc(1, sizeof *re);
+    pp_regex *re = re_need(calloc(1, sizeof *re));
     re->prog = E.prog; re->nprog = E.n;
     re->classes = P.classes; re->nclasses = P.nclasses;
     re->ncap = P.ncap; re->nmarks = E.nmarks; re->flags = flags;
-    re->source = malloc((size_t)len + 1); memcpy(re->source, pat, (size_t)len); re->source[len] = 0; re->srclen = len;
+    re->source = re_need(malloc((size_t)len + 1)); memcpy(re->source, pat, (size_t)len); re->source[len] = 0; re->srclen = len;
     if (P.nnames) {
-        re->names = calloc((size_t)P.nnames, sizeof *re->names);
+        re->names = re_need(calloc((size_t)P.nnames, sizeof *re->names));
         for (int i = 0; i < P.nnames; i++) {
             re->names[i].off = (uint16_t)P.names[i].off;
             re->names[i].len = (uint16_t)P.names[i].len;

@@ -114,10 +114,17 @@ int   pp_host_remove(const char *path, int is_dir) { return flashfs_remove(path,
 int   pp_host_rename(const char *from, const char *to) { return flashfs_rename(from, to); }
 int   pp_host_listdir(const char *path, void (*add)(void *ctx, const char *name), void *ctx) { return flashfs_listdir(path, add, ctx); }
 
+/* A fatal error (out of memory): the interpreter cannot continue and its heap cannot be
+ * trusted, so the board restarts. The watchdog scratch register survives that restart and
+ * tells the next boot not to start main.pl again right away (it would only fail the same
+ * way, over and over, before a terminal could show anything). */
+#define FATAL_MAGIC 0x4F4F4D21u          /* "OOM!" */
 void pp_host_fatal(const char *msg) {
     pp_host_write(2, msg, (int)strlen(msg));
     pp_host_write(2, "picoperl: rebooting\n", 20);
-    sleep_ms(100);
+    watchdog_hw->scratch[0] = FATAL_MAGIC;
+    absolute_time_t until = make_timeout_time_ms(100);          /* let the message leave over USB */
+    while (!time_reached(until)) { tud_task(); tud_cdc_write_flush(); sleep_us(500); }
     watchdog_reboot(0, 0, 10);
     for (;;) tight_loop_contents();
 }
@@ -770,9 +777,31 @@ static void board_reset(void) {
     for (uint s = 0; s < NUM_PWM_SLICES; s++) pwm_set_enabled(s, false);
 }
 
-static void run_scripts_forever(void) {
+/* After a restart caused by a fatal error: main.pl is not started. The reason is repeated on
+ * the console (a terminal opened later still sees it) until a file on the drive changes. */
+static void wait_after_fatal(void) {
+    static const char msg[] =
+        "picoperl: the last run ran out of memory and the board restarted.\n"
+        "picoperl: main.pl was NOT started. Make the script smaller and save it to try again.\n";
+    absolute_time_t next_msg = make_timeout_time_ms(0), next_blink = make_timeout_time_ms(0);
+    int on = 0;
+    while (!flashfs_reload_pending()) {
+        pp_host_poll();
+        if (time_reached(next_msg)) { pp_host_write(2, msg, (int)sizeof msg - 1); next_msg = make_timeout_time_ms(3000); }
+        if (time_reached(next_blink)) { set_led(on ^= 1); next_blink = make_timeout_time_ms(150); }
+        sleep_us(500);
+    }
+    set_led(0);
+}
+
+static void run_scripts_forever(int after_fatal) {
     char banner[240];
     int n;
+    if (after_fatal) {
+        wait_after_fatal();
+        n = pp_snprintf(banner, sizeof banner, "picoperl: files changed (%s), reloading\n", flashfs_change_info());
+        pp_host_write(1, banner, n);
+    }
     for (;;) {
         flashfs_take_reload_request();
         pp_interp *I = pp_new();
@@ -813,6 +842,8 @@ static void run_scripts_forever(void) {
 }
 
 static void main_on_big_stack(void) {
+    int after_fatal = watchdog_hw->scratch[0] == FATAL_MAGIC;   /* set by pp_host_fatal before the restart */
+    watchdog_hw->scratch[0] = 0;
     stdio_init_all();
     fs_ok = flashfs_init();
     tusb_init();
@@ -830,7 +861,7 @@ static void main_on_big_stack(void) {
         pp_host_write(1, banner, n);
     }
 
-    run_scripts_forever();
+    run_scripts_forever(after_fatal);
 }
 
 /* Switch to a dedicated stack and never return. Cortex-M0+/M33: MSP <- top, then call. */

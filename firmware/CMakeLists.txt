@@ -75,6 +75,9 @@ target_compile_definitions(picoperl PRIVATE
     PP_RE_MAX_STEPS=1000000     # give up on catastrophic backtracking after this many VM steps
     PP_MAX_DEPTH=200            # perl call depth limit (the C stack is also checked at run time)
     PICOPERL_FS_SIZE=${PICOPERL_FS_SIZE}
+    # malloc returns NULL when memory runs out (the SDK's default is to panic and hang):
+    # picoperl then reports "out of memory" and restarts (pp_host_fatal)
+    PICO_MALLOC_PANIC=0
     PICOPERL_FS_RESET=$<BOOL:${PICOPERL_FS_RESET}>
 )
 
