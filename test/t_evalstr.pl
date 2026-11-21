@@ -55,3 +55,12 @@ print "done\n";
     print "use in eval: ", use_in_eval(q{package main; use strict @{$args[0]}; 1;}, []), "\n";
     print "use in eval: ", use_in_eval(q{use strict; no warnings; my @l = @{$args[0]}; scalar @l;}, [1, 2]), "\n";
 }
+
+# eval 文字列の中の use / BEGIN から、外側のサブの my 変数が見える
+{
+    sub use_in_eval2 { my ($code, @args) = @_; my $r = eval $code; defined $r ? $r : "err: $@" }
+    print "use const: ", use_in_eval2(q{use constant @{$args[0]}; UIE_ANSWER() + 1;}, [UIE_ANSWER => 41]), "\n";
+    print "begin: ", use_in_eval2(q{my $n; BEGIN { $n = scalar @{$args[0]} } "n=$n";}, [1, 2, 3]), "\n";
+    my $outer = "file"; my $got = eval q{ my $seen; BEGIN { $seen = $outer } $seen }; print "file scope: $got\n";
+    sub writes { my $count = 0; eval q{ BEGIN { $count += 5 } 1 }; $count } print "write: ", writes(), "\n";
+}

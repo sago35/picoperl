@@ -2687,6 +2687,23 @@ static NOINLINE pp_val eval_evalstr(pp_interp *I, pp_node *n, int ctx, pp_list *
     char errbuf[400];
     pp_arena *arena = NULL;                      /* the code's AST lives here */
     int subs_before = I->nall_subdefs;
+    {   /* the variables the string can see, in place before it is parsed: a `use` or BEGIN in
+           the string runs while parsing and may read them (use Module @{$args[0]}) */
+        int nlex = 0;
+        for (int i = 0; i < n->n; i++) if (n->list[i]->flags & PP_VAR_LEX) nlex++;
+        if (nlex) {
+            pp_env *e = pp_env_new(NULL, nlex);
+            int slot = 0;
+            for (int i = 0; i < n->n; i++) {
+                if (!(n->list[i]->flags & PP_VAR_LEX)) continue;
+                pp_obj *cell = var_cell(I, n->list[i]);
+                cell->refcnt++;
+                if (e->cells[slot]) pp_obj_decref(e->cells[slot]);
+                e->cells[slot++] = cell;
+            }
+            I->pending_env = e;
+        }
+    }
     pp_node *unit = pp_parse_eval(I, fname, src->d, n, errbuf, sizeof errbuf, &arena);
     pp_str_decref(src);
     pp_val r = pp_undef();
