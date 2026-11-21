@@ -1140,6 +1140,13 @@ static int interp_extent(const char *s, int len, int i) {
             int k = j + 1; int ok = 0;
             while (k < e - 1 && isspace((unsigned char)s[k])) k++;
             if (k < e - 1 && (s[k] == '$' || s[k] == '-' || isdigit((unsigned char)s[k]))) ok = 1;
+            if (!ok && k < e - 1 && isupper((unsigned char)s[k])) {
+                /* "$row[COL_NAME]", "$r->[IDX + 1]": a constant (written in capitals) as the index */
+                int q = k;
+                while (q < e - 1 && (isupper((unsigned char)s[q]) || isdigit((unsigned char)s[q]) || s[q] == '_' || s[q] == ':')) q++;
+                ok = 1;
+                for (; q < e - 1; q++) if (!(isdigit((unsigned char)s[q]) || s[q] == ' ' || s[q] == '+' || s[q] == '-' || s[q] == '*')) ok = 0;
+            }
             if (!ok) break;
             j = e;
         }

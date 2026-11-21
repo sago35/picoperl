@@ -79,3 +79,12 @@ print "end\n";
     print "escapes: ", join(",", map { ord } split //, "a\bb\0c\cAd\x{41}\c[\c?"), "\n";
     print "pid in string: ", ("tpkg$$" =~ /^tpkg\d+$/ ? "ok" : "ng"), " ", ("$$" eq $$ ? "same" : "diff"), " $$sref ${$sref} ", ("a$$" . "b" =~ /b/ ? 1 : 0), "\n";
 }
+
+# 文字列の中の添字に定数や式を書く
+{
+    use constant IDX_ONE => 1; use constant { IDX_TWO => 2 };
+    my @arr = ("zero", "one", "two", "three"); my $ref = \@arr; my $i = 1; my %h = (k => [5, 6, 7]);
+    print "a: $arr[IDX_ONE] $ref->[IDX_TWO] $$ref[IDX_ONE] $h{k}[IDX_TWO] $h{k}->[IDX_ONE]\n";
+    print "b: $arr[$i + 1] $arr[-1] $ref->[$i * 2] $arr[IDX_ONE + 1] $arr[$#arr]\n";
+    print "c: email\@x.org [$i] $i\[0] $i [IDX_ONE] $arr[1]\[TAG] [$arr[IDX_TWO]]\n";
+}
