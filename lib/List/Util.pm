@@ -7,13 +7,13 @@ package List::Util;
 #   my $prod  = reduce { $a * $b } @values;
 #
 # 本家との違い: uniqnum は数値として等しいものを 1 つにまとめるだけ (NaN や巨大な整数の特別扱いは無い)。
-# sample、pairs の戻り値を除く _Pair の細かい挙動、head / tail 以外の高速化用の関数は無い。
+# pairmap / pairgrep のブロックの中で $a / $b を書き換えても、元のリストには反映されない (本家は別名)。
 use strict;
 use Exporter 'import';
 our $VERSION = '1.63';
 our @EXPORT_OK = qw(sum sum0 product min max minstr maxstr
                     first any all none notall reduce reductions
-                    shuffle uniq uniqnum uniqint uniqstr
+                    shuffle sample uniq uniqnum uniqint uniqstr
                     pairs unpairs pairkeys pairvalues pairmap pairgrep pairfirst
                     head tail zip zip_longest zip_shortest mesh mesh_longest mesh_shortest);
 
@@ -58,17 +58,33 @@ sub reductions(&@) {
     return @out;
 }
 
+# 乱数源は $List::Util::RAND (0 以上 1 未満を返すサブ) で差し替えられる。手順は本家と同じ
+our $RAND;
 sub shuffle {
     my @l = @_;
+    my $r = $RAND;
     for (my $i = $#l; $i > 0; $i--) {
-        my $j = int(rand($i + 1));
+        my $j = int($r ? $r->() * ($i + 1) : rand($i + 1));
         @l[$i, $j] = @l[$j, $i];
     }
     return @l;
 }
+# sample($n, LIST): LIST から重複なしに $n 個 (LIST より多ければ全部) を選ぶ
+sub sample($@) {
+    my $n = shift;
+    my @l = @_;
+    unshift @l, pop @l if @l;          # 本家と同じ並びから始める (同じ乱数列なら同じ結果になる)
+    my $r = $RAND;
+    $n = @l if $n > @l;
+    for (my $i = 0; $i < $n; $i++) {
+        my $j = $i + int($r ? $r->() * (@l - $i) : rand(@l - $i));
+        @l[$i, $j] = @l[$j, $i];
+    }
+    return @l[0 .. $n - 1];
+}
 
 sub uniq    { my %s; my $u = 0; my @r = grep { defined $_ ? !$s{$_}++ : !$u++ } @_; wantarray ? @r : scalar @r }
-sub uniqstr { my %s; my @r = grep { !$s{ defined $_ ? $_ : '' }++ } @_; wantarray ? @r : scalar @r }
+sub uniqstr { my %s; my @r = grep { !$s{$_}++ } map { defined $_ ? "$_" : '' } @_; wantarray ? @r : scalar @r }   # undef は '' として返す
 sub uniqnum { my %s; my @r = grep { !$s{ (defined $_ ? $_ : 0) + 0 }++ } @_; wantarray ? @r : scalar @r }
 sub uniqint { my %s; my @r = grep { !$s{$_}++ } map { int(defined $_ ? $_ : 0) } @_; wantarray ? @r : scalar @r }
 

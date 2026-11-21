@@ -1718,6 +1718,13 @@ static pp_val n_looks_like_number(pp_interp *I, pp_list *a, int ctx, pp_list *ou
     (void)I; (void)ctx; (void)out;
     if (a->n < 1 || a->v[0].t == PP_UNDEF) return pp_strn("", 0);
     if (a->v[0].t == PP_INT || a->v[0].t == PP_NUM) return pp_int(1);
+    if (a->v[0].t == PP_REF && a->v[0].u.o->class && pp_ovl_hook) {
+        /* an object with overloading (Math::BigInt): what it turns into as a string decides */
+        pp_str *t = pp_to_str(a->v[0]);
+        int ok = !(t->len > 2 && memchr(t->d, '=', (size_t)t->len) && t->d[t->len - 1] == ')') && pp_looks_like_number(t->d, t->len);
+        pp_str_decref(t);
+        return ok ? pp_int(1) : pp_strn("", 0);
+    }
     if (a->v[0].t != PP_STR) return pp_strn("", 0);
     return pp_looks_like_number(a->v[0].u.s->d, a->v[0].u.s->len) ? pp_int(1) : pp_strn("", 0);
 }

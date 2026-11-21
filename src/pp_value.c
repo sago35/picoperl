@@ -219,7 +219,13 @@ int pp_looks_like_number(const char *s, int len) {
     int digits = 0;
     while (i < len && isdigit((unsigned char)s[i])) { i++; digits++; }
     if (i < len && s[i] == '.') { i++; while (i < len && isdigit((unsigned char)s[i])) { i++; digits++; } }
-    if (!digits) return 0;
+    if (!digits) {                                /* Inf, Infinity, NaN (any case) are numbers too */
+        int w = len - i >= 8 && !strncasecmp(s + i, "infinity", 8) ? 8 : len - i >= 3 && (!strncasecmp(s + i, "inf", 3) || !strncasecmp(s + i, "nan", 3)) ? 3 : 0;
+        if (!w) return 0;
+        i += w;
+        while (i < len && isspace((unsigned char)s[i])) i++;
+        return i == len;
+    }
     if (i < len && (s[i] == 'e' || s[i] == 'E')) {
         int j = i + 1;
         if (j < len && (s[j] == '+' || s[j] == '-')) j++;

@@ -376,9 +376,11 @@ perl との違い: `use Fcntl qw(:seek)` のようにタグを指定しても、
 書けばこちらが使われます。
 
 - `List::Util`: `sum sum0 product min max minstr maxstr first any all none notall reduce reductions
-  shuffle uniq uniqnum uniqint uniqstr pairs unpairs pairkeys pairvalues pairmap pairgrep pairfirst
-  head tail zip mesh` (`_longest` / `_shortest` 付き)
-- `Scalar::Util`: `blessed reftype refaddr looks_like_number` は本家と同じ。`weaken` は何もしません
+  shuffle sample uniq uniqnum uniqint uniqstr pairs unpairs pairkeys pairvalues pairmap pairgrep pairfirst
+  head tail zip mesh` (`_longest` / `_shortest` 付き)。`shuffle` と `sample` の乱数源は `$List::Util::RAND` で差し替えられ、
+  同じ乱数列なら本家と同じ並びになります。`pairmap` / `pairgrep` のブロックの中で `$a` `$b` を書き換えても、元のリストには反映されません
+- `Scalar::Util`: `blessed reftype refaddr looks_like_number openhandle` は本家と同じ (`looks_like_number` は `Inf` / `NaN` と、
+  演算子オーバーロードで数になるオブジェクトも数と認めます)。`weaken` は何もしません
   (参照カウントだけで弱参照が無いので、循環参照は解放されません)。`readonly` `tainted` `isweak` は常に偽、
   `dualvar` は die します
 - `mro`: `get_linear_isa` など。メソッド探索は常に深さ優先で、`use mro 'c3'` は受け付けるだけです

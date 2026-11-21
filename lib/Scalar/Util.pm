@@ -26,7 +26,16 @@ sub readonly  { '' }
 sub tainted   { '' }
 sub isvstring { '' }
 sub isdual    { '' }
-sub openhandle    { defined $_[0] && ref $_[0] ? $_[0] : undef }
+# 開いているハンドルならそのまま返し、そうでなければ undef。グロブ (*STDERR)、その参照、open(my $fh) の
+# ハンドル、IO::Handle のオブジェクトを受け付ける
+sub openhandle {
+    my $fh = shift;
+    return undef unless defined $fh;
+    my $rt = builtin::reftype($fh);
+    if (defined $rt) { return undef unless $rt eq 'GLOB' || $rt eq 'IO' }
+    else { return undef unless "$fh" =~ /^\*/ }                 # グロブそのもの (参照でない)
+    return defined(tied *$fh) || defined(fileno($fh)) ? $fh : undef;
+}
 sub set_prototype { __setproto($_[0], $_[1]) }
 sub dualvar { die "Scalar::Util::dualvar is not supported by picoperl\n" }
 
