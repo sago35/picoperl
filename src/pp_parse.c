@@ -466,11 +466,19 @@ static int lex_try_readline(pp_lex *L, pp_tok *t) {
    current physical line (stacked after earlier heredocs begun on the same line), up
    to a line holding just the delimiter. The token is the body; an hd[] entry later
    makes the lexer jump over it. */
+/* at "<<": do blanks and then a quote follow? (croak << "HERE";) */
+static int heredoc_spaced_quote(pp_lex *L) {
+    int i = L->pos + 2;
+    if (i >= L->len || (L->src[i] != ' ' && L->src[i] != '\t')) return 0;
+    while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+    return i < L->len && (L->src[i] == '"' || L->src[i] == '\'');
+}
 static void lex_heredoc(pp_parser *P, pp_tok *t) {
     pp_lex *L = &P->L;
     L->pos += 2;
     int dedent = 0, interp = 1;
     if (peekc(L, 0) == '~') { dedent = 1; L->pos++; }
+    while (peekc(L, 0) == ' ' || peekc(L, 0) == '\t') L->pos++;       /* only reached with a quote after the blanks */
     char q = 0;
     if (peekc(L, 0) == '"' || peekc(L, 0) == '\'') { q = (char)peekc(L, 0); L->pos++; if (q == '\'') interp = 0; }
     int ds = L->pos;
@@ -618,7 +626,8 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         term = 1;
     }
     else if (c == '<' && peekc(L, 1) == '<' && peekc(L, 2) != '=' && peekc(L, 2) != '<' &&
-             (peekc(L, 2) == '~' || peekc(L, 2) == '"' || peekc(L, 2) == '\'' || is_ident_start(peekc(L, 2)))) {
+             (peekc(L, 2) == '~' || peekc(L, 2) == '"' || peekc(L, 2) == '\'' || is_ident_start(peekc(L, 2))
+              || (!L->prev_term && heredoc_spaced_quote(L)))) {   /* << "EOT": blanks before a quoted delimiter */
         lex_heredoc(P, t);
         term = 1;
     }

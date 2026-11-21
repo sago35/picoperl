@@ -88,3 +88,18 @@ print "end\n";
     print "b: $arr[$i + 1] $arr[-1] $ref->[$i * 2] $arr[IDX_ONE + 1] $arr[$#arr]\n";
     print "c: email\@x.org [$i] $i\[0] $i [IDX_ONE] $arr[1]\[TAG] [$arr[IDX_TWO]]\n";
 }
+
+# << "EOT": 引用符付きの区切りの前に空白があるヒアドキュメント
+{
+    my $name = "world";
+    my $a = << "HERE";
+hello $name
+HERE
+    my $b = << 'RAW';
+raw $name
+RAW
+    print $a, $b; print lc << "X", "tail\n";
+UPPER
+X
+    my $n = 1; my $sh = $n << 3; my $sh2 = $n <<2; print "$sh $sh2 ", 2 << 1, "\n";
+}
