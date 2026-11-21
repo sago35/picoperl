@@ -41,3 +41,12 @@ my @lines = split /\n/, $@;
 print "confess: ", $lines[0], " / ", scalar(@lines) >= 3 ? "has trace" : "no trace", " / ", ($lines[1] =~ /^\tmain::conf_inner\(.*\) called at / ? "frame ok" : "frame: $lines[1]"), "\n";
 print "shortmess: ", show(Carp::shortmess("sm")), "\n";
 print "done\n";
+
+# package DB の中から caller を呼ぶと、その呼び出しの引数が @DB::args に入る
+sub args_of { my $up = shift; my @info; { package DB; @info = caller($up + 1); } return @info ? "$info[3](" . join(", ", map { defined $_ ? $_ : "undef" } @DB::args) . ")" : "none" }
+sub inner { args_of(0) . " <- " . args_of(1) }
+sub outer { inner("a", 2) }
+print outer("x", undef, "z"), "\n";
+sub noargs { args_of(0) } print noargs(), "\n";
+sub plain { my @c = caller(0); scalar(@DB::args) } @DB::args = (9, 9); print "outside DB: ", plain(1, 2, 3), "\n";
+print "top: ", args_of(5), "\n";

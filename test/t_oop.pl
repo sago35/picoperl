@@ -121,3 +121,15 @@ print "trailing :: ", Tc::Deep::->new(3)->get, " ", Tc::Deep::->name, " ", StrCl
 }
 # IO レイヤーは無いので、PerlIO::Layer->find は常に偽
 print "layer: ", (PerlIO::Layer->find("no_such_layer_here") ? "yes" : "no"), "\n";
+
+# 名前表 (スタッシュ) 経由でサブを取り出す (Carp の _fetch_sub と同じ形)
+{
+print exists($::{"UNIVERSAL::"}) ? "pkg exists" : "no pkg", "\n";
+print exists($::{"NoSuchPkgHere::"}) ? "pkg exists" : "no pkg", "\n";
+for ($::{"UNIVERSAL::"}) {
+  print "ref: ", ref(\$_), "\n";
+  print "hash: ", (*$_{HASH} ? "yes" : "no"), "\n";
+  print "has isa: ", (exists $$_{isa} ? "yes" : "no"), " has nope: ", (exists $$_{nope} ? "yes" : "no"), "\n";
+  for ($$_{isa}) { print "inner ref: ", ref(\$_), "\n"; my $c = *$_{CODE}; print "code: ", ref($c), " ", ($c->([], "ARRAY") ? "works" : "broken"), "\n"; }
+}
+}

@@ -1110,7 +1110,18 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             case PP_OCODE: r = "CODE"; break;
             case PP_OREGEX: r = "Regexp"; break;
             case PP_OFILE: case PP_OGLOB: r = "GLOB"; break;
-            default: r = v.u.o->u.scalar.t == PP_REF ? "REF" : "SCALAR"; break;
+            default: {
+                /* a glob held in a scalar (what $Pkg::{name} gives) is the string "*Pkg::name"
+                   here; a reference to it is a GLOB reference in perl */
+                pp_val in = v.u.o->u.scalar;
+                r = in.t == PP_REF ? "REF" : "SCALAR";
+                if (in.t == PP_STR && in.u.s->len > 3 && in.u.s->d[0] == '*' && strstr(in.u.s->d, "::")) {
+                    const char *p = in.u.s->d + 1;
+                    while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == ':')) p++;
+                    if (!*p) r = "GLOB";
+                }
+                break;
+            }
             }
         }
         pp_release(v);

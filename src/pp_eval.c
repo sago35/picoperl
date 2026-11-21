@@ -353,6 +353,13 @@ static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *o
         pp_list_push(out, pp_strn(buf, len >= (int)sizeof buf ? (int)sizeof buf - 1 : len));
         pp_list_push(out, pp_int(1));
         pp_list_push(out, f->ctx == CTX_LIST ? pp_int(1) : f->ctx == CTX_SCALAR ? pp_strn("", 0) : pp_undef());
+        if (I->file_pkg && I->file_pkg[0] == 'D' && !strcmp(I->file_pkg, "DB")) {
+            /* called from package DB: @DB::args gets the arguments of that call (what is left
+               of its @_; perl also shows the ones it has shifted off). Carp prints them. */
+            pp_obj *da = pp_global(I, pp_intern(I, "@DB::args", 9));
+            pp_array_clear(da);
+            if (f->argv) for (int i = 0; i < f->argv->u.arr.n; i++) pp_array_push(da, pp_copy(f->argv->u.arr.v[i]));
+        }
     }
     return pp_undef();
 }
@@ -388,6 +395,7 @@ static pp_sym *glob_slot_sym(pp_interp *I, pp_sym *gs, char sigil) {
 static int glob_std_fd(pp_sym *gs) {
     return !strcmp(gs->name, "*STDIN") ? 0 : !strcmp(gs->name, "*STDOUT") ? 1 : !strcmp(gs->name, "*STDERR") ? 2 : -1;
 }
+pp_obj *pp_stash_of(pp_interp *I, pp_sym *hs);
 /* *name{SLOT}: a reference to that part of the glob, undef if there is none */
 static NOINLINE pp_val eval_globslot(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_sym *gs = glob_sym(I, n->a);
@@ -399,7 +407,12 @@ static NOINLINE pp_val eval_globslot(pp_interp *I, pp_node *n, int ctx, pp_list 
     if (!strcmp(k->d, "SCALAR")) r = pp_ref(pp_global(I, glob_slot_sym(I, gs, '$')));
     else if (!strcmp(k->d, "ARRAY") || !strcmp(k->d, "HASH")) {
         pp_sym *s = glob_slot_sym(I, gs, k->d[0] == 'A' ? '@' : '%');
-        if (s->gcell) r = pp_ref(s->gcell);
+        size_t sl = strlen(s->name);
+        if (k->d[0] == 'H' && sl >= 3 && s->name[sl - 1] == ':' && s->name[sl - 2] == ':') {   /* *Pkg::{HASH}: the name table of Pkg */
+            pp_obj *st = pp_stash_of(I, s);
+            if (st) r = pp_ref(st);
+        }
+        else if (s->gcell) r = pp_ref(s->gcell);
     }
     else if (!strcmp(k->d, "CODE")) { pp_obj *code = pp_resolve_sub(I, glob_slot_sym(I, gs, '&')); if (code) r = pp_ref(code); }
     else if (!strcmp(k->d, "GLOB")) r = pp_ref(pp_glob_obj(I, gs));
@@ -1002,6 +1015,7 @@ static pp_obj *stash_fill(pp_interp *I, pp_sym *hs) {
         }
     return h;
 }
+pp_obj *pp_stash_of(pp_interp *I, pp_sym *hs) { return stash_fill(I, hs); }
 static int is_stash_name(const char *name) { size_t l = strlen(name); return l >= 3 && name[l - 1] == ':' && name[l - 2] == ':'; }
 
 /* the array an expression names. A tied one is first filled from its object (FETCHSIZE /
