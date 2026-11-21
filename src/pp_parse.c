@@ -566,7 +566,8 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             int spaced = 0;
             if (isspace(peekc(L, 0))) { skip_ws(L); spaced = 1; }
             int d = peekc(L, 0);
-            if (d && !is_ident_char(d) && (d != ',' || L->prev_bind) && d != ';' && d != ')' && d != '=' && d != '}' && d != ']' && !(spaced && d == '#')
+            /* after =~ any delimiter is one (m;...;, s=a=b=); elsewhere these characters end the bareword */
+            if (d && !is_ident_char(d) && (L->prev_bind || (d != ',' && d != ';' && d != ')' && d != '=' && d != '}' && d != ']')) && !(spaced && d == '#')
                 && !(d == '-' && peekc(L, 1) == '>')) {
                 lex_pattern(P, t, pk);
                 L->prev_term = 1; L->prev_brace = 0; L->prev_split = 0; L->prev_arrow = 0;
@@ -2882,7 +2883,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
                 int word = nx2->type == T_IDENT;
                 for (int i = 0; word && opwords[i]; i++) if (tok_is_ident(nx2, opwords[i])) word = 0;
                 if (nx2->type == T_STR || nx2->type == T_ISTR || nx2->type == T_NUM || nx2->type == T_QW ||
-                    nx2->type == T_VAR || nx2->type == T_READLINE || word || (nx2->type == T_CAST && !strcmp(nx2->op, "$"))) {   /* print $fh ${$ref} */
+                    nx2->type == T_VAR || nx2->type == T_READLINE || word || (nx2->type == T_CAST && !strcmp(nx2->op, "$"))   /* print $fh ${$ref} */
+                    || (nx2->type == T_OP && !strcmp(nx2->op, "(") && nx2->space_before)) {   /* print $fh (LIST) */
                     n->a = mkvar(P, '$', P->cur.s, P->cur.len);
                     advance(P);
                 }

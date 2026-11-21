@@ -219,3 +219,18 @@ my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos(
     }
     print "outer: $guard (@seen)\n";
 }
+
+# =~ の後ろなら、; や = や , も正規表現の区切り文字になる
+{
+    my $opt = "name=s"; my %h = (m => 1, s => 2, y => 3);
+    print "semi: ", ($opt =~ m;^(\w+)=(\w)$; ? "$1/$2" : "no"), "\n";
+    (my $t = "a=b") =~ s=a=X=; print "eq: $t\n";
+    (my $u = "a,b") =~ s,\,,;,; print "comma: $u\n";
+    my $v = "x.y"; print "paren: ", ($v !~ m)z) ? "nomatch" : "match"), "\n";
+    (my $w = "abc") =~ tr;a-c;A-C;; print "tr: $w\n";
+    my @k = sort keys %h; print "keys: @k $h{m}$h{s}$h{y}\n"; my ($m, $s) = (4, 5); print "vars: ", $m + $s, "\n";
+    if ($opt =~ m;^
+          ( \w+ )      # name
+          = ( [si] )   # type
+        $;x) { print "multi: $1 $2\n" }
+}

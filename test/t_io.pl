@@ -226,3 +226,10 @@ print((-e join "", "/", "tmp") ? "y\n":"n\n");
     open(my $out, '>', \my $buf) or die; print $out ${$chunk->[-1]}; print $out $$sref; print {$out} ${$sref}; close $out;
     print $buf; my ($p, $q) = (6, 4); print $p % $q, " ", $p - $q, "\n";
 }
+
+# print $fh (LIST): ハンドルの後ろが括弧
+{
+    open(my $out, '>', \my $buf) or die; my $v = "1.0";
+    print $out (defined $v ? "version $v" : (), "\n"); printf $out ("%s-%s\n", "a", "b"); close $out; print $buf;
+    my $fh = \*STDOUT; print $fh ("to ", "stdout", "\n");
+}
