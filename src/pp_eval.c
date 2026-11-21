@@ -3580,7 +3580,14 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_END: {   /* queue the block; pp_run calls the queue in reverse order */
         pp_val code = pp_eval(I, n->a, CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(code); return pp_undef(); }
-        pp_array_push(pp_global(I, pp_intern(I, "@ END", 5)), code);
+        pp_obj *q = pp_global(I, pp_intern(I, "@ END", 5));   /* pairs: the block, its place in compile order */
+        pp_array_push(q, code);
+        pp_array_push(q, pp_copy(n->b->val));
+        for (int i = 0; i < n->n; i++) {              /* the outer lexicals the block uses (see pp_run) */
+            pp_val r = pp_eval(I, n->list[i], CTX_SCALAR, NULL);
+            if (I->ctl) { pp_release(r); return pp_undef(); }
+            pp_array_push(pp_global(I, pp_intern(I, "@ ENDVARS", 9)), r);
+        }
         return pp_undef();
     }
     case N_PACKAGE: I->file_pkg = n->sym ? n->sym->name : NULL; return pp_undef();
@@ -4037,12 +4044,16 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
         /* the end of the program (before the END blocks, as perl does for file-level lexicals): objects still held by the script's file-level variables get
            their DESTROY now, newest variable first (package variables are not visited) */
         pp_env *me = I->main_env;
+        pp_obj *keep = pp_global(I, pp_intern(I, "@ ENDVARS", 9));
         if (pp_destroy_on) {
             if (pp_destroy_n) pp_destroy_run(I);
             for (int pass = 0; pass < 2; pass++) {
                 for (int i = me->n - 1; i >= 0; i--) {
                     pp_obj *c = me->cells[i];
                     if (!c) continue;
+                    int kept = 0;                      /* used by an END block: stays as it is */
+                    for (int k = 0; k < keep->u.arr.n && !kept; k++) kept = keep->u.arr.v[k].t == PP_REF && keep->u.arr.v[k].u.o == c;
+                    if (kept) continue;
                     if (pass == 0 && c->kind == PP_OSCALAR && c->u.scalar.t == PP_REF) { pp_val v = c->u.scalar; c->u.scalar = pp_undef(); pp_release(v); }
                     else if (pass == 1 && c->kind == PP_OARRAY) pp_array_clear(c);
                     else if (pass == 1 && c->kind == PP_OHASH) pp_hash_clear(c);
@@ -4062,7 +4073,12 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
         pp_obj *status = pp_global(I, pp_intern(I, "$?", 2));
         pp_release(status->u.scalar); status->u.scalar = pp_int(rc);
         while (ends->u.arr.n > 0) {
-            pp_val code = ends->u.arr.v[--ends->u.arr.n];
+            int at = 0;                                /* the one compiled last (a module's END is
+                                                          queued when it is loaded, the main file's when they are reached) */
+            for (int k = 2; k < ends->u.arr.n; k += 2) if (ends->u.arr.v[k + 1].u.i >= ends->u.arr.v[at + 1].u.i) at = k;
+            pp_val code = ends->u.arr.v[at];
+            for (int k = at; k + 2 < ends->u.arr.n; k++) ends->u.arr.v[k] = ends->u.arr.v[k + 2];
+            ends->u.arr.n -= 2;
             pp_list args = {0};
             if (code.t == PP_REF && code.u.o->kind == PP_OCODE) { pp_val v = pp_call(I, code.u.o, &args, CTX_VOID, NULL); pp_release(v); }
             pp_list_free(&args);
@@ -4071,6 +4087,19 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
             else if (I->ctl == CTL_EXIT) { pp_release(status->u.scalar); status->u.scalar = pp_int(I->exit_code); }
             I->ctl = CTL_NONE;
         }
+        pp_obj *keep = pp_global(I, pp_intern(I, "@ ENDVARS", 9));   /* what the END blocks kept goes now */
+        if (pp_destroy_on) {
+            for (int k = keep->u.arr.n - 1; k >= 0; k--) {
+                pp_obj *c = keep->u.arr.v[k].t == PP_REF ? keep->u.arr.v[k].u.o : NULL;
+                if (!c) continue;
+                if (c->kind == PP_OSCALAR) { pp_val v = c->u.scalar; c->u.scalar = pp_undef(); pp_release(v); }
+                else if (c->kind == PP_OARRAY) pp_array_clear(c);
+                else if (c->kind == PP_OHASH) pp_hash_clear(c);
+                if (pp_destroy_n) pp_destroy_run(I);
+            }
+            I->ctl = CTL_NONE;
+        }
+        pp_array_clear(keep);
         rc = (int)pp_to_int(status->u.scalar) & 255;
     }
     I->stack_base = NULL;

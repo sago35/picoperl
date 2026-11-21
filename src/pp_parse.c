@@ -87,6 +87,8 @@ struct pp_parser {
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
     int exiting;                                 /* a BEGIN block or `use` called exit: stop parsing, the program ends */
+    int end_base;                                /* parsing an END block: the number of scopes outside it + 1 (0: not in one) */
+    int end_nsyms; pp_sym *end_syms[24];         /* ... and the outer lexicals it uses */
     int stmt_line;                               /* line where the statement being parsed starts: the line its calls report (0: unknown) */
     int last_line;                               /* line of the token before the current one */
     int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
@@ -255,6 +257,11 @@ static void resolve_var(pp_parser *P, pp_node *node, const char *name, int len) 
             if (sc->vars[k] == node->sym) {
                 node->flags |= PP_VAR_LEX;
                 node->op = (uint8_t)k;          /* slot */
+                if (P->end_base && i < P->end_base - 1 && P->end_nsyms < 24) {
+                    int seen = 0;
+                    for (int e = 0; e < P->end_nsyms; e++) if (P->end_syms[e] == node->sym) seen = 1;
+                    if (!seen) P->end_syms[P->end_nsyms++] = node->sym;
+                }
                 scope_record(P, node, S->st[S->n - 1].id, sc->id);
                 return;
             }
@@ -3621,8 +3628,22 @@ static pp_node *parse_statement_inner(pp_parser *P) {
         if (tok_is_ident(t, "END") && is_op(nx, "{")) {
             /* END { ... } is an anonymous sub that runs at exit: parse it as `sub { ... }` */
             pp_node *n = node(P, N_END);
+            n->b = const_int(P, P->I->end_seq++);     /* END blocks run in the reverse of the order they were compiled in */
             P->cur.s = "sub"; P->cur.len = 3;
+            int outer = P->end_base;
+            if (!outer) { P->end_base = P->sc->n + 1; P->end_nsyms = 0; }
             n->a = parse_ident_term(P);
+            if (!outer) {
+                /* the lexicals outside the block that it uses, as \$x, \@y ...: at the end of
+                   the program these keep their contents until the END blocks have run */
+                P->end_base = 0;
+                for (int e = 0; e < P->end_nsyms; e++) {
+                    const char *nm = P->end_syms[e]->name;
+                    pp_node *r = node(P, N_REF);
+                    r->a = mkvar(P, nm[0], nm + 1, (int)strlen(nm + 1));
+                    if (r->a->flags & PP_VAR_LEX) node_add(n, r);
+                }
+            }
             accept_op(P, ";");
             return n;
         }

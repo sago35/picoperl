@@ -311,6 +311,7 @@ struct pp_interp {
     pp_obj  *g_a, *g_b;          /* $a, $b for sort */
     pp_obj  *g_at;               /* $@ */
     pp_obj  *g_argv;             /* @ARGV */
+    int      end_seq;            /* END blocks compiled so far */
     void    *last_read;          /* the file a line was last read from (for $.; only ever compared) */
     int      stdin_lines;        /* lines read from STDIN */
     pp_obj  *g_ofs, *g_ors;      /* $, and $\ : what print puts between its arguments and after them */
