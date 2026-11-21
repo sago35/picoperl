@@ -12,8 +12,33 @@ enum {
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
     B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS,
-    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ANY, B_ALL, B_ABS_END
+    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ANY, B_ALL, B_PROTOTYPE, B_SETPROTO, B_ABS_END
 };
+
+/* prototype("CORE::name"): the prototypes of perl's own functions, as " name=proto name=proto ".
+   Functions that perl gives none (print, system, sort ...) are not listed: undef. Fatal and
+   autodie ask to learn whether, and how, a builtin can be wrapped. */
+static const char core_protos[] =
+    " abs=_ accept=** alarm=_ all=\\&@ any=\\&@ bind=*$ binmode=*;$ bless=$;$ break= caller=;$ chdir=;$"
+    " chmod=@ chown=@ chr=_ chroot=_ close=;* closedir=* connect=*$ continue= cos=_ crypt=$$ dbmclose=\\%"
+    " dbmopen=\\%$$ die=@ dump= each=\\[%@] endgrent= endhostent= endnetent= endprotoent= endpwent="
+    " endservent= eof=;* evalbytes=_ exit=;$ exp=_ fc=_ fcntl=*$$ fileno=* flock=*$ fork= formline=$@"
+    " getc=;* getgrent= getgrgid=$ getgrnam=$ gethostbyaddr=$$ gethostbyname=$ gethostent= getlogin="
+    " getnetbyaddr=$$ getnetbyname=$ getnetent= getpeername=* getpgrp=;$ getppid= getpriority=$$"
+    " getprotobyname=$ getprotobynumber=$; getprotoent= getpwent= getpwnam=$ getpwuid=$ getservbyname=$$"
+    " getservbyport=$$ getservent= getsockname=* getsockopt=*$$ glob=_; gmtime=;$ hex=_ index=$$;$ int=_"
+    " ioctl=*$$ join=$@ keys=\\[%@] kill=@ lc=_ lcfirst=_ length=_ link=$$ listen=*$ localtime=;$"
+    " lock=\\[$@%&*] log=_ lstat=;* method= mkdir=_;$ msgctl=$$$ msgget=$$ msgrcv=$$$$$ msgsnd=$$$ oct=_"
+    " open=*;$@ opendir=*$ ord=_ pack=$@ pipe=** pop=;\\@ pos=;\\[$*] prototype=_ push=\\@@ quotemeta=_"
+    " rand=;$ read=*\\$$;$ readdir=* readline=;* readlink=_ readpipe=_ recv=*\\$$$ ref=_ rename=$$ reset=;$"
+    " reverse=@ rewinddir=* rindex=$$;$ rmdir=_ scalar=$ seek=*$$ seekdir=*$ semctl=$$$$ semget=$$$"
+    " semop=$$ send=*$$;$ setgrent= sethostent=$ setnetent=$ setpgrp=;$$ setpriority=$$$ setprotoent=$"
+    " setpwent= setservent=$ setsockopt=*$$$ shift=;\\@ shmctl=$$$ shmget=$$$ shmread=$$$$ shmwrite=$$$$"
+    " shutdown=*$ sin=_ sleep=;$ socket=*$$$ socketpair=**$$$ splice=\\@;$$@ sprintf=$@ sqrt=_ srand=;$"
+    " stat=;* study=_ substr=$$;$$ symlink=$$ syscall=$@ sysopen=*$$;$ sysread=*\\$$;$ sysseek=*$$"
+    " syswrite=*$;$$ tell=;* telldir=* tie=\\[$@%*]$@ tied=\\[$@%*] time= times= truncate=$$ uc=_ ucfirst=_"
+    " umask=;$ undef=;\\[$@%&*] unlink=@ unpack=$_ unshift=\\@@ untie=\\[$@%*] utime=@ values=\\[%@] vec=$$$"
+    " wait= waitpid=$$ wantarray= warn=@ write=;* ";
 
 static const struct { const char *name; int id; int kind; } builtins[] = {
     { "print", B_PRINT, BK_LIST }, { "printf", B_PRINTF, BK_LIST }, { "say", B_SAY, BK_LIST },
@@ -35,6 +60,7 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "open", B_OPEN, BK_LIST }, { "close", B_CLOSE, BK_UNARY }, { "eof", B_EOF, BK_UNARY },
     { "seek", B_SEEK, BK_LIST }, { "tell", B_TELL, BK_UNARY }, { "alarm", B_ALARM, BK_UNARY },
     { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
+    { "prototype", B_PROTOTYPE, BK_UNARY }, { "__setproto", B_SETPROTO, BK_LIST },
     { NULL, 0, 0 }
 };
 
@@ -1104,6 +1130,52 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         }
         if (I->ctl) return pp_undef();
         return ret(ctx, out, d ? pp_int(1) : pp_strn("", 0));
+    }
+    case B_PROTOTYPE: {
+        /* prototype(\&f) / prototype("name"): the text of the sub's prototype, undef without
+           one. It is read from where the parser kept it (the body), unless set_prototype gave
+           this very code ref another one (kept in the tie table, which code refs do not use
+           otherwise). Builtins ("CORE::push") have none here. */
+        pp_val v = unary_arg(I, n);
+        if (I->ctl) return pp_undef();
+        pp_obj *code = NULL;
+        if (v.t == PP_REF && v.u.o->kind == PP_OCODE) code = v.u.o;
+        else if (v.t == PP_STR && !strncmp(v.u.s->d, "CORE::", 6) && v.u.s->len < 40) {
+            char key[48];
+            int kl = pp_snprintf(key, sizeof key, " %s=", v.u.s->d + 6);
+            const char *hit = strstr(core_protos, key);
+            pp_release(v);
+            if (!hit) return ret(ctx, out, pp_undef());
+            const char *e = strchr(hit + kl, ' ');
+            return ret(ctx, out, pp_strn(hit + kl, (int)(e - (hit + kl))));
+        }
+        else if (v.t == PP_STR && v.u.s->len > 0 && v.u.s->len < 200) {
+            char buf[280];
+            const char *nm = v.u.s->d;
+            const char *pkg = n->n > 1 && n->list[1]->type == N_CONST && n->list[1]->val.t == PP_STR ? n->list[1]->val.u.s->d : "main";
+            int bn = strstr(nm, "::") ? pp_snprintf(buf, sizeof buf, "&%s", !strncmp(nm, "main::", 6) ? nm + 6 : nm)
+                   : strcmp(pkg, "main") ? pp_snprintf(buf, sizeof buf, "&%s::%s", pkg, nm) : pp_snprintf(buf, sizeof buf, "&%s", nm);
+            code = pp_resolve_sub(I, pp_intern(I, buf, bn));
+        }
+        pp_val r = pp_undef();
+        if (code) {
+            pp_val *set = code->tied ? pp_tie_find(code) : NULL;
+            if (set) r = pp_copy(*set);
+            else if (code->u.code.body && code->u.code.body->b && code->u.code.body->b->type == N_CONST) r = pp_copy(code->u.code.body->b->val);
+        }
+        pp_release(v);
+        return ret(ctx, out, r);
+    }
+    case B_SETPROTO: {   /* __setproto(\&code, PROTO): Scalar::Util::set_prototype; undef removes it */
+        pp_list a = {0};
+        if (!eval_args(I, n, 0, &a)) { pp_list_free(&a); return pp_undef(); }
+        if (a.n >= 2 && a.v[0].t == PP_REF && a.v[0].u.o->kind == PP_OCODE) {
+            pp_val p = a.v[1].t == PP_UNDEF ? pp_undef() : pp_str_val(pp_to_str(a.v[1]));
+            pp_tie_set(a.v[0].u.o, p);
+        }
+        pp_val r = a.n ? pp_copy(a.v[0]) : pp_undef();
+        pp_list_free(&a);
+        return ret(ctx, out, r);
     }
     case B_REF: {
         pp_val v = unary_arg(I, n);

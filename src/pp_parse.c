@@ -90,6 +90,7 @@ struct pp_parser {
     int stmt_line;                               /* line where the statement being parsed starts: the line its calls report (0: unknown) */
     int last_line;                               /* line of the token before the current one */
     int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
+    const char *proto_s; int proto_len; int has_proto;   /* text of the prototype just read (prototype() returns it) */
     int proto_mask;                              /* '$' positions of the prototype skip_prototype just read */
     unsigned char *declmask;                     /* per declared sub (decl[]): that mask */
     int argw;                                    /* the sub being parsed writes to $_[N] (or loops over @_) */
@@ -2158,15 +2159,27 @@ static void skip_attributes(pp_parser *P) {
     while (cur_is_op(P, ":")) {
         advance(P);
         while (P->cur.type == T_IDENT) {
+            int is_proto = P->cur.len == 9 && !memcmp(P->cur.s, "prototype", 9);
             advance(P);
             if (cur_is_op(P, "(") && !P->has_nxt) {
                 pp_lex *L = &P->L;
+                int start = L->pos;
                 while (L->pos < L->len && L->src[L->pos] != ')') L->pos++;
+                if (is_proto) { P->proto_s = L->src + start; P->proto_len = L->pos - start; P->has_proto = 1; }   /* sub f :prototype($$) */
                 advance(P);              /* the ')' */
                 advance(P);
             }
         }
     }
+}
+/* the prototype read for the sub being parsed, kept in its body (b of the block; the block has
+   no other use for it) for prototype(): its text */
+static void keep_prototype(pp_parser *P, pp_node *body) {
+    if (!P->has_proto) return;
+    P->has_proto = 0;
+    char buf[64]; int n = 0;
+    for (int i = 0; i < P->proto_len && n < 63; i++) buf[n++] = P->proto_s[i];   /* as written, blanks included: what perl returns */
+    body->b = const_str(P, buf, n);
 }
 static int skip_prototype(pp_parser *P) {
     P->proto_mask = 0;
@@ -2178,6 +2191,7 @@ static int skip_prototype(pp_parser *P) {
         if (L->src[i] != ' ' && L->src[i] != '\t') seen = 1;
         i++;
     }
+    if (i < L->len) { P->proto_s = L->src + L->pos; P->proto_len = i - L->pos; P->has_proto = 1; }   /* "()" is the empty prototype */
     if (i >= L->len || !seen) return 0;
     int first = L->pos;
     P->proto_mask = 0;
@@ -2691,13 +2705,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
             n->sym = pp_intern(P->I, an, al);
         }
         int save = P->in_sub, save_state = P->state_n, save_argw = P->argw;
-        P->in_sub = 1; P->state_n = 0; P->argw = 0;
+        P->in_sub = 1; P->state_n = 0; P->argw = 0; P->has_proto = 0;
         scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
         pp_node *b = node(P, N_BLOCK);
         scope_push(P, SCOPE_BLOCK);
         int nsig = 0;
         if (cur_is_op(P, "(")) { if (skip_prototype(P) == 2) n->op = 1; n->aux = (uint8_t)P->proto_mask; advance(P); nsig = parse_sub_params(P, b, "__ANON__", NULL); }
         skip_attributes(P);
+        keep_prototype(P, b);
         parse_block_stmts(P, b);
         if (b->n == nsig) node_add(b, node(P, N_NOP));   /* empty body: do not return the last binding */
         int nv = scope_pop(P);
@@ -2999,12 +3014,14 @@ static pp_node *parse_ident_term(pp_parser *P) {
         }
         if (kind == BK_UNARY) {
             int chomps = (len == 5 && !memcmp(id, "chomp", 5)) || (len == 4 && !memcmp(id, "chop", 4));
-            if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); if (chomps && n->n) note_argw(P, n->list[0]); return parse_postfix(P, n); }
+            int protofn = len == 9 && !memcmp(id, "prototype", 9);   /* a name given as a string is looked up in this package */
+            if (cur_is_op(P, "(")) { advance(P); if (!cur_is_op(P, ")")) node_add(n, parse_expr(P)); expect_op(P, ")"); if (chomps && n->n) note_argw(P, n->list[0]); if (protofn && n->n == 1) node_add(n, const_str(P, P->pkg, (int)strlen(P->pkg))); return parse_postfix(P, n); }
             /* a '<' is the start of an argument only as <STDIN> / <FH> (scalar <DATA>), else it is "less than" */
             int lt_read = 0;
             if (cur_is_op(P, "<")) { pp_tok *nx2 = peek(P); lt_read = nx2->type == T_IDENT && is_handle_name(nx2->s, nx2->len) && P->L.pos < P->L.len && P->L.src[P->L.pos] == '>'; }
             if (starts_term(P) && !(cur_is_op(P, "<") && !lt_read)) node_add(n, parse_binary(P, PREC_NAMED_UNARY));
             if (chomps && n->n) note_argw(P, n->list[0]);
+            if (protofn && n->n == 1) node_add(n, const_str(P, P->pkg, (int)strlen(P->pkg)));
             return n->n ? n : parse_postfix(P, n);   /* shift->[0], shift->method(...) */
         }
         parse_call_args(P, n);
@@ -3297,7 +3314,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             n->sym = sym_sigil(P, '&', P->cur.s, P->cur.len);
             advance(P);
             int save = P->in_sub, save_state = P->state_n, save_argw = P->argw;
-            P->in_sub = 1; P->state_n = 0; P->argw = 0;
+            P->in_sub = 1; P->state_n = 0; P->argw = 0; P->has_proto = 0;
             int first_rec = P->sc->nrecs;
             scope_push(P, SCOPE_SUB); scope_declare(P, P->I->sym_args);
             int sub_scope = scope_top(P)->id;
@@ -3312,6 +3329,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 if (proto == 2) { n->op = 1; noargs |= 4; }
             }
             skip_attributes(P);
+            keep_prototype(P, b);
             declare_sub(P, n->sym, noargs);
             for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == n->sym) P->declmask[i] = n->aux;
             if (cur_is_op(P, ";")) {             /* forward declaration; a signature here is discarded */

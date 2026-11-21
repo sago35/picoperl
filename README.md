@@ -601,6 +601,10 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 上書きしません (その中で書いた `close($fh)` は組み込みの close です)。上書きするのは、ほかのモジュールから取り込んだサブだけです
 (`use Time::HiRes qw(time)` など)。以前は自分で定義したサブも上書きしていました。
 
+**`prototype`**: `prototype(\&f)`、`prototype("name")` は、サブに書かれたプロトタイプの文字列を返します (無ければ undef)。
+`prototype("CORE::open")` のように組み込み関数の名前を渡すと、perl と同じプロトタイプを返します (`print` や `system` のように
+perl が持たないものは undef)。`Scalar::Util::set_prototype` で、コード参照ごとに付け替えられます。
+
 **`AUTOLOAD`**: パッケージに `sub AUTOLOAD` があると、そのパッケージの未定義のサブ・メソッドの呼び出しを受け取ります
 (`our $AUTOLOAD` に呼ばれた名前が入ります。メソッドは `@ISA` をたどって探します。`DESTROY` は渡しません)。
 `defined &name` や `can` は、perl と同じく AUTOLOAD があっても偽のままです。

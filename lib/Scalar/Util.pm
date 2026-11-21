@@ -27,7 +27,7 @@ sub tainted   { '' }
 sub isvstring { '' }
 sub isdual    { '' }
 sub openhandle    { defined $_[0] && ref $_[0] ? $_[0] : undef }
-sub set_prototype { $_[0] }
+sub set_prototype { __setproto($_[0], $_[1]) }
 sub dualvar { die "Scalar::Util::dualvar is not supported by picoperl\n" }
 
 1;
