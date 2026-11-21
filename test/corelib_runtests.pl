@@ -17,6 +17,7 @@
 # 最後に、合格数・スキップ数と、理由別・場所別の集計を出す。
 #
 # 合否は TAP として判定する (下の本体を参照)。1 テスト 10 秒で打ち切る。
+# picoperl の lib/ に代用品があるモジュールは、配布物に同梱の版ではなく代用品で実行する (下の説明を参照)。
 use strict; use warnings; use File::Find; use Cwd qw(getcwd);
 @ARGV == 3 or die "usage: cd PERL_SOURCE && perl $0 PICOPERL LIBDIR REPORT.tsv\n";
 my ($pico, $lib, $tsv) = @ARGV;
@@ -29,8 +30,24 @@ for my $m (sort keys %ok) {
     elsif (-f "lib/$rel.t") { $dist{"lib/$rel.t"}{$m} = 1 }
     else { $count{'モジュールにテストが見つからない'}++ }
 }
+# picoperl が lib/ に代用品を持つモジュール (List::Util、IO、Storable、MIME::Base64 ...) は、配布物に同梱の
+# XS 版が先に見つかると「XS が必要」で終わってしまう。実際の使われ方 (代用品が読み込まれる) に合わせるため、
+# その配布物のテストを実行するあいだだけ、同梱版のファイルを脇に退けておく (終われば元に戻す)。
+(my $ownlib = $0) =~ s{[^/]+$}{../lib};
+my @shims; find({ no_chdir => 1, wanted => sub { push @shims, substr($_, length($ownlib) + 1) if /\.pm$/ } }, $ownlib) if -d $ownlib;
+my @hidden;
+sub unhide { for my $f (@hidden) { rename "$f.pp_hidden", $f } @hidden = () }
+$SIG{$_} = sub { unhide(); exit 1 } for qw(INT TERM HUP);
+END { unhide() }
+find({ no_chdir => 1, wanted => sub { if (/^(.*)\.pp_hidden$/) { rename $_, $1 } } }, grep { -d } qw(cpan dist ext));   # 前回の中断の後始末
 my ($nt, $pass, $skip) = (0, 0, 0);
 for my $d (sort keys %dist) {
+    unhide();
+    if ($d !~ /\.t$/) {
+        for my $rel (@shims) {
+            for my $f ("$d/lib/$rel", "$d/$rel") { if (-f $f && rename $f, "$f.pp_hidden") { push @hidden, $f } }
+        }
+    }
     my @t = $d =~ /\.t$/ ? ($d) : do { my @x; find({ no_chdir => 1, wanted => sub { push @x, $_ if /\.t$/ } }, grep { -d } "$d/t"); sort @x };
     for my $t (@t) {
         my $dir = $d =~ /\.t$/ ? $root : "$root/$d";
@@ -55,6 +72,7 @@ for my $d (sort keys %dist) {
         print "WHY\t$d|$tt\t$first\t$loc\n"; $why{$first}++; $where{"$first\t$loc"}++ if $first =~ /^(syntax error|unexpected|Bareword|Global symbol|Can't modify|Undefined sub|Can't locate object)/;
     }
 }
+unhide();
 printf "配布物: %d、テストファイル: %d、成功: %d、スキップ: %d\n", scalar(keys %dist), $nt, $pass, $skip;
 printf "  %4d  %s\n", $why{$_}, substr($_, 0, 90) for grep { defined } (sort { $why{$b} <=> $why{$a} } keys %why)[0 .. 24];
 print "--- 場所別\n";
