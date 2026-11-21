@@ -2014,6 +2014,7 @@ static pp_val exec_stmts(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
         if (I->tie_pend) pp_tie_flush(I);
+        if (pp_destroy_on && I->lv_hold) hold(I, NULL);   /* the container of the last element assigned to: its DESTROY is not kept waiting */
         if (pp_destroy_n) pp_destroy_run(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(blk, I->ctl_label);
@@ -3751,6 +3752,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
         pp_val v = pp_eval(I, s, is_last ? ctx : CTX_VOID, is_last ? out : NULL);
         if (is_last) last = v; else pp_release(v);
         if (I->tie_pend) pp_tie_flush(I);
+        if (pp_destroy_on && I->lv_hold) hold(I, NULL);   /* the container of the last element assigned to: its DESTROY is not kept waiting */
         if (pp_destroy_n) pp_destroy_run(I);
         if (I->ctl == CTL_GOTO) {
             int j = find_label(unit, I->ctl_label);
