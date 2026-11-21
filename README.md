@@ -324,6 +324,9 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 実行されたときに定義されます。ブロックより前で呼ぶと `Undefined subroutine` になり、ループの中に
 書くと繰り返しのたびに定義し直されます (perl は最初の 1 回の変数を使い続けます)。
 
+**`FindBin`** の picoperl 版 (`lib/FindBin.pm`): `use FindBin qw($Bin $Script);` で、実行中のスクリプトがあるディレクトリ (絶対パス) と
+ファイル名が取れます。シンボリックリンクはたどらないので `$RealBin` は `$Bin` と同じです。
+
 **`Fcntl`** の picoperl 版 (`lib/Fcntl.pm`) は定数だけを返します (`O_RDONLY`、`LOCK_EX`、`SEEK_SET`、`S_IFMT`、`S_ISDIR($mode)` など。値は Linux のもの)。
 `seek` の `SEEK_*` は実際に使えますが、ロックやパーミッションの定数は番号として使えるだけです。
 
