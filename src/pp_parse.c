@@ -893,6 +893,10 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
         pp_release(I->err); I->err = pp_undef();
         I->ctl = CTL_NONE;
         P->err_has_loc = 1;
+        if (keeps_code_p(n)) {                    /* (as below: the statement itself is done with) */
+            I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
+            I->all_subdefs[I->nall_subdefs++] = n;
+        } else pp_free_ast(n);
         longjmp(P->jb, 1);
     }
     if (I->ctl == CTL_EXIT) {
