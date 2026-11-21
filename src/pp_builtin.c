@@ -1633,6 +1633,10 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             pp_val r = tied_handle_call(I, hv, "BINMODE", &args, CTX_SCALAR, NULL, &done);
             return I->ctl ? r : ret(ctx, out, r);
         }
+        if (n->op == B_BINMODE && args.n > 0) {          /* a handle that is not open: undef */
+            int fd; pp_obj *f = handle_of(I, args.v[0], &fd);
+            if (f ? !(f->u.file.fp || f->u.file.mem) : fd < 0) { pp_list_free(&args); return ret(ctx, out, pp_undef()); }
+        }
         if (n->op == B_BINMODE && args.n > 1 && !(I->compat_warn & 16)) {
             I->compat_warn |= 16;
             pp_warn(I, "picoperl: IO layers are ignored, files are bytes");
@@ -3398,6 +3402,20 @@ pp_val pp_st_thaw(pp_interp *I, pp_list *a, int ctx, pp_list *out);
 pp_val pp_st_lastnet(pp_interp *I, pp_list *a, int ctx, pp_list *out);
 pp_val pp_st_storing(pp_interp *I, pp_list *a, int ctx, pp_list *out);
 pp_val pp_st_retrieving(pp_interp *I, pp_list *a, int ctx, pp_list *out);
+/* warnings::enabled() / warnings::warnif(): `use warnings` is handled by the parser and warnings.pm
+   is not loaded. They go by the statement that calls them (perl: by the scope of the module's
+   caller), whatever the category; a loaded warnings.pm defines its own. */
+static pp_val n_warn_off(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_strn("", 0); }
+static pp_val n_warn_enabled(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)a; (void)ctx; (void)out; return I->warn_on ? pp_int(1) : pp_strn("", 0); }
+static pp_val n_warn_warnif(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (!I->warn_on || !a->n) return pp_undef();
+    pp_str *m = pp_to_str(a->v[a->n - 1]);
+    if (m->len && m->d[m->len - 1] == '\n') pp_emit_warning(I, m->d, m->len); else pp_warn(I, "%s", m->d);
+    pp_str_decref(m);
+    return pp_undef();
+}
+
 /* Natives that are made the first time a script names them (pp_resolve_sub asks here): a
    native registered up front costs RAM in every script, these cost none until they are used. */
 static const struct { const char *name; pp_native fn; } lazy_natives[] = {
@@ -3456,6 +3474,8 @@ static const struct { const char *name; pp_native fn; } lazy_natives[] = {
     {"version::numify", n_ver_numify}, {"version::normal", n_ver_normal}, {"version::stringify", n_ver_stringify},
     {"version::vcmp", n_ver_vcmp}, {"version::is_alpha", n_ver_is_alpha}, {"version::is_qv", n_ver_is_qv},
     {"version::is_strict", n_ver_is_strict}, {"version::is_lax", n_ver_is_lax}, {"version::_VERSION", n_ver_VERSION},
+    {"version::(abs", n_ver_noop},
+    {"warnings::enabled", n_warn_enabled}, {"warnings::warnif", n_warn_warnif}, {"warnings::fatal_enabled", n_warn_off},
     {"version::(\"\"", n_ver_stringify}, {"version::(0+", n_ver_numify}, {"version::(<=>", n_ver_vcmp}, {"version::(cmp", n_ver_vcmp},
     {"version::(bool", n_ver_bool}, {"version::(+", n_ver_noop}, {"version::(-", n_ver_noop}, {"version::(*", n_ver_noop}, {"version::(/", n_ver_noop},
     {"POSIX::strtol", n_px_strtol},

@@ -25,6 +25,7 @@
 
 static pp_obj *sig_handler(pp_interp *I, const char *name);
 static int class_isa(pp_interp *I, const char *cls, const char *want, int depth);
+static const char *univ_reftype(pp_obj *o);
 
 pp_val pp_die_val(pp_interp *I, pp_val msg) {
     /* takes ownership of msg */
@@ -3515,7 +3516,8 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
         if (code) code->refcnt++;
         else if (strcmp(mname, "isa") == 0) {
             pp_str *want = args.n > 1 ? pp_to_str(args.v[1]) : pp_str_new("", 0);
-            r = class_isa(I, cls, want->d, 0) ? pp_int(1) : pp_strn("", 0);
+            /* $obj->isa('ARRAY'): also true for what the object is made of */
+            r = class_isa(I, cls, want->d, 0) || (args.n && args.v[0].t == PP_REF && !strcmp(univ_reftype(args.v[0].u.o), want->d)) ? pp_int(1) : pp_strn("", 0);
             pp_str_decref(want);
             pp_list_free(&args); if (dyn) pp_str_decref(dyn);
             return scalar_or_push(ctx, out, r);
@@ -3939,7 +3941,7 @@ static pp_val n_univ_isa(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (a->v[0].t == PP_REF) {
         pp_obj *o = a->v[0].u.o;
         if (o->class && class_isa(I, o->class->name, want->d, 0)) yes = 1;
-        else yes = !strcmp(univ_reftype(o), want->d);
+        else yes = !strcmp(univ_reftype(o), want->d);    /* (a blessed array is still an 'ARRAY') */
     } else {
         pp_str *cls = pp_to_str(a->v[0]);
         yes = cls->len > 0 && class_isa(I, cls->d, want->d, 0);
