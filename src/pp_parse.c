@@ -1031,6 +1031,18 @@ static int is_block_proto(pp_parser *P, pp_sym *s) {
     pp_obj *c = pp_lookup_sub(P->I, s);
     return c && c->u.code.block_proto;
 }
+/* is the prototype just (&)? Then `name { ... }` is complete, and what follows the block
+   belongs to the surrounding list: like(dies { ... }, qr/x/, "name") */
+static int is_block_only_proto(pp_parser *P, pp_sym *s) {
+    for (int i = 0; i < P->ndecl; i++) if (P->decl[i] == s) return (P->declnoargs[i] & 8) != 0;
+    pp_obj *c = pp_lookup_sub(P->I, s);
+    if (!c || !c->u.code.body || !c->u.code.body->b || c->u.code.body->b->type != N_CONST || c->u.code.body->b->val.t != PP_STR) return 0;
+    const char *p = c->u.code.body->b->val.u.s->d;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p++ != '&') return 0;
+    while (*p == ' ' || *p == '\t') p++;
+    return !*p;
+}
 /* A '$' in a prototype gives its argument scalar context: is(grep(...), 1) compares a count,
    ok($s =~ /re/, $name) passes one value even when the match fails. Arguments that are one
    value anyway are left alone. */
@@ -3050,7 +3062,9 @@ static pp_node *parse_ident_term(pp_parser *P) {
            Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
         P->nxt = P->cur; P->has_nxt = 1;
         P->cur.type = T_IDENT; P->cur.s = "sub"; P->cur.len = 3;
+        int only = is_block_only_proto(P, s);
         node_add(n, parse_ident_term(P));
+        if (only) return n;
         accept_op(P, ",");
         if (starts_term(P)) take_children(n, parse_comma_list(P));
         return n;
@@ -3328,7 +3342,12 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 n->aux = (uint8_t)P->proto_mask;
                 advance(P); nsig = parse_sub_params(P, b, n->sym->name + 1, &noargs);
                 if (proto) noargs = 0;   /* a non-empty prototype takes arguments */
-                if (proto == 2) { n->op = 1; noargs |= 4; }
+                if (proto == 2) {
+                    n->op = 1; noargs |= 4;
+                    int only = 1;                    /* (&): the block is the only argument */
+                    for (int i = 0; i < P->proto_len; i++) if (!strchr("& \t", P->proto_s[i])) only = 0;
+                    if (only) noargs |= 8;
+                }
             }
             skip_attributes(P);
             keep_prototype(P, b);

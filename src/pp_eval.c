@@ -194,6 +194,7 @@ pp_obj *pp_lookup_sub(pp_interp *I, pp_sym *sym) { return pp_resolve_sub(I, sym)
    "Pkg::x" or "*main::x" (a stringified glob). Unqualified names belong to `pkg` (NULL = main). */
 static pp_sym *named_sym(pp_interp *I, char sigil, const char *pkg, const char *name) {
     if (*name == '*') name++;
+    if (!strcmp(name, "main::") || !strcmp(name, "::")) return pp_intern(I, sigil == '%' ? "%main::" : sigil == '*' ? "*main::" : "$main::", 7);   /* main's name table itself */
     if (!strncmp(name, "main::", 6)) { name += 6; pkg = NULL; }   /* explicitly main: do not re-qualify */
     else if (!strncmp(name, "::", 2)) { name += 2; pkg = NULL; }
     char buf[256]; int n;
