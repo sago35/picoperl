@@ -324,6 +324,9 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 実行されたときに定義されます。ブロックより前で呼ぶと `Undefined subroutine` になり、ループの中に
 書くと繰り返しのたびに定義し直されます (perl は最初の 1 回の変数を使い続けます)。
 
+**`Fcntl`** の picoperl 版 (`lib/Fcntl.pm`) は定数だけを返します (`O_RDONLY`、`LOCK_EX`、`SEEK_SET`、`S_IFMT`、`S_ISDIR($mode)` など。値は Linux のもの)。
+`seek` の `SEEK_*` は実際に使えますが、ロックやパーミッションの定数は番号として使えるだけです。
+
 **`List::Util`**、**`Scalar::Util`**、**`mro`** の picoperl 版を `lib/` に同梱しています (本家は XS なので
 読み込めないため)。`lib/` は perl 本体のライブラリより先に探すので、`use List::Util qw(sum max first);` と
 書けばこちらが使われます。
