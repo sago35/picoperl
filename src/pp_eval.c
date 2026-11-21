@@ -2093,7 +2093,14 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                 I->env = saved;                      /* the list was written in the enclosing scope */
                 int stored = list_writeback(I, NULL, direct ? &n->b : n->b->list, direct ? 1 : n->b->n, wb);
                 I->env = loop_env;
-                if (!stored && !(I->compat_warn & 4) && !I->ctl) {
+                /* nothing to write back when the list holds no variables (split(...), a call):
+                   the loop then changes a temporary, as in perl */
+                int has_var = 0;
+                for (int q = 0; q < (direct ? 1 : n->b->n) && !has_var; q++) {
+                    pp_node *e = direct ? n->b : n->b->list[q];
+                    has_var = e->type == N_VAR || e->type == N_AELEM || e->type == N_HELEM || e->type == N_RV2AV || e->type == N_RV2HV || e->type == N_RV2SV || e->type == N_MY;
+                }
+                if (!stored && has_var && !(I->compat_warn & 4) && !I->ctl) {
                     I->compat_warn |= 4;
                     pp_warn(I, "picoperl: modifying the foreach variable only changes the source when iterating variables");
                 }
