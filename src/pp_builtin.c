@@ -2518,6 +2518,183 @@ static pp_val n_times(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_num(up);
 }
 
+/* ---------------- MIME::Base64 / MIME::QuotedPrint ----------------
+   The functions the XS part of MIME::Base64 provides, written after its algorithms so that
+   line breaks and the odd cases come out the same. lib/MIME/Base64.pm and QuotedPrint.pm
+   only export them. */
+static const char b64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/* the optional EOL argument (argument `at`): "\n" when left out or undef */
+static pp_str *mime_eol(pp_list *a, int at) {
+    if (a->n > at && a->v[at].t != PP_UNDEF) return pp_to_str(a->v[at]);
+    return pp_str_new("\n", 1);
+}
+static pp_val n_b64_encode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *eol = mime_eol(a, 1);
+    pp_str *r = pp_str_new(NULL, 0);
+    const unsigned char *p = (const unsigned char *)s->d;
+    int len = s->len, chunk = 0;
+    for (; len > 0; len -= 3, chunk++) {
+        if (chunk == 19) { str_append(&r, eol->d, eol->len); chunk = 0; }       /* 76 characters a line */
+        unsigned c1 = *p++, c2 = len > 1 ? *p++ : 0, c3 = len > 2 ? *p++ : 0;
+        char q[4] = { b64_chars[c1 >> 2], b64_chars[((c1 & 3) << 4) | (c2 >> 4)],
+                      len > 1 ? b64_chars[((c2 & 15) << 2) | (c3 >> 6)] : '=', len > 2 ? b64_chars[c3 & 63] : '=' };
+        str_append(&r, q, 4);
+    }
+    if (r->len) str_append(&r, eol->d, eol->len);
+    pp_str_decref(s); pp_str_decref(eol);
+    return pp_str_val(r);
+}
+/* 0..63 for a character of the alphabet, 64 for '=', -1 for anything else (skipped) */
+static int b64_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    return c == '+' ? 62 : c == '/' ? 63 : c == '=' ? 64 : -1;
+}
+static pp_val n_b64_decode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *r = pp_str_new(NULL, 0);
+    const unsigned char *p = (const unsigned char *)s->d, *end = p + s->len;
+    while (p < end) {
+        int c[4], i = 0, stop = 0;
+        do {
+            int v = b64_value(*p++);
+            if (v >= 0) c[i++] = v;
+            if (p == end) {
+                if (i < 4) { if (i < 2) { stop = 1; break; } if (i == 2) c[2] = 64; c[3] = 64; }
+                break;
+            }
+        } while (i < 4);
+        if (stop || c[0] == 64 || c[1] == 64) break;
+        char o = (char)((c[0] << 2) | ((c[1] & 0x30) >> 4)); str_append(&r, &o, 1);
+        if (c[2] == 64) break;
+        o = (char)(((c[1] & 0x0F) << 4) | ((c[2] & 0x3C) >> 2)); str_append(&r, &o, 1);
+        if (c[3] == 64) break;
+        o = (char)(((c[2] & 0x03) << 6) | c[3]); str_append(&r, &o, 1);
+    }
+    pp_str_decref(s);
+    return pp_str_val(r);
+}
+static pp_val n_b64_enclen(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *eol = mime_eol(a, 1);
+    int64_t len = ((int64_t)s->len + 2) / 3 * 4;
+    if (len) len += ((len - 1) / 76 + 1) * eol->len;
+    pp_str_decref(s); pp_str_decref(eol);
+    return pp_int(len);
+}
+static pp_val n_b64_declen(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    pp_val d = n_b64_decode(I, a, ctx, out);
+    int64_t n = d.u.s->len;
+    pp_release(d);
+    return pp_int(n);
+}
+/* encode_base64url / decode_base64url: - and _ for + and /, no padding, no line breaks */
+static pp_val n_b64url_encode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    pp_list b = {0};
+    pp_list_push(&b, a->n ? pp_copy(a->v[0]) : pp_undef());
+    pp_list_push(&b, pp_strn("", 0));
+    pp_val e = n_b64_encode(I, &b, ctx, out);
+    pp_list_free(&b);
+    pp_str *r = pp_str_new(e.u.s->d, e.u.s->len);
+    pp_release(e);
+    while (r->len && r->d[r->len - 1] == '=') r->d[--r->len] = 0;
+    for (int i = 0; i < r->len; i++) r->d[i] = r->d[i] == '+' ? '-' : r->d[i] == '/' ? '_' : r->d[i];
+    return pp_str_val(r);
+}
+static pp_val n_b64url_decode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *t = pp_str_new(s->d, s->len);
+    pp_str_decref(s);
+    for (int i = 0; i < t->len; i++) t->d[i] = t->d[i] == '-' ? '+' : t->d[i] == '_' ? '/' : t->d[i];
+    while (t->len % 4) str_append(&t, "=", 1);
+    pp_list b = {0};
+    pp_list_push(&b, pp_str_val(t));
+    pp_val r = n_b64_decode(I, &b, ctx, out);
+    pp_list_free(&b);
+    return r;
+}
+static int qp_plain(unsigned char c) { return c == '\t' || (c >= ' ' && c <= '~' && c != '='); }
+/* encode_qp(STR, EOL = "\n", BINMODE = 0) */
+static pp_val n_qp_encode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *eol = mime_eol(a, 1);
+    int binary = a->n > 2 && pp_truth(a->v[2]);
+    pp_str *r = pp_str_new(NULL, 0);
+    const char *p = s->d, *end = s->d + s->len;
+    int linelen = 0;
+    for (;;) {
+        const char *beg = p;
+        while (p < end && qp_plain((unsigned char)*p)) p++;
+        if (p == end || *p == '\n') while (p > beg && (p[-1] == '\t' || p[-1] == ' ')) p--;   /* white space at the end of a line is encoded */
+        int n = (int)(p - beg);
+        if (n) {
+            if (eol->len) {
+                while (n > 76 - 1 - linelen) {
+                    int k = 76 - 1 - linelen;
+                    str_append(&r, beg, k); beg += k; n -= k;
+                    str_append(&r, "=", 1); str_append(&r, eol->d, eol->len);
+                    linelen = 0;
+                }
+            }
+            if (n) { str_append(&r, beg, n); linelen += n; }
+        }
+        if (p == end) break;
+        if (*p == '\n' && eol->len && !binary) {
+            if (linelen == 1 && r->len > eol->len + 1 && r->d[r->len - eol->len - 2] == '=') {
+                r->d[r->len - eol->len - 2] = r->d[r->len - 1];      /* a soft line break that was not needed */
+                r->len--; r->d[r->len] = 0;
+            } else str_append(&r, eol->d, eol->len);
+            p++; linelen = 0;
+        } else {
+            if (eol->len && linelen > 76 - 4 && !(linelen == 76 - 3 && p + 1 < end && p[1] == '\n' && !binary)) {
+                str_append(&r, "=", 1); str_append(&r, eol->d, eol->len);
+                linelen = 0;
+            }
+            char q[4]; pp_snprintf(q, sizeof q, "=%02X", (unsigned char)*p);
+            str_append(&r, q, 3);
+            p++; linelen += 3;
+        }
+    }
+    if (r->len && eol->len && linelen) { str_append(&r, "=", 1); str_append(&r, eol->d, eol->len); }
+    pp_str_decref(s); pp_str_decref(eol);
+    return pp_str_val(r);
+}
+static pp_val n_qp_decode(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    pp_str *r = pp_str_new(NULL, 0);
+    const char *p = s->d, *end = s->d + s->len, *ws = NULL;
+    while (p < end) {
+        if (*p == ' ' || *p == '\t') { if (!ws) ws = p; p++; }       /* kept unless the line ends here */
+        else if (*p == '\r' && p + 1 < end && p[1] == '\n') p++;
+        else if (*p == '\n') { ws = NULL; str_append(&r, p++, 1); }
+        else {
+            if (ws) { str_append(&r, ws, (int)(p - ws)); ws = NULL; }
+            if (*p == '=') {
+                if (p + 2 < end && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+                    char h[3] = { p[1], p[2], 0 }, c = (char)strtol(h, NULL, 16);
+                    str_append(&r, &c, 1); p += 3;
+                } else {                                               /* a soft line break? */
+                    const char *q = p + 1;
+                    while (q < end && (*q == ' ' || *q == '\t')) q++;
+                    if (q < end && *q == '\n') p = q + 1;
+                    else if (q + 1 < end && *q == '\r' && q[1] == '\n') p = q + 2;
+                    else str_append(&r, p++, 1);
+                }
+            } else str_append(&r, p++, 1);
+        }
+    }
+    if (ws) str_append(&r, ws, (int)(p - ws));
+    pp_str_decref(s);
+    return pp_str_val(r);
+}
+
 /* syswrite(FH, SCALAR, LEN, OFFSET): LEN bytes of SCALAR from OFFSET (all of it without LEN);
    the number of bytes written, undef when it fails. There is no unbuffered writing here: it
    goes the way print does. */
@@ -2600,6 +2777,14 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "umask", n_umask);
     pp_register(I, "__read", n_read);
     pp_register(I, "syswrite", n_syswrite);
+    pp_register(I, "MIME::Base64::encode_base64", n_b64_encode);
+    pp_register(I, "MIME::Base64::decode_base64", n_b64_decode);
+    pp_register(I, "MIME::Base64::encode_base64url", n_b64url_encode);
+    pp_register(I, "MIME::Base64::decode_base64url", n_b64url_decode);
+    pp_register(I, "MIME::Base64::encoded_base64_length", n_b64_enclen);
+    pp_register(I, "MIME::Base64::decoded_base64_length", n_b64_declen);
+    pp_register(I, "MIME::QuotedPrint::encode_qp", n_qp_encode);
+    pp_register(I, "MIME::QuotedPrint::decode_qp", n_qp_decode);
     pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);
     pp_register(I, "__lastidx_set", n_lastidx_set);

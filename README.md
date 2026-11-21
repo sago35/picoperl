@@ -386,6 +386,10 @@ perl との違い: `use Fcntl qw(:seek)` のようにタグを指定しても、
   呼んだパッケージの外で最初の呼び出し元の位置を付けます。`confess` などの呼び出し履歴に引数は出ません
   (`main::f() called at ...`)。`@CARP_NOT` は見ません
 
+- `MIME::Base64`: `encode_base64` `decode_base64` (76 文字ごとに改行。`encode_base64($bytes, "")` で改行なし)、
+  `encode_base64url` `decode_base64url`、`encoded_base64_length` `decoded_base64_length`。
+  `MIME::QuotedPrint`: `encode_qp` `decode_qp`。どれも C で実装してあり、perl 本体 (XS 版) と同じ結果になります
+  (255 を超える文字を渡したときのエラーだけありません。picoperl の文字列はバイト列です)。
 - `Cwd`: `cwd` `getcwd` `abs_path` `realpath`。ホスト版では OS に問い合わせます (シンボリックリンクも解決)。
   ボードにはカレントディレクトリが無いので `cwd` は常に `/` で、`abs_path` は `.` と `..` を畳むだけです。
   `use Cwd 'chdir'` の `chdir` は組み込みの `chdir` を呼んで `$ENV{PWD}` を合わせます (ボードでは常に失敗)
