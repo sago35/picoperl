@@ -340,6 +340,10 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 最初と最後の文の行番号 (`->START` から `->line` / `->next`) が取れます。`B::perlstring` / `B::cstring` もあります。
 Test2 や autodie がサブの素性を知るのに使う範囲で、構文木をたどる機能はありません。
 
+**`Storable`** の picoperl 版 (`lib/Storable.pm`): `dclone` (データ構造の深いコピー) だけを用意しています。ハッシュ・配列・スカラーへの
+参照をたどって複製し、bless されたものは同じクラスになります。同じものを 2 か所から指す構造や循環参照も、複製の中で同じ形になります。
+ファイルやバイト列への保存 (`store` / `retrieve` / `freeze` / `thaw`) は未対応で、呼ぶとその旨のエラーになります。
+
 **`Errno`** の picoperl 版 (`lib/Errno.pm`): エラー番号の定数 (`ENOENT`、`EEXIST` など約 130 個、Linux の値) と `%!` です。
 `use Errno qw(ENOENT);` のあと `$! == ENOENT`、`use Errno;` のあと `$!{ENOENT}` と書けます。Fcntl と同じく、定数は使われたものだけ作られます。
 perl との違い: `%!` は `use Errno` (または `require Errno`) したあとでだけ使えます (perl は `%!` を書くと自動で読み込みます)。
