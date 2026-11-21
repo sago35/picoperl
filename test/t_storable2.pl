@@ -18,7 +18,7 @@ for my $f (\&freeze, \&nfreeze) { print "back $_: ", show(thaw($f->($c[$_]))), "
 my $t = thaw(freeze([$o, $o])); print "shared kept: ", ($t->[0] == $t->[1] ? 1 : 0), " ", ref($t->[0]), "\n";
 my $t2 = thaw(nfreeze($cyc)); print "cycle kept: ", ($t2->[1] == $t2 ? 1 : 0), "\n";
 my $x = 5; my $t3 = thaw(freeze([\$x, \$x])); ${$t3->[0]}++; print "shared scalar: ${$t3->[1]}\n";
-my $file = ($ENV{TMPDIR} || "/tmp") . "/pp_st_$$.bin";
+my $file = "test/io_tmp_storable2.bin";
 store($c[1], $file); print "store/retrieve: ", show(retrieve($file)), "\n";
 nstore($c[3], $file); print "nstore/retrieve: ", show(retrieve($file)), "\n"; unlink $file;
 print "bad: ", (eval { freeze([sub { 1 }]); 1 } ? "ok" : $@ =~ /Can't store CODE items/ ? "CODE refused" : $@), "\n";
