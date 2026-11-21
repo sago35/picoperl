@@ -234,3 +234,12 @@ my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos(
           = ( [si] )   # type
         $;x) { print "multi: $1 $2\n" }
 }
+
+# /m の ^ は、文字列の最後の改行の後ろには一致しない
+{
+    my @t = ("a\n", "a\nb\n", "a\n\n", "", "\n", "a");
+    for my $s (@t) { (my $c = $s) =~ s/^/> /mg; (my $v = $c) =~ s/\n/\\n/g; my $n = () = $s =~ /^/mg; print "[$v] $n\n" }
+    my @l = split /^/m, "x\ny\n"; print scalar(@l), "\n";
+    my $e = "a\nb\n"; my $cnt = () = $e =~ /$/mg; (my $d = $e) =~ s/$/!/mg; $d =~ s/\n/\\n/g; print "$cnt [$d]\n";
+    print "end: ", ("a\n" =~ /a\n^/m ? "match" : "no"), " ", ("a\nb" =~ /a\n^b/m ? "match" : "no"), "\n";
+}

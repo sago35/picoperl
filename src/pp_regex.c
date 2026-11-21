@@ -702,7 +702,7 @@ RE_FN static int run(const pp_regex *re, const unsigned char *s, int len, int pc
             case I_ANYNL: if (sp < len) { sp++; pc += 2; } else fail = 1; break;
             case I_CLASS: if (sp < len && class_has(re->classes + prog[pc + 1] * 32, s[sp])) { sp++; pc += 2; } else fail = 1; break;
             case I_BOL:   if (sp == 0) pc += 2; else fail = 1; break;
-            case I_MBOL:  if (sp == 0 || s[sp - 1] == '\n') pc += 2; else fail = 1; break;
+            case I_MBOL:  if (sp == 0 || (s[sp - 1] == '\n' && sp < len)) pc += 2; else fail = 1; break;   /* not after the newline that ends the string */
             case I_EOL:   if (sp == len || (sp == len - 1 && s[sp] == '\n')) pc += 2; else fail = 1; break;
             case I_MEOL:  if (sp == len || s[sp] == '\n') pc += 2; else fail = 1; break;
             case I_BOS:   if (sp == 0) pc += 2; else fail = 1; break;
