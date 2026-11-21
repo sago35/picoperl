@@ -368,9 +368,16 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 最初と最後の文の行番号 (`->START` から `->line` / `->next`) が取れます。`B::perlstring` / `B::cstring` もあります。
 Test2 や autodie がサブの素性を知るのに使う範囲で、構文木をたどる機能はありません。
 
-**`Storable`** の picoperl 版 (`lib/Storable.pm`): `dclone` (データ構造の深いコピー) だけを用意しています。ハッシュ・配列・スカラーへの
-参照をたどって複製し、bless されたものは同じクラスになります。同じものを 2 か所から指す構造や循環参照も、複製の中で同じ形になります。
-ファイルやバイト列への保存 (`store` / `retrieve` / `freeze` / `thaw`) は未対応で、呼ぶとその旨のエラーになります。
+**`Storable`** の picoperl 版 (`lib/Storable.pm`): データ構造をファイルやバイト列に保存して読み戻せます
+(`store` / `nstore` / `retrieve`、`freeze` / `nfreeze` / `thaw`、`store_fd` / `nstore_fd` / `fd_retrieve`、`dclone`)。
+バイト列は本物の Storable と同じ形式なので、PC の perl で作ったファイルをボードで読めますし、その逆もできます
+(PC 側は 64 ビットのリトルエンディアンの perl、または `nstore` / `nfreeze` で作ったもの)。
+ハッシュ・配列・スカラーへの参照、bless されたもの、同じものを 2 か所から指す構造や循環参照を扱えます。
+途中で切れたデータは `undef`、壊れたデータはエラーになります。
+本家との違い: `STORABLE_freeze` / `STORABLE_thaw` などのフックは呼びません (フックを使って保存されたデータは読めません)。
+コード、ファイルハンドル、正規表現、tie された変数は保存できません (`dclone` は正規表現を複製せず共有します)。
+ハッシュや配列の要素への参照 (`\$h{a}`) は、要素そのものとは別のスカラーとして保存されます。真偽値 (`!!1`) は 1 と空文字列になります。
+`lock_store` などはロックせずに読み書きします。
 
 **`Errno`** の picoperl 版 (`lib/Errno.pm`): エラー番号の定数 (`ENOENT`、`EEXIST` など約 130 個、Linux の値) と `%!` です。
 `use Errno qw(ENOENT);` のあと `$! == ENOENT`、`use Errno;` のあと `$!{ENOENT}` と書けます。Fcntl と同じく、定数は使われたものだけ作られます。
