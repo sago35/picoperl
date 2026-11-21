@@ -1804,6 +1804,7 @@ static pp_node *parse_assign(pp_parser *P) {
         c->sym = is_pos ? pp_intern(P->I, "&__pos_set", 10) : pp_intern(P->I, "&__lastidx_set", 14);
         pp_node *r = node(P, N_REF);
         r->a = !is_pos ? lhs->a : lhs->n ? lhs->list[0] : mkvar(P, '$', "_", 1);
+        if (is_pos && lhs->n) drop_shell(lhs);        /* the pos(...) node itself is not used */
         node_add(c, r);
         node_add(c, parse_assign(P));
         return c;
