@@ -614,6 +614,44 @@ static void check_irs(pp_interp *I) {
 }
 
 static int umask_value = 022;       /* what umask() remembers; applied to the PERMS of sysopen */
+/* <> : a line from the files named in @ARGV, one after the other ($ARGV is the current one),
+   or from STDIN when @ARGV was empty to begin with. undef after the last file; the next <>
+   starts over. */
+static pp_val argv_line(pp_interp *I) {
+    pp_obj *glob = pp_glob_obj(I, pp_glob_named(I, "ARGV"));
+    pp_obj *st = pp_global(I, pp_intern(I, "$ ARGVSTATE", 11));   /* 0: not started, 1: files, 2: STDIN */
+    pp_obj *args = pp_global(I, pp_intern(I, "@ARGV", 5));
+    for (;;) {
+        int state = st->u.scalar.t == PP_INT ? (int)st->u.scalar.u.i : 0;
+        if (state == 2) {
+            check_irs(I);
+            pp_val l = read_stdin_line(I);
+            if (l.t == PP_UNDEF) st->u.scalar = pp_int(0);
+            return l;
+        }
+        if (glob->u.glob.io) {
+            pp_obj *f = glob->u.glob.io;
+            pp_val l = f->u.file.fp || f->u.file.mem ? read_fline(I, f) : pp_undef();
+            if (l.t != PP_UNDEF) { set_line_no(I, f, f->u.file.lines); return l; }
+            glob->u.glob.io = NULL;
+            pp_obj_decref(f);
+        }
+        if (args->kind != PP_OARRAY || args->u.arr.n == 0) {
+            if (state == 0) { st->u.scalar = pp_int(2); continue; }
+            st->u.scalar = pp_int(0);
+            return pp_undef();
+        }
+        st->u.scalar = pp_int(1);
+        pp_val name = pp_array_shift(args);
+        pp_str *ns = pp_to_str(name); pp_release(name);
+        pp_obj *cur = pp_global(I, pp_intern(I, "$ARGV", 5));
+        pp_release(cur->u.scalar); ns->refcnt++; cur->u.scalar = pp_str_val(ns);
+        void *fp = pp_host_fopen(ns->d, "r");
+        if (!fp) pp_warn(I, "Can't open %s: %s", ns->d, pp_host_io_error());
+        else { pp_obj *o = pp_obj_new(PP_OFILE); o->u.file.fp = fp; glob->u.glob.io = o; }
+        pp_str_decref(ns);
+    }
+}
 static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     int new_perms = -1;                 /* sysopen creating a file: the permissions to give it */
     if (n->n < 2) return pp_die(I, "Not enough arguments for open");
@@ -1479,7 +1517,15 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         return ret(ctx, out, pp_int(prev));
     }
     case B_READLINE: {
-        if (n->n == 0) { check_irs(I); return ret(ctx, out, read_stdin_line(I)); }   /* <STDIN> */
+        if (n->n == 0 || (n->flags & 4)) {           /* <STDIN>, <> */
+            int argv = n->n != 0;
+            if (!argv) check_irs(I);
+            if (ctx == CTX_LIST && out) {
+                for (;;) { pp_val l = argv ? argv_line(I) : read_stdin_line(I); if (l.t == PP_UNDEF || I->ctl) { pp_release(l); break; } pp_list_push(out, l); }
+                return pp_undef();
+            }
+            return ret(ctx, out, argv ? argv_line(I) : read_stdin_line(I));
+        }
         pp_val hv = pp_eval(I, n->list[0], CTX_SCALAR, NULL);
         if (I->ctl) { pp_release(hv); return pp_undef(); }
         { int done; pp_val r = tied_handle_call(I, hv, "READLINE", NULL, ctx == CTX_LIST && out ? CTX_LIST : CTX_SCALAR, out, &done);

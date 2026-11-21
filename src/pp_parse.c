@@ -243,6 +243,7 @@ static int is_special_var(char sigil, const char *name, int len) {
     if (sigil == '$' && ((len == 6 && !memcmp(name, "STDOUT", 6)) || (len == 6 && !memcmp(name, "STDERR", 6)) || (len == 5 && !memcmp(name, "STDIN", 5)))) return 1;
     if (sigil == '$' && len > 0 && name[0] >= '1' && name[0] <= '9') return 1;
     if (sigil == '@' && ((len == 4 && !memcmp(name, "ARGV", 4)) || (len == 3 && !memcmp(name, "INC", 3)))) return 1;
+    if (sigil == '$' && len == 4 && !memcmp(name, "ARGV", 4)) return 1;              /* the file <> is reading */
     if (sigil == '%' && ((len == 3 && !memcmp(name, "ENV", 3)) || (len == 3 && !memcmp(name, "INC", 3)))) return 1;
     for (int i = 0; i + 1 < len; i++) if (name[i] == ':' && name[i+1] == ':') return 1;   /* qualified */
     return 0;
@@ -658,7 +659,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
         lex_heredoc(P, t);
         term = 1;
     }
-    else if (c == '<' && !L->prev_term && peekc(L, 1) == '$' && is_ident_start(peekc(L, 2)) && lex_try_readline(L, t)) { term = 1; }
+    else if (c == '<' && (!L->prev_term || L->prev_brace) && peekc(L, 1) == '$' && is_ident_start(peekc(L, 2)) && lex_try_readline(L, t)) { term = 1; }   /* (after a block too: grep { ... } <$fh>, print {$out} <$in>) */
     else if (c == '$') {
         int c1 = peekc(L, 1);
         if (c1 == '#') {
@@ -2622,6 +2623,25 @@ static pp_node *parse_term(pp_parser *P) {
                 pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL);
                 node_add(n, handle_const(P, P->cur.s, P->cur.len));
                 advance(P); expect_op(P, ">");
+                return n;
+            }
+            if (P->cur.type == T_IDENT && has_pkg_sep(P->cur.s, P->cur.len) && is_op(peek(P), ">")) {   /* <Pkg::FH>, <main::DATA> */
+                const char *id = P->cur.s; int len = P->cur.len, last = len;
+                while (last > 0 && id[last - 1] != ':') last--;
+                if (is_handle_name(id + last, len - last)) {
+                    char buf[264];
+                    int bn = pp_snprintf(buf, sizeof buf, "*%.*s", len, id);
+                    pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL);
+                    node_add(n, const_str(P, buf, bn));
+                    advance(P); expect_op(P, ">");
+                    return n;
+                }
+            }
+            if (cur_is_op(P, ">")) {                    /* <> : the files named in @ARGV, or STDIN */
+                advance(P);
+                pp_node *n = node(P, N_BUILTIN); n->op = (uint8_t)pp_builtin_id("readline", 8, NULL);
+                node_add(n, const_str(P, "*main::ARGV", 11));
+                n->flags |= 4;
                 return n;
             }
             perr(P, "syntax error near '<'");
