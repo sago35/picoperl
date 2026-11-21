@@ -1,68 +1,22 @@
 package Fcntl;
-# Fcntl の picoperl 版: 定数だけを返す (本物は XS)。値は Linux のもの。
+# Fcntl の picoperl 版 (本物は XS)。定数の値は Linux のもの。
+#
+# 定数 (O_RDONLY、LOCK_EX、SEEK_SET、S_IFMT など約 100 個) はインタプリタが表を持っていて、
+# 使われたときに初めて作られる。ここでは名前の先頭だけを書いて (F* O_* ...) 取り込む側に知らせる。
+# `use Fcntl;` でも `use Fcntl qw(:seek)` でも、RAM を使うのは実際に書いた定数の分だけです。
 # ボードのファイルシステムにはロックもパーミッションも無いので、番号として使えるだけです
 # (seek の SEEK_SET / SEEK_CUR / SEEK_END は実際に効きます)。
 use strict;
 our $VERSION = "1.20";
-use constant {
-    FD_CLOEXEC => 1, F_DUPFD => 0, F_EXLCK => 4, F_GETFD => 1, F_GETFL => 3, F_GETLK => 5,
-    F_GETLK64 => 5, F_GETOWN => 9, F_RDLCK => 0, F_SETFD => 2, F_SETFL => 4, F_SETLK => 6,
-    F_SETLK64 => 6, F_SETLKW => 7, F_SETLKW64 => 7, F_SETOWN => 8, F_SHLCK => 8, F_UNLCK => 2,
-    F_WRLCK => 1, O_ACCMODE => 3, O_APPEND => 1024, O_ASYNC => 8192, O_BINARY => 0, O_CREAT => 64,
-    O_DIRECT => 16384, O_DIRECTORY => 65536, O_DSYNC => 4096, O_EXCL => 128, O_LARGEFILE => 0,
-    O_NDELAY => 2048, O_NOCTTY => 256, O_NOFOLLOW => 131072, O_NONBLOCK => 2048, O_RDONLY => 0,
-    O_RDWR => 2, O_RSYNC => 1052672, O_SYNC => 1052672, O_TEXT => 0, O_TRUNC => 512, O_WRONLY => 1,
-    DN_ACCESS => 1, DN_ATTRIB => 32, DN_CREATE => 4, DN_DELETE => 8, DN_MODIFY => 2,
-    DN_MULTISHOT => 2147483648, DN_RENAME => 16, F_ADD_SEALS => 1033, F_GETLEASE => 1025,
-    F_GETPIPE_SZ => 1032, F_GET_SEALS => 1034, F_GETSIG => 11, F_NOTIFY => 1026,
-    F_SEAL_FUTURE_WRITE => 16, F_SEAL_GROW => 4, F_SEAL_SEAL => 1, F_SEAL_SHRINK => 2,
-    F_SEAL_WRITE => 8, F_SETLEASE => 1024, F_SETPIPE_SZ => 1031, F_SETSIG => 10, LOCK_MAND => 32,
-    LOCK_READ => 64, LOCK_RW => 192, LOCK_WRITE => 128, O_NOATIME => 262144, O_TMPFILE => 4259840,
-    FAPPEND => 1024, FASYNC => 8192, FNDELAY => 2048, FNONBLOCK => 2048, S_ISUID => 2048,
-    S_ISGID => 1024, S_ISVTX => 512, _S_IFMT => 61440, S_IFREG => 32768, S_IFDIR => 16384,
-    S_IFLNK => 40960, S_IFSOCK => 49152, S_IFBLK => 24576, S_IFCHR => 8192, S_IFIFO => 4096,
-    S_IRUSR => 256, S_IWUSR => 128, S_IXUSR => 64, S_IRWXU => 448, S_IRGRP => 32, S_IWGRP => 16,
-    S_IXGRP => 8, S_IRWXG => 56, S_IROTH => 4, S_IWOTH => 2, S_IXOTH => 1, S_IRWXO => 7,
-    S_IREAD => 256, S_IWRITE => 128, S_IEXEC => 64, LOCK_SH => 1, LOCK_EX => 2, LOCK_NB => 4,
-    LOCK_UN => 8, SEEK_SET => 0, SEEK_CUR => 1, SEEK_END => 2,
-};
-# S_IFMT は引数なしならマスク、引数ありなら種類のビットを返す
-sub S_IFMT { @_ ? $_[0] & 0170000 : 0170000 }
+our @EXPORT    = qw(F* O_*);                        # FD_CLOEXEC, F_GETFL ..., O_RDONLY ...
+our @EXPORT_OK = qw(DN_* LOCK_* SEEK_* S_* _S_*);   # :flock :seek :mode、名前を指定したとき
+
+# ファイルの種類を調べる関数。S_IFMT は引数なしならマスク、引数ありなら種類のビットを返す
+sub S_IFMT  { @_ ? $_[0] & 0170000 : 0170000 }
 sub S_IMODE { $_[0] & 07777 }
-sub S_ISREG { ($_[0] & 0170000) == 0100000 }
-sub S_ISDIR { ($_[0] & 0170000) == 0040000 }
-sub S_ISLNK { ($_[0] & 0170000) == 0120000 }
-sub S_ISSOCK { ($_[0] & 0170000) == 0140000 }
-sub S_ISBLK { ($_[0] & 0170000) == 0060000 }
-sub S_ISCHR { ($_[0] & 0170000) == 0020000 }
-sub S_ISFIFO { ($_[0] & 0170000) == 0010000 }
-our @EXPORT = qw(
-    FD_CLOEXEC F_DUPFD F_EXLCK F_GETFD F_GETFL F_GETLK F_GETLK64 F_GETOWN F_RDLCK F_SETFD F_SETFL
-    F_SETLK F_SETLK64 F_SETLKW F_SETLKW64 F_SETOWN F_SHLCK F_UNLCK F_WRLCK O_ACCMODE O_APPEND
-    O_ASYNC O_BINARY O_CREAT O_DIRECT O_DIRECTORY O_DSYNC O_EXCL O_LARGEFILE O_NDELAY O_NOCTTY
-    O_NOFOLLOW O_NONBLOCK O_RDONLY O_RDWR O_RSYNC O_SYNC O_TEXT O_TRUNC O_WRONLY
-);
-our %EXPORT_TAGS = (
-    flock => [qw(
-    LOCK_SH LOCK_EX LOCK_NB LOCK_UN
-    )],
-    Fcompat => [qw(
-    FAPPEND FASYNC FNDELAY FNONBLOCK
-    )],
-    seek => [qw(
-    SEEK_SET SEEK_CUR SEEK_END
-    )],
-    mode => [qw(
-    S_ISUID S_ISGID S_ISVTX _S_IFMT S_IFREG S_IFDIR S_IFLNK S_IFSOCK S_IFBLK S_IFCHR S_IFIFO
-    S_IRUSR S_IWUSR S_IXUSR S_IRWXU S_IRGRP S_IWGRP S_IXGRP S_IRWXG S_IROTH S_IWOTH S_IXOTH S_IRWXO
-    S_IREAD S_IWRITE S_IEXEC S_ISREG S_ISDIR S_ISLNK S_ISSOCK S_ISBLK S_ISCHR S_ISFIFO S_IFMT
-    S_IMODE
-    )],
-);
-our @EXPORT_OK = (qw(
-    DN_ACCESS DN_ATTRIB DN_CREATE DN_DELETE DN_MODIFY DN_MULTISHOT DN_RENAME F_ADD_SEALS F_GETLEASE
-    F_GETPIPE_SZ F_GET_SEALS F_GETSIG F_NOTIFY F_SEAL_FUTURE_WRITE F_SEAL_GROW F_SEAL_SEAL
-    F_SEAL_SHRINK F_SEAL_WRITE F_SETLEASE F_SETPIPE_SZ F_SETSIG LOCK_MAND LOCK_READ LOCK_RW
-    LOCK_WRITE O_NOATIME O_TMPFILE
-), map { @$_ } values %EXPORT_TAGS);
+{
+    my %type = (REG => 0100000, DIR => 0040000, LNK => 0120000, SOCK => 0140000, BLK => 0060000, CHR => 0020000, FIFO => 0010000);
+    no strict 'refs';
+    for my $n (keys %type) { my $t = $type{$n}; *{"Fcntl::S_IS$n"} = sub { ($_[0] & 0170000) == $t } }
+}
 1;

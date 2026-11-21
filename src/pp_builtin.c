@@ -2198,6 +2198,41 @@ static pp_val n_re_pattern(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     pp_list_push(out, pp_strn(re->source, re->srclen));
     return pp_strn(fl, n);                 /* the caller appends the last element */
 }
+/* Constants that the interpreter itself provides, created the first time one is used (see
+   resolve_depth). For now the ones of Fcntl (lib/Fcntl.pm; the real module is XS): about a
+   hundred names, of which a script uses a handful, so they are kept here in ROM instead of
+   being defined by the module. The values are those of Linux. */
+static const struct { const char *name; uint32_t val; } fcntl_consts[] = {
+    {"FD_CLOEXEC", 1u}, {"F_DUPFD", 0u}, {"F_EXLCK", 4u}, {"F_GETFD", 1u}, {"F_GETFL", 3u}, {"F_GETLK", 5u},
+    {"F_GETLK64", 5u}, {"F_GETOWN", 9u}, {"F_RDLCK", 0u}, {"F_SETFD", 2u}, {"F_SETFL", 4u}, {"F_SETLK", 6u},
+    {"F_SETLK64", 6u}, {"F_SETLKW", 7u}, {"F_SETLKW64", 7u}, {"F_SETOWN", 8u}, {"F_SHLCK", 8u},
+    {"F_UNLCK", 2u}, {"F_WRLCK", 1u}, {"O_ACCMODE", 3u}, {"O_APPEND", 1024u}, {"O_ASYNC", 8192u},
+    {"O_BINARY", 0u}, {"O_CREAT", 64u}, {"O_DIRECT", 16384u}, {"O_DIRECTORY", 65536u}, {"O_DSYNC", 4096u},
+    {"O_EXCL", 128u}, {"O_LARGEFILE", 0u}, {"O_NDELAY", 2048u}, {"O_NOCTTY", 256u}, {"O_NOFOLLOW", 131072u},
+    {"O_NONBLOCK", 2048u}, {"O_RDONLY", 0u}, {"O_RDWR", 2u}, {"O_RSYNC", 1052672u}, {"O_SYNC", 1052672u},
+    {"O_TEXT", 0u}, {"O_TRUNC", 512u}, {"O_WRONLY", 1u}, {"DN_ACCESS", 1u}, {"DN_ATTRIB", 32u},
+    {"DN_CREATE", 4u}, {"DN_DELETE", 8u}, {"DN_MODIFY", 2u}, {"DN_MULTISHOT", 2147483648u},
+    {"DN_RENAME", 16u}, {"F_ADD_SEALS", 1033u}, {"F_GETLEASE", 1025u}, {"F_GETPIPE_SZ", 1032u},
+    {"F_GET_SEALS", 1034u}, {"F_GETSIG", 11u}, {"F_NOTIFY", 1026u}, {"F_SEAL_FUTURE_WRITE", 16u},
+    {"F_SEAL_GROW", 4u}, {"F_SEAL_SEAL", 1u}, {"F_SEAL_SHRINK", 2u}, {"F_SEAL_WRITE", 8u},
+    {"F_SETLEASE", 1024u}, {"F_SETPIPE_SZ", 1031u}, {"F_SETSIG", 10u}, {"LOCK_MAND", 32u}, {"LOCK_READ", 64u},
+    {"LOCK_RW", 192u}, {"LOCK_WRITE", 128u}, {"O_NOATIME", 262144u}, {"O_TMPFILE", 4259840u},
+    {"FAPPEND", 1024u}, {"FASYNC", 8192u}, {"FNDELAY", 2048u}, {"FNONBLOCK", 2048u}, {"S_ISUID", 2048u},
+    {"S_ISGID", 1024u}, {"S_ISVTX", 512u}, {"_S_IFMT", 61440u}, {"S_IFREG", 32768u}, {"S_IFDIR", 16384u},
+    {"S_IFLNK", 40960u}, {"S_IFSOCK", 49152u}, {"S_IFBLK", 24576u}, {"S_IFCHR", 8192u}, {"S_IFIFO", 4096u},
+    {"S_IRUSR", 256u}, {"S_IWUSR", 128u}, {"S_IXUSR", 64u}, {"S_IRWXU", 448u}, {"S_IRGRP", 32u},
+    {"S_IWGRP", 16u}, {"S_IXGRP", 8u}, {"S_IRWXG", 56u}, {"S_IROTH", 4u}, {"S_IWOTH", 2u}, {"S_IXOTH", 1u},
+    {"S_IRWXO", 7u}, {"S_IREAD", 256u}, {"S_IWRITE", 128u}, {"S_IEXEC", 64u}, {"LOCK_SH", 1u},
+    {"LOCK_EX", 2u}, {"LOCK_NB", 4u}, {"LOCK_UN", 8u}, {"SEEK_SET", 0u}, {"SEEK_CUR", 1u}, {"SEEK_END", 2u},
+};
+int pp_core_const(const char *name, pp_val *out) {
+    if (strncmp(name, "Fcntl::", 7) != 0) return 0;
+    name += 7;
+    for (size_t i = 0; i < sizeof fcntl_consts / sizeof fcntl_consts[0]; i++)
+        if (!strcmp(fcntl_consts[i].name, name)) { *out = pp_int((int64_t)fcntl_consts[i].val); return 1; }
+    return 0;
+}
+
 /* read(FH, $buf, LEN, OFFSET): the parser passes \$buf. Returns the number of bytes read (0 at
    the end of the file), undef for something that is no open file. getc(FH): one byte or undef. */
 static pp_val n_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {

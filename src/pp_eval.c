@@ -137,14 +137,15 @@ void pp_warn(pp_interp *I, const char *fmt, ...) {
 }
 
 /* Resolve "&Pkg::name" (or "&name" in main). Perl rules: only the package's own subs
- * and what was imported into it. Two extensions: constants the host provides lazily
- * (pp_host_const, e.g. PicoPerl::Keycodes::KC_A) and wildcard exports recorded by
+ * and what was imported into it. Two extensions: constants the host or the interpreter
+ * provides lazily (pp_host_const, e.g. PicoPerl::Keycodes::KC_A; pp_core_const, Fcntl's)
+ * and wildcard exports recorded by
  * `use` (an @EXPORT entry like "KC_*"). */
 static pp_obj *resolve_depth(pp_interp *I, pp_sym *sym, int depth) {
     if (sym->sub) return sym->sub;
     if (sym->name[0] != '&' || depth > 8) return NULL;
     pp_val v;
-    if (pp_host_const(sym->name + 1, &v)) {
+    if (pp_host_const(sym->name + 1, &v) || pp_core_const(sym->name + 1, &v)) {
         pp_obj *code = pp_obj_new(PP_OCODE);
         code->u.code.is_const = 1; code->u.code.constval = v; code->u.code.name = sym->name + 1;
         pp_define_sub(I, sym, code);

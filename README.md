@@ -337,6 +337,8 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 
 **`Fcntl`** の picoperl 版 (`lib/Fcntl.pm`) は定数だけを返します (`O_RDONLY`、`LOCK_EX`、`SEEK_SET`、`S_IFMT`、`S_ISDIR($mode)` など。値は Linux のもの)。
 `seek` の `SEEK_*` は実際に使えますが、ロックやパーミッションの定数は番号として使えるだけです。
+約 100 個の定数はインタプリタが ROM に表を持っていて、スクリプトに書いた定数だけが作られます (`use Fcntl;` だけなら RAM はほとんど使いません)。
+perl との違い: `use Fcntl qw(:seek)` のようにタグを指定しても、ほかの定数 (`O_RDONLY` など) も使える状態になります。
 
 **`List::Util`**、**`Scalar::Util`**、**`mro`** の picoperl 版を `lib/` に同梱しています (本家は XS なので
 読み込めないため)。`lib/` は perl 本体のライブラリより先に探すので、`use List::Util qw(sum max first);` と
