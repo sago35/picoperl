@@ -368,12 +368,13 @@ int pp_tie_count;
 #define tie_n pp_tie_count
 pp_val *pp_tie_find(pp_obj *var) {
     if (!var->tied) return NULL;
-    for (int i = 0; i < tie_n; i++) if (tie_tab[i].var == var) return &tie_tab[i].obj;
+    for (int i = tie_n - 1; i >= 0; i--) if (tie_tab[i].var == var) return &tie_tab[i].obj;   /* newest first: references to elements come and go */
     return NULL;
 }
 void pp_tie_remove(pp_obj *var) {
+    if (!var->tied) return;
     var->tied = 0;
-    for (int i = 0; i < tie_n; i++) if (tie_tab[i].var == var) {
+    for (int i = tie_n - 1; i >= 0; i--) if (tie_tab[i].var == var) {
         pp_val old = tie_tab[i].obj;
         tie_tab[i] = tie_tab[--tie_n];
         if (!tie_n) { free(tie_tab); tie_tab = NULL; tie_cap = 0; }

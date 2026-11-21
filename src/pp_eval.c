@@ -2206,6 +2206,38 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
             return pp_undef();
         }
         break;
+    case N_AELEM: case N_HELEM: {
+        /* \$a[i], \$h{k}: elements are plain values inside their container, there is no cell
+           to point at. The reference goes to a scalar that is tied (natively) to that element:
+           reading it reads the element, writing it writes the element. */
+        pp_obj *box = a->type == N_AELEM ? pp_get_array_raw(I, a->a, 1) : pp_get_hash_raw(I, a->a, 1);
+        if (!box || I->ctl) { if (box) pp_obj_decref(box); return pp_undef(); }
+        if (box->tied || box->kind != (a->type == N_AELEM ? PP_OARRAY : PP_OHASH)) { pp_obj_decref(box); break; }   /* a tied container: the copy below */
+        pp_val key = pp_eval(I, a->b, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(key); pp_obj_decref(box); return pp_undef(); }
+        pp_val cur;
+        if (a->type == N_AELEM) {
+            int64_t i = pp_to_int(key);
+            if (i < 0) i += box->u.arr.n;
+            if (i < 0 || i > 0x3fffffff) { pp_release(key); pp_obj_decref(box); break; }
+            pp_release(key); key = pp_int(i);
+            cur = pp_copy(*pp_array_slot(box, (int)i));          /* the element exists from now on, like in perl */
+        } else {
+            pp_str *ks = pp_to_str(key);
+            pp_release(key); key = pp_str_val(ks);
+            cur = pp_copy(*pp_hash_slot(box, ks->d, ks->len));
+        }
+        pp_obj *spec = pp_obj_new(PP_OARRAY);                    /* the tie object: [container, key] */
+        pp_array_push(spec, pp_ref(box)); pp_obj_decref(box);
+        pp_array_push(spec, key);
+        spec->class = pp_intern(I, "PicoPerl::ElemRef", 17);
+        pp_obj *cell = pp_obj_new(PP_OSCALAR);
+        cell->u.scalar = cur;
+        pp_val sv = pp_ref(spec); pp_obj_decref(spec);
+        pp_tie_set(cell, sv);
+        pp_val r = pp_ref(cell); pp_obj_decref(cell);
+        return r;
+    }
     default: break;
     }
     /* reference to a copy of the value (e.g. \"str"; \$a[0] is approximated the same way) */
@@ -3534,6 +3566,38 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
 /* interpreter lifecycle                                               */
 /* ------------------------------------------------------------------ */
 
+/* FETCH / STORE of the scalar behind \$a[i] and \$h{k} (see make_ref): self is [container, key] */
+static pp_val n_elemref(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n < 1 || a->v[0].t != PP_REF || a->v[0].u.o->kind != PP_OARRAY || a->v[0].u.o->u.arr.n < 2) return pp_undef();
+    pp_val *sp = a->v[0].u.o->u.arr.v;
+    if (sp[0].t != PP_REF) return pp_undef();
+    pp_obj *box = sp[0].u.o;
+    pp_val *slot;
+    if (box->kind == PP_OARRAY) {
+        int64_t i = pp_to_int(sp[1]);
+        if (a->n < 2 && i >= box->u.arr.n) return pp_undef();
+        slot = pp_array_slot(box, (int)i);
+    } else if (box->kind == PP_OHASH) {
+        if (sp[1].t != PP_STR) return pp_undef();
+        if (a->n < 2 && !pp_hash_find(box, sp[1].u.s->d, sp[1].u.s->len)) return pp_undef();
+        slot = pp_hash_slot(box, sp[1].u.s->d, sp[1].u.s->len);
+    } else return pp_undef();
+    if (a->n >= 2) { pp_release(*slot); *slot = pp_copy(a->v[1]); }      /* STORE */
+    return pp_copy(*slot);
+}
+/* cell is the scalar behind \$a[i] / \$h{k}: copy its value to the element (store) or the
+   element's value to it. For code that works on the cell directly (an in-memory file). */
+void pp_elemref_sync(pp_obj *cell, int store) {
+    pp_val *tv = cell->tied == 1 ? pp_tie_find(cell) : NULL;
+    if (!tv || tv->t != PP_REF || tv->u.o->kind != PP_OARRAY || !tv->u.o->class || strcmp(tv->u.o->class->name, "PicoPerl::ElemRef")) return;
+    pp_list a = {0};
+    pp_list_push(&a, pp_copy(*tv));
+    if (store) pp_list_push(&a, pp_copy(cell->u.scalar));
+    pp_val r = n_elemref(NULL, &a, CTX_SCALAR, NULL);
+    if (!store) { pp_release(cell->u.scalar); cell->u.scalar = r; } else pp_release(r);
+    pp_list_free(&a);
+}
 /* UNIVERSAL::isa($thing, TYPE) and UNIVERSAL::can($thing, METHOD) called as functions.
    $thing may be an object, a class name, or (for isa) a plain reference whose type is asked. */
 static const char *univ_reftype(pp_obj *o) {
@@ -3630,6 +3694,8 @@ pp_interp *pp_new(void) {
     pp_global(I, pp_intern(I, "$]", 2))->u.scalar = pp_strn("5.044000", 8);
     pp_global(I, pp_intern(I, "$^O", 3))->u.scalar = pp_strn(PP_OSNAME, (int)strlen(PP_OSNAME));
     pp_core_natives_register(I);
+    pp_register(I, "PicoPerl::ElemRef::FETCH", n_elemref);
+    pp_register(I, "PicoPerl::ElemRef::STORE", n_elemref);
     pp_register(I, "UNIVERSAL::isa", n_univ_isa);
     pp_register(I, "UNIVERSAL::can", n_univ_can);
     pp_host_register(I);

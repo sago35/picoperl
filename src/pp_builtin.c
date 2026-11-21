@@ -522,6 +522,7 @@ static int f_write(pp_obj *f, const char *d, int len) {
     str_append(&n, d, len);
     pp_release(cell->u.scalar);
     cell->u.scalar = pp_str_val(n);
+    if (cell->tied) pp_elemref_sync(cell, 1);        /* opened on \$h{k}: the text goes to the element */
     return 1;
 }
 static int f_eof(pp_obj *f) {
@@ -680,7 +681,8 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         o->u.file.mem = cell; cell->refcnt++;
         o->u.file.fp = cell;                          /* non-NULL: open */
         o->u.file.writable = (uint8_t)(base[0] != 'r' || base[1] == '+');
-        if (base[0] == 'w') { pp_release(cell->u.scalar); cell->u.scalar = pp_strn("", 0); }
+        if (cell->tied) pp_elemref_sync(cell, 0);     /* opened on \$h{k}: start from the element's text */
+        if (base[0] == 'w') { pp_release(cell->u.scalar); cell->u.scalar = pp_strn("", 0); if (cell->tied) pp_elemref_sync(cell, 1); }
         pp_str_decref(ms); pp_list_free(&args);
         if (glob) {
             if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io);
@@ -2213,6 +2215,7 @@ static pp_val n_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     while (got < want && f_read1(f, &c)) { str_append(&s, &c, 1); got++; }
     pp_release(cell->u.scalar);
     cell->u.scalar = pp_str_val(s);
+    if (cell->tied) pp_elemref_sync(cell, 1);        /* read(FH, $h{buf}, N): the buffer is an element */
     return pp_int(got);
 }
 static pp_val n_getc(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
