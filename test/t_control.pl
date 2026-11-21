@@ -76,3 +76,21 @@ for my $e ($p, @arr, $q) { $e x= 2 } print "$p @arr $q\n";
     print er1(), "\n", er2(), "\n", scalar(er3()), " ", er3(), "\n", er4(), "\n", er5(), "\n", er6(), "\n", er7(), "\n";
     my %h = (a => er1()); print "hash: $h{a}\n";
 }
+
+# foreach のリストの中での my 宣言
+{
+    my %v = (only => "one");
+    for (my ($k, $val) = each %v) { print "k=$k val=$val item=$_\n" }
+    for (my @l = (1, 2)) { print "item $_ of ", scalar(@l), "\n" }
+    my $after = "ok"; for (my $t = 5) { $after .= $_ } print "$after\n";
+}
+# (my @l = LIST) をリストとして使う
+{
+my @r = (my @l = (1, 2)); print scalar(@r), "\n";
+my @s = (my ($a1, $b1) = (5, 6, 7)); print scalar(@s), " @s\n";
+my %h; my @t = (%h = (k => 1)); print scalar(@t), "\n";
+my @u = (my ($x, @rest) = (1, 2, 3)); print scalar(@u), "\n";
+my $cnt = () = (my @m = (4, 5, 6)); print "$cnt\n";
+sub lst { return (my @z = (1, 2, 3)) } my @w = lst(); print scalar(@w), "\n";
+print join(",", (my @q = (8, 9))), "\n";
+}

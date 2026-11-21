@@ -1580,7 +1580,13 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
         if (I->ctl) { pp_list_free(&src); return pp_undef(); }
         int count = src.n;
         assign_list(I, a, &src);
-        if (ctx == CTX_LIST && out && !I->ctl) pp_eval(I, a, CTX_LIST, out);
+        if (ctx == CTX_LIST && out && !I->ctl) {
+            if (a->type == N_MY) {   /* (my @l = LIST) as a list: the variables just assigned, not a new declaration */
+                pp_node tl = *a; tl.type = N_LIST; tl.op = 0; tl.flags = 0;
+                pp_eval(I, &tl, CTX_LIST, out);
+            }
+            else pp_eval(I, a, CTX_LIST, out);
+        }
         pp_list_free(&src);
         return pp_int(count);
     }
