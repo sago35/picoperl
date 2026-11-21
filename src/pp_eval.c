@@ -2229,6 +2229,8 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                 cell = cells[0];
             }
             if (nv == 1) {
+                /* the element as it is now: an earlier iteration may have written to the array itself */
+                if (src_arr && i < src_arr->u.arr.n && !pp_val_same(items.v[i], src_arr->u.arr.v[i])) { pp_release(items.v[i]); items.v[i] = pp_copy(src_arr->u.arr.v[i]); }
                 pp_release(cell->u.scalar);
                 cell->u.scalar = pp_copy(items.v[i]);
             } else {
@@ -2240,8 +2242,10 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
             int brk = loop_body_x(I, n->c, n->sym, n->flags & 2);
             if (!brk && n->d) { pp_val cv = exec_block(I, n->d, CTX_VOID, NULL); pp_release(cv); if (I->ctl) brk = loop_ctl(I, n->sym) != 0 || I->ctl != CTL_NONE; }   /* the continue block: after the body, also after next */
             if (nv == 1 && src_arr && i < src_arr->u.arr.n) {
+                /* only when the body changed the loop variable: what it wrote to the element itself
+                   ($a[$j] += $i, with $i that element) must stay */
                 pp_val *slot = &src_arr->u.arr.v[i];
-                if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
+                if (!pp_val_same(items.v[i], cell->u.scalar) && !pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
             }
             else if (nv == 1 && !src_arr && !pp_val_same(cell->u.scalar, items.v[i])) {
                 /* perl aliases the loop variable to the list element; here the changed value is
