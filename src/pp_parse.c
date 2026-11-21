@@ -53,6 +53,7 @@ typedef struct {
     pp_sym **vars;
     unsigned char strict_vars, strict_subs, strict_refs, warnings;
     unsigned char integer;       /* use integer: arithmetic in this scope is on integers */
+    unsigned char builtins;      /* use v5.40 (or later): the builtin:: functions of that bundle are visible by their plain names */
 } pscope;
 typedef struct {
     pp_arena *arena;                             /* AST storage of the file being parsed */
@@ -132,6 +133,7 @@ static int scope_push(pp_parser *P, int kind) {
     sc.strict_refs = top ? top->strict_refs : 0;
     sc.warnings = top ? top->warnings : 0;
     sc.integer = top ? top->integer : 0;
+    sc.builtins = top ? top->builtins : 0;
     S->parent_of[S->nids] = top ? top->id : -1;
     S->collapsed[S->nids] = 0;
     S->nids++;
@@ -3199,6 +3201,19 @@ static pp_node *parse_ident_term(pp_parser *P) {
         }
         if (m && m->sub && m->sub->u.code.native && (forced_core || !overrides_builtin(P, s, id, len))) s = m;
     }
+    if (!has_pkg_sep(id, len) && scope_top(P) && scope_top(P)->builtins && !is_declared(P, s)) {
+        /* under use v5.40: blessed, trim, true ... are the builtin:: functions, unless the
+           package has a sub of that name */
+        static const char *const bundle[] = { "true", "false", "weaken", "unweaken", "is_weak", "blessed", "refaddr", "reftype", "ceil", "floor", "is_tainted", "trim", "indexed", NULL };
+        for (int i = 0; bundle[i]; i++) {
+            if ((int)strlen(bundle[i]) != len || memcmp(bundle[i], id, (size_t)len)) continue;
+            if (i < 2) { advance(P); if (cur_is_op(P, "(") && is_op(peek(P), ")")) { advance(P); advance(P); } return i == 0 ? const_int(P, 1) : const_str(P, "", 0); }
+            char buf[40];
+            int bn = pp_snprintf(buf, sizeof buf, "&builtin::%s", bundle[i]);
+            s = pp_intern(P->I, buf, bn);
+            break;
+        }
+    }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);
     if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
@@ -3327,6 +3342,7 @@ static pp_node *parse_use(pp_parser *P) {
         pscope *top = scope_top(P);
         if (minor >= 11) top->strict_vars = top->strict_subs = top->strict_refs = 1;
         if (minor >= 35) top->warnings = 1;
+        top->builtins = minor >= 39;                 /* the :5.40 bundle of builtin (blessed, trim, true ...) */
         end_use(P);
         return NULL;
     }

@@ -1649,6 +1649,32 @@ static pp_val n_bi_ceil(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     double d = a->n ? pp_to_num(a->v[0]) : 0;
     return pp_num(ceil(d));
 }
+/* trim: without the white space at both ends (undef stays undef) */
+static pp_val n_bi_trim(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (!a->n || a->v[0].t == PP_UNDEF) return pp_undef();
+    pp_str *s = pp_to_str(a->v[0]);
+    int b = 0, e = s->len;
+    while (b < e && isspace((unsigned char)s->d[b])) b++;
+    while (e > b && isspace((unsigned char)s->d[e - 1])) e--;
+    pp_val r = pp_strn(s->d + b, e - b);
+    pp_str_decref(s);
+    return r;
+}
+/* indexed(LIST): (0, $x0, 1, $x1, ...); the number of values in scalar context */
+static pp_val n_bi_indexed(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    if (ctx == CTX_LIST && out) {
+        for (int i = 0; i < a->n; i++) { pp_list_push(out, pp_int(i)); pp_list_push(out, pp_copy(a->v[i])); }
+        return pp_no_value();
+    }
+    return pp_int(2 * a->n);
+}
+/* true / false; weaken, unweaken, is_weak, is_tainted: there are no weak references and no
+   taint mode here, so these do nothing / say no */
+static pp_val n_bi_true(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_int(1); }
+static pp_val n_bi_false(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_strn("", 0); }
+static pp_val n_bi_nothing(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)a; (void)ctx; (void)out; return pp_undef(); }
 static pp_val n_bi_floor(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
     double d = a->n ? pp_to_num(a->v[0]) : 0;
@@ -2596,6 +2622,14 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "localtime", n_localtime);
     pp_register(I, "gmtime", n_gmtime);
     pp_register(I, "builtin::ceil", n_bi_ceil);
+    pp_register(I, "builtin::trim", n_bi_trim);
+    pp_register(I, "builtin::indexed", n_bi_indexed);
+    pp_register(I, "builtin::true", n_bi_true);
+    pp_register(I, "builtin::false", n_bi_false);
+    pp_register(I, "builtin::is_weak", n_bi_false);
+    pp_register(I, "builtin::is_tainted", n_bi_false);
+    pp_register(I, "builtin::weaken", n_bi_nothing);
+    pp_register(I, "builtin::unweaken", n_bi_nothing);
     pp_register(I, "builtin::floor", n_bi_floor);
     pp_register(I, "builtin::blessed", n_bi_blessed);
     pp_register(I, "builtin::reftype", n_bi_reftype);

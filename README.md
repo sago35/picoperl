@@ -229,7 +229,9 @@ while (1) { sleep 0.1 }        # イベントが来ると sleep は早く戻る 
 `try/catch/finally` (catch 内で `$@` は空、`return` は外へ、finally は常に実行)、
 `isa` 演算子、後置デリファレンス (`$r->@*` `$r->%*` `$r->$*` `$r->$#*`)、
 `any { }` / `all { }` (短絡)、`use builtin qw(true false ceil floor trim blessed
-reftype refaddr indexed)`、
+reftype refaddr indexed weaken unweaken is_weak is_tainted)` (`use v5.40;` 以降ではこれらが素の名前で使えます。
+有効範囲は perl と同じくブロック単位。`builtin::trim(...)` のように直接呼ぶこともできます。`weaken` / `unweaken` は何もせず、
+`is_weak` / `is_tainted` は常に偽)、
 文字列のマジックインクリメント、`__LINE__`/`__FILE__`/`__PACKAGE__`、POD、
 `use vars qw($x @y %z)` (`our` と同じ扱い)。
 
