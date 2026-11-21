@@ -2124,7 +2124,7 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
     case N_RV2AV: { pp_obj *o = pp_get_array_raw(I, a, 1); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
     case N_RV2HV: { pp_obj *o = pp_get_hash_raw(I, a, 1); if (!o) return pp_undef(); pp_val v = pp_ref(o); pp_obj_decref(o); return v; }
     case N_CALL:
-        if (a->n == 0) {
+        if (a->n == 0 && (a->flags & 2)) {   /* \&name: the sub itself; \name() and \(CONST) are references to the result */
             pp_obj *code = pp_resolve_sub(I, a->sym);
             if (!code) {
                 /* not defined yet: a placeholder that the definition will fill in. It lives in
@@ -2149,7 +2149,10 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
             if (I->ctl) { pp_release(cv); return pp_undef(); }
             if (cv.t == PP_REF && cv.u.o->kind == PP_OCODE) return cv;
             if (!is_symname(cv)) { pp_release(cv); return pp_die(I, "Not a CODE reference"); }
-            pp_obj *code = symref_code(I, a, cv);
+            /* \&{"name"} is allowed under strict refs (it only names the sub) */
+            pp_sym *cs = pp_symref(I, a, cv, '&', 0);
+            pp_obj *code = cs ? pp_resolve_sub(I, cs) : NULL;
+            if (cs && !code) pp_die(I, "Undefined subroutine &%s%s called", strstr(cs->name, "::") ? "" : "main::", cs->name + 1);
             pp_release(cv);
             return code ? pp_ref(code) : pp_undef();
         }

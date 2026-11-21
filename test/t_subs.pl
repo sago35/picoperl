@@ -254,3 +254,15 @@ my $anon = sub { $_[0] .= "+" }; my $w = "w"; $anon->($w) for 1 .. 3; print "w=$
 sub plain { my @c = @_; $c[0] = 99; scalar @c } my $k = 1; plain($k); print "k=$k\n";
 my @e = (); setall(@e, $k); print "k=$k\n";
 }
+
+# \&name はサブそのもの、\name() と \(定数) は結果への参照
+{
+use constant RT => "a.b";
+sub rf { "v" } sub later;
+my $r1 = \&rf; my $r2 = \(rf()); my $r3 = \ RT; my $r4 = \(RT); my $r5 = \rf(); my $r6 = \&later; my $r7 = \&{"rf"}; my $r8 = \&main::rf;
+print join(" ", map { ref } $r1, $r2, $r3, $r4, $r5, $r6, $r7, $r8), "\n";
+print "$$r2 $$r3 $$r4 $$r5 ", $r1->(), " ", $r8->(), "\n";
+print "in string: ${\(RT)} / ${\ RT} / ${\ rf()}\n";
+my $re = qr{^\Q${\(RT)}\E$}; print "regex: ", ("a.b" =~ $re ? "m" : "n"), ("axb" =~ $re ? "m" : "n"), "\n";
+sub later { "defined later" } print $r6->(), "\n";
+}
