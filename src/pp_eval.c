@@ -2731,7 +2731,12 @@ static NOINLINE pp_val eval_evalblock(pp_interp *I, pp_node *n, int ctx, pp_list
     int lh = I->nlocals;
     int outn = out ? out->n : 0;
     I->call_ctx = ctx;                           /* return and wantarray inside see the eval's context */
+    /* eval { } is a frame of its own for caller(), as in perl: "(eval)", called at the line of
+       the eval. Carp and Test::Builder count frames with that in mind. */
+    struct pp_frame fr = { I->frame, I->cur_code, I->file_pkg, I->file, NULL, I->line, ctx, NULL, 0 };
+    I->frame = &fr;
     pp_val r = exec_block(I, n->a, ctx, out);
+    I->frame = fr.up;
     I->call_ctx = saved_ctx;
     if (I->ctl == CTL_RETURN) {
         /* `return` inside eval { } leaves the eval, not the sub around it: the returned
@@ -2825,7 +2830,10 @@ static NOINLINE pp_val eval_evalstr(pp_interp *I, pp_node *n, int ctx, pp_list *
         int lh = I->nlocals, outn = out ? out->n : 0;
         I->file = fname;
         I->call_ctx = ctx;                       /* return and wantarray inside see the eval's context */
+        struct pp_frame efr = { I->frame, I->cur_code, I->file_pkg, saved_file, NULL, saved_line, ctx, NULL, 0 };   /* a frame for caller(), like eval { } */
+        I->frame = &efr;
         r = pp_exec_unit(I, unit, ctx, out);
+        I->frame = efr.up;
         I->file = saved_file; I->line = saved_line; I->call_ctx = saved_ctx;
         if (I->ctl == CTL_DIE) {
             I->ctl = CTL_NONE;

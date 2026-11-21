@@ -811,7 +811,11 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         if (!arr) return pp_undef();
         if (arr->kind != PP_OARRAY) { pp_obj_decref(arr); return pp_die(I, "Not an ARRAY reference"); }
         if (arr->tied) pp_tie_sync(I, arr);
-        if (n->op == B_SHIFT && I->frame && I->frame->argv == arr && arr->u.arr.n) I->frame->nshift++;
+        if (n->op == B_SHIFT && I->frame && arr->u.arr.n) {
+            struct pp_frame *sf = I->frame;
+            while (sf && !sf->code) sf = sf->up;      /* eval { } frames belong to the sub around them */
+            if (sf && sf->argv == arr) sf->nshift++;
+        }
         pp_val v = n->op == B_POP ? pp_array_pop(arr) : pp_array_shift(arr);
         if (arr->tied) pp_tie_writeback(I, arr);
         pp_obj_decref(arr);
