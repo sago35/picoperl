@@ -12,7 +12,7 @@ enum {
     B_SIN, B_COS, B_EXP, B_LOG, B_HEX, B_OCT, B_DEFINED, B_REF, B_SCALAR, B_EXISTS, B_DELETE,
     B_KEYS, B_VALUES, B_EACH, B_EXIT, B_UNDEF, B_CHOMP, B_CHOP, B_RAND, B_SRAND, B_TIME, B_SLEEP,
     B_READLINE, B_BINMODE, B_QUOTEMETA, B_LOCAL_IGNORE, B_SELECT, B_BLESS, B_POS,
-    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ANY, B_ALL, B_PROTOTYPE, B_SETPROTO, B_SUBINFO, B_ABS_END
+    B_OPEN, B_CLOSE, B_EOF, B_SEEK, B_TELL, B_ALARM, B_ANY, B_ALL, B_PROTOTYPE, B_SETPROTO, B_SUBINFO, B_SYSOPEN, B_ABS_END
 };
 
 /* prototype("CORE::name"): the prototypes of perl's own functions, as " name=proto name=proto ".
@@ -58,7 +58,7 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { "chomp", B_CHOMP, BK_UNARY }, { "chop", B_CHOP, BK_UNARY }, { "rand", B_RAND, BK_UNARY }, { "srand", B_SRAND, BK_UNARY },
     { "time", B_TIME, BK_NOARG }, { "sleep", B_SLEEP, BK_UNARY }, { "readline", B_READLINE, BK_NOARG }, { "binmode", B_BINMODE, BK_LIST },
     { "quotemeta", B_QUOTEMETA, BK_UNARY }, { "pos", B_POS, BK_UNARY },
-    { "open", B_OPEN, BK_LIST }, { "close", B_CLOSE, BK_UNARY }, { "eof", B_EOF, BK_UNARY },
+    { "open", B_OPEN, BK_LIST }, { "sysopen", B_SYSOPEN, BK_LIST }, { "close", B_CLOSE, BK_UNARY }, { "eof", B_EOF, BK_UNARY },
     { "seek", B_SEEK, BK_LIST }, { "tell", B_TELL, BK_UNARY }, { "alarm", B_ALARM, BK_UNARY },
     { "select", B_SELECT, BK_LIST }, { "bless", B_BLESS, BK_LIST },
     { "prototype", B_PROTOTYPE, BK_UNARY }, { "__setproto", B_SETPROTO, BK_LIST }, { "__subinfo", B_SUBINFO, BK_UNARY },
@@ -635,6 +635,25 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     /* (a glob lives as long as the interpreter, so it needs no reference held here) */
     pp_list args = {0};
     if (!eval_args(I, n, 1, &args)) { pp_list_free(&args); return pp_undef(); }
+    if (n->op == B_SYSOPEN) {
+        /* sysopen(FH, PATH, FLAGS, PERMS): the O_* flags (Fcntl's values) become the mode of a
+           3-argument open. O_CREAT | O_EXCL fails when the file is there, opening without
+           O_CREAT fails when it is not; PERMS has no meaning here. */
+        if (args.n < 2) { pp_list_free(&args); return pp_die(I, "Not enough arguments for sysopen"); }
+        pp_str *ps = pp_to_str(args.v[0]);
+        int64_t fl = pp_to_int(args.v[1]);
+        long long sz = 0;
+        int there = pp_host_filetest(ps->d, &sz) >= 0;
+        int acc = (int)(fl & 3), creat = (fl & 64) != 0, excl = (fl & 128) != 0, trunc = (fl & 512) != 0, append = (fl & 1024) != 0;
+        const char *why = creat && excl && there ? "File exists" : !creat && !there ? "No such file or directory" : NULL;
+        if (why) { pp_str_decref(ps); pp_list_free(&args); set_errno_var(I, why); return ret(ctx, out, pp_undef()); }
+        const char *mode = acc == 0 ? "<" : acc == 1 ? (append ? ">>" : trunc || !there ? ">" : "+<") : (trunc || !there ? "+>" : "+<");
+        pp_val path = pp_str_val(ps);
+        pp_list_free(&args);
+        memset(&args, 0, sizeof args);
+        pp_list_push(&args, pp_cstr(mode));
+        pp_list_push(&args, path);
+    }
     {   /* open($dup, ">&", $fh) / open($dup, ">&1") / ">&=", "<&", ">>&": another name for a handle
            that is already open. There is no real dup: both names share one file. */
         pp_str *ms = pp_to_str(args.v[0]);
@@ -1525,7 +1544,7 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         pp_list_free(&args);
         return ret(ctx, out, r >= 0 ? pp_int(1) : pp_strn("", 0));
     }
-    case B_OPEN: return do_open(I, n, ctx, out);
+    case B_OPEN: case B_SYSOPEN: return do_open(I, n, ctx, out);
     case B_BLESS: {
         pp_list args = {0};
         if (!eval_args(I, n, 0, &args)) { pp_list_free(&args); return pp_undef(); }
