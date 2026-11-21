@@ -326,6 +326,23 @@ static NOINLINE pp_val eval_filetest(pp_interp *I, pp_node *n, int ctx, pp_list 
                 break;
             }
             case 'z': t = size == 0; break;
+            case 'M': case 'A': case 'C': {
+                /* the age in days when the program started ($^T): from stat, where the host has
+                   one (0 otherwise: a board keeps no file times) */
+                double age = 0;
+                pp_sym *ss = pp_sym_find(I, "&stat", 5);
+                if (ss && ss->sub && ss->sub->u.code.native) {
+                    pp_list sa = {0}, so = {0};
+                    pp_list_push(&sa, pp_copy(pp_global(I, pp_intern(I, "$\002stat", 6))->u.scalar));
+                    pp_release(ss->sub->u.code.native(I, &sa, CTX_LIST, &so));
+                    int at = n->op == 'M' ? 9 : n->op == 'A' ? 8 : 10;
+                    if (so.n > at) age = (pp_to_num(pp_global(I, pp_intern(I, "$^T", 3))->u.scalar) - pp_to_num(so.v[at])) / 86400.0;
+                    pp_list_free(&sa); pp_list_free(&so);
+                    I->ctl = CTL_NONE;
+                }
+                pp_release(v);
+                return scalar_or_push(ctx, out, pp_num(age));
+            }
             default:  t = size > 0; break;   /* 's' */
             }
             r = !t ? pp_strn("", 0) : n->op == 's' ? pp_int(size) : pp_int(1);
@@ -3920,6 +3937,7 @@ pp_interp *pp_new(void) {
     pp_obj *dq = pp_global(I, pp_intern(I, "$\"", 2)); dq->u.scalar = pp_strn(" ", 1);
     /* ${^NAME} variables scripts commonly read: no taint mode, no -C, and the main program is running */
     pp_global(I, pp_intern(I, "$^TAINT", 7))->u.scalar = pp_int(0);
+    pp_global(I, pp_intern(I, "$^T", 3))->u.scalar = pp_int(pp_host_time());   /* when the program started */
     pp_global(I, pp_intern(I, "$^UNICODE", 9))->u.scalar = pp_int(0);
     pp_global(I, pp_intern(I, "$^GLOBAL_PHASE", 14))->u.scalar = pp_strn("RUN", 3);
     /* $]: the perl version picoperl follows (a string, like perl's "5.044000") */

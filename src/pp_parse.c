@@ -196,7 +196,7 @@ static int lex_filetest_operand(pp_lex *L) {
     while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
     if (i >= L->len) return 0;
     char c = L->src[i];
-    if (c == '$') return i + 1 < L->len && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$');
+    if (c == '$') return i + 1 < L->len && (is_ident_start((unsigned char)L->src[i + 1]) || L->src[i + 1] == '{' || L->src[i + 1] == '$' || isdigit((unsigned char)L->src[i + 1]));   /* -f $0 */
     if (c == '_' && !(i + 1 < L->len && (isalnum((unsigned char)L->src[i + 1]) || L->src[i + 1] == '_' || L->src[i + 1] == ':'))) return 1;   /* -d _ */
     if (L->src[L->pos + 1] == 't' && c >= 'A' && c <= 'Z') {   /* -t STDIN: a handle name (capitals only) */
         while (i < L->len && (isupper((unsigned char)L->src[i]) || isdigit((unsigned char)L->src[i]) || L->src[i] == '_')) i++;
@@ -725,7 +725,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '&'; t->s = L->src + start; t->len = len; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "&"); term = 0; }
     }
-    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzltTBoORWXpSbcugk", peekc(L, 1))
+    else if (c == '-' && (!L->prev_term || L->prev_brace) && peekc(L, 1) && strchr("edfsrwxzltTBoORWXpSbcugkMAC", peekc(L, 1))
              && !is_ident_char(peekc(L, 2)) && lex_filetest_operand(L)) {
         /* file test: -e $path, -d "dir" ... (one token "-e"; the letter must not reach the
            lexer on its own, `s $x` would start a substitution) */
