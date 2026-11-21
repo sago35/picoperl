@@ -2249,6 +2249,7 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "utf8::unicode_to_native", n_utf8_identity);
     pp_register(I, "utf8::native_to_unicode", n_utf8_identity);
     pp_register(I, "utf8::is_utf8", n_utf8_false);
+    pp_register(I, "PerlIO::Layer::find", n_utf8_false);   /* there are no IO layers: every lookup fails */
     pp_register(I, "utf8::valid", n_utf8_true);
     pp_register(I, "utf8::upgrade", n_utf8_true);
     pp_register(I, "utf8::downgrade", n_utf8_true);

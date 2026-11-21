@@ -103,3 +103,21 @@ print "trailing :: ", Tc::Deep::->new(3)->get, " ", Tc::Deep::->name, " ", StrCl
     eval { VBar->VERSION(1) }; ($ve = $@) =~ s/ at .*//s; print "VERSION missing: $ve\n";
     my $vo = bless {}, 'VFoo'; print "VERSION on an object: ", $vo->VERSION, "\n";
 }
+
+# 間接オブジェクト構文: METHOD Class ARGS は Class->METHOD(ARGS)
+{
+    package Ind::Obj; sub new { my $c = shift; bless { args => [@_] }, $c } sub find { my ($c, $what) = @_; $what eq "yes" ? "found" : undef }
+    sub count { scalar @{ $_[0]{args} } }
+    package Counter; sub new { bless { n => $_[1] || 0 }, $_[0] }
+}
+{
+    my $o = new Ind::Obj(1, 2, 3); print ref($o), " ", $o->count, "\n";
+    my $p = new Ind::Obj; print ref($p), " ", $p->count, "\n";
+    my $q = new Counter 7; print ref($q), " $q->{n}\n";
+    print "find: ", (find Ind::Obj 'yes'), "\n";
+    unless (find Ind::Obj 'no') { print "not found\n" }
+    my $n = (new Ind::Obj(4, 5))->count; print "chain: $n\n";
+    my %h = (new => 1, Counter => 2); print join(",", map { "$_=$h{$_}" } sort keys %h), "\n";
+}
+# IO レイヤーは無いので、PerlIO::Layer->find は常に偽
+print "layer: ", (PerlIO::Layer->find("no_such_layer_here") ? "yes" : "no"), "\n";

@@ -2935,6 +2935,25 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); }
         return parse_postfix(P, n);
     }
+    if (P->cur.type == T_IDENT && !has_pkg_sep(id, len) && P->cur.len > 0
+        && (has_pkg_sep(P->cur.s, P->cur.len) || isupper((unsigned char)P->cur.s[0]))) {
+        /* indirect object syntax: `new Foo::Bar(ARGS)`, `find PerlIO::Layer 'perlio'` is
+           Foo::Bar->new(ARGS). Only for a method name that is no known sub, in front of a
+           bareword that looks like a class name and is no sub or builtin itself. */
+        pp_tok *after = peek(P);
+        int kind;
+        if (!(after->type == T_OP && (!strcmp(after->op, "=>") || !strcmp(after->op, "->") || !strcmp(after->op, ",") || !strcmp(after->op, "::")))
+            && pp_builtin_id(P->cur.s, P->cur.len, &kind) <= 0 && !is_declared(P, sym_sigil(P, '&', P->cur.s, P->cur.len))) {
+            pp_node *m = node(P, N_METHOD); m->line = line;
+            m->a = const_str(P, P->cur.s, P->cur.len);
+            m->sym = pp_intern(P->I, id, len);
+            m->c = const_str(P, P->pkg, (int)strlen(P->pkg));
+            advance(P);
+            if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(m, args); }
+            else if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) take_children(m, parse_comma_list(P));
+            return parse_postfix(P, m);
+        }
+    }
     n->flags |= 1;   /* bareword: call sub if it exists at runtime, else string */
     if (!has_pkg_sep(id, len)) n->flags |= 4;   /* written without a package: the string is the bare name */
     /* FH, STDIN, DATA ...: a bareword in capitals is a file handle (the glob *FH), unless it is
