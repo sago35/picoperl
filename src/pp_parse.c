@@ -3346,6 +3346,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             pp_node *u = parse_use(P);
             P->sc->heap_depth--;
             if (u) exec_at_parse(P, u, rs, is);
+            else P->sc->nrecs = rs;                  /* handled inside parse_use: its nodes are gone, forget their variables */
             return NULL;
         }
         if (tok_is_ident(t, "package")) {

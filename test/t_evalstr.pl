@@ -48,3 +48,10 @@ print "version string: ", eval("1.25") + 1, " ", eval('"5.010"') + 0, "\n";
 # 繰り返してもメモリが増え続けない
 my $sum = 0; $sum += eval "$_ * 2" for 1 .. 2000; print "many evals: $sum\n";
 print "done\n";
+
+# eval 文字列の中の use が、外側のサブの my 変数を引数に取る (以前は異常終了した)
+{
+    sub use_in_eval { my ($code, @args) = @_; my $r = eval $code; defined $r ? $r : "err: $@" }
+    print "use in eval: ", use_in_eval(q{package main; use strict @{$args[0]}; 1;}, []), "\n";
+    print "use in eval: ", use_in_eval(q{use strict; no warnings; my @l = @{$args[0]}; scalar @l;}, [1, 2]), "\n";
+}
