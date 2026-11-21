@@ -18,3 +18,13 @@ use strict; use warnings;
     my %opt; my @spec = (name => \$opt{name}, count => \$opt{count}); ${$spec[1]} = "abc"; ${$spec[3]} = 3; print join(",", map { "$_=$opt{$_}" } sort keys %opt), "\n";
 }
 { my %h; open(my $f, "<", $0) or die; read($f, $h{buf}, 5); my @a; read($f, $a[2], 3); close $f; print "read into element: [$h{buf}][$a[2]]\n"; }
+
+# 同じ要素に 2 つのハンドルで追記する
+{
+    my %o = (all => '', a => '', b => '');
+    open(my $a1, '>>', \$o{all}) or die; open(my $a2, '>>', \$o{a}) or die; open(my $b1, '>>', \$o{all}) or die; open(my $b2, '>>', \$o{b}) or die;
+    print $a1 "one\n"; print $a2 "one\n"; print $b1 "two\n"; print $b2 "two\n"; print $a1 "three\n";
+    $o{all} .= "direct\n"; print $b1 "four\n";
+    print "all=[", join("|", split /\n/, $o{all}), "] a=[", join("|", split /\n/, $o{a}), "] b=[", join("|", split /\n/, $o{b}), "]\n";
+    my $s = ''; open(my $p, '>>', \$s) or die; open(my $q, '>>', \$s) or die; print $p "x"; print $q "y"; print $p "z"; print "plain=[$s]\n";
+}

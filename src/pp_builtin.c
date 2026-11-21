@@ -516,6 +516,7 @@ static int f_read1(pp_obj *f, char *c) {
 static int f_write(pp_obj *f, const char *d, int len) {
     if (!f->u.file.mem) return (int)pp_host_fwrite(f->u.file.fp, d, len) == len;
     pp_obj *cell = f->u.file.mem;
+    if (cell->tied) pp_elemref_sync(cell, 0);        /* opened on \$h{k}: another handle may have written to the element */
     pp_str *old = pp_to_str(cell->u.scalar);
     pp_str *n = pp_str_new(old->d, old->len);
     pp_str_decref(old);
