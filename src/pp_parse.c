@@ -71,6 +71,9 @@ typedef struct pp_parser pp_parser;
 struct pp_parser {
     pp_interp *I;
     int state_n;                          /* `state` variables numbered so far in the enclosing sub */
+    /* my $x = EXPR: the new $x is not there yet while EXPR is parsed (my $x = $x + 1 reads the
+       outer $x). The declared names are taken out of their scope until the assignment ends. */
+    struct { int n, scope; uint8_t slot[16]; pp_sym *sym[16]; } hid;
     pp_lex L;
     uint8_t is_main;             /* this is the main script (not a required file, not an eval) */
     pp_tok cur, nxt;
@@ -1916,9 +1919,30 @@ static pp_node *substr_lv(pp_parser *P, pp_node *call, pp_node *opn) {
     n->a = call; n->b = opn;
     return n;
 }
+static pp_node *parse_assign_1(pp_parser *P);
 static pp_node *parse_assign(pp_parser *P) {
+    int saved_n = P->hid.n; P->hid.n = 0;            /* (an assignment inside the right side hides its own) */
+    int saved_scope = P->hid.scope; uint8_t saved_slot[16]; pp_sym *saved_sym[16];
+    if (saved_n) { memcpy(saved_slot, P->hid.slot, sizeof saved_slot); memcpy(saved_sym, P->hid.sym, sizeof saved_sym); }
+    pp_node *r = parse_assign_1(P);
+    for (int i = 0; i < P->hid.n; i++) P->sc->st[P->hid.scope].vars[P->hid.slot[i]] = P->hid.sym[i];
+    P->hid.n = saved_n; P->hid.scope = saved_scope;
+    if (saved_n) { memcpy(P->hid.slot, saved_slot, sizeof saved_slot); memcpy(P->hid.sym, saved_sym, sizeof saved_sym); }
+    return r;
+}
+static pp_node *parse_assign_1(pp_parser *P) {
     pp_node *lhs = parse_ternary(P);
     int op = assign_op_of(P);
+    if (op != -1 && lhs->type == N_MY && (lhs->op == 'm' || lhs->op == 's') && P->sc->n) {
+        pscope *sc = scope_top(P);
+        for (int i = 0; i < lhs->n && P->hid.n < 16; i++) {
+            pp_node *v = lhs->list[i];
+            if (v->type != N_VAR || !(v->flags & PP_VAR_LEX) || v->op >= sc->n || sc->vars[v->op] != v->sym) continue;
+            P->hid.scope = P->sc->n - 1;
+            P->hid.slot[P->hid.n] = v->op; P->hid.sym[P->hid.n] = v->sym; P->hid.n++;
+            sc->vars[v->op] = NULL;
+        }
+    }
     if (op == OP_NONE && lhs->type == N_BUILTIN && (lhs->n == 2 || lhs->n == 3)
         && lhs->op == (uint8_t)pp_builtin_id("substr", 6, NULL)) {
         /* substr($s, OFF, LEN) = VALUE is the 4-argument substr($s, OFF, LEN, VALUE);
@@ -3017,8 +3041,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
         for (int i = S->n - 1; i >= 0 && n->n < 200; i--) {
             pscope *sc = &S->st[i];
             for (int k = sc->n - 1; k >= 0 && n->n < 200; k--) {
-                int dup = 0;
-                for (int j = 0; j < n->n; j++) if (n->list[j]->sym == sc->vars[k]) { dup = 1; break; }
+                int dup = !sc->vars[k];             /* (my $x = eval "...": the new $x is not there yet) */
+                for (int j = 0; j < n->n && !dup; j++) if (n->list[j]->sym == sc->vars[k]) { dup = 1; break; }
                 if (dup) continue;
                 pp_node *v = node(P, N_VAR);
                 v->sym = sc->vars[k]; v->flags |= PP_VAR_LEX; v->op = (uint8_t)k;
