@@ -8,7 +8,7 @@
 /* Lexer                                                               */
 /* ------------------------------------------------------------------ */
 
-enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW, T_PAT, T_READLINE };
+enum { T_EOF = 0, T_NUM, T_STR, T_ISTR, T_IDENT, T_VAR, T_CAST, T_OP, T_QW, T_PAT, T_READLINE, T_CMD };   /* T_CMD: `command` / qx{command} */
 
 typedef struct {
     int    type;
@@ -592,7 +592,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
                 len = (int)(L->src + L->pos - id);
             }
         }
-        if ((len == 1 && id[0] == 'q') || (len == 2 && (memcmp(id, "qq", 2) == 0 || memcmp(id, "qw", 2) == 0))) {
+        if ((len == 1 && id[0] == 'q') || (len == 2 && (memcmp(id, "qq", 2) == 0 || memcmp(id, "qw", 2) == 0 || memcmp(id, "qx", 2) == 0))) {
             int save = L->pos, saveline = L->line;
             skip_ws(L);
             int d = peekc(L, 0);
@@ -602,8 +602,10 @@ static void lex_next(pp_parser *P, pp_tok *t) {
                 t->s = body; t->len = blen;
                 if (len == 1) t->type = T_STR;
                 else if (id[1] == 'q') t->type = T_ISTR;
+                else if (id[1] == 'x') t->type = T_CMD;
                 else t->type = T_QW;
                 if (d == '\'' && t->type == T_ISTR) t->type = T_STR;
+                if (t->type == T_CMD && d == '\'') t->sigil = '\'';        /* qx'...': not interpolated */
                 L->prev_term = 1;
                 return;
             }
@@ -650,7 +652,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
     }
     else if (c == '"') { L->pos++; int blen; t->s = lex_delimited(P, '"', &blen); t->len = blen; t->type = T_ISTR; term = 1; }
     else if (c == '\'') { L->pos++; int blen; t->s = lex_delimited(P, '\'', &blen); t->len = blen; t->type = T_STR; term = 1; }
-    else if (c == '`') { perr(P, "backticks are not supported"); }
+    else if (c == '`') { L->pos++; int blen; t->s = lex_delimited(P, '`', &blen); t->len = blen; t->type = T_CMD; term = 1; }   /* compiles; running it gives nothing (no commands here) */
     else if (c == '/' && !L->prev_term && (L->prev_split || L->prev_op || (peekc(L, 1) != '/' && peekc(L, 1) != ' ' && peekc(L, 1) != '='))) {
         /* /PATTERN/flags in term position */
         lex_pattern(P, t, 'm');
@@ -985,7 +987,7 @@ static void tok_desc(pp_tok *t, char *buf, int cap) {
     switch (t->type) {
     case T_EOF: pp_snprintf(buf, cap, "end of file"); break;
     case T_NUM: pp_snprintf(buf, cap, "number"); break;
-    case T_STR: case T_ISTR: case T_QW: pp_snprintf(buf, cap, "string"); break;
+    case T_STR: case T_ISTR: case T_QW: case T_CMD: pp_snprintf(buf, cap, "string"); break;
     case T_PAT: pp_snprintf(buf, cap, "pattern"); break;
     case T_READLINE: pp_snprintf(buf, cap, "<$fh>"); break;
     case T_IDENT: pp_snprintf(buf, cap, "'%.*s'", t->len, t->s); break;
@@ -2600,6 +2602,13 @@ static pp_node *parse_term(pp_parser *P) {
         return n;
     }
     case T_ISTR: { pp_node *n = double_quoted(P, t->s, t->len); advance(P); return cur_is_op(P, "->") ? parse_postfix(P, n) : n; }
+    case T_CMD: {    /* `cmd` is PicoPerl::__backtick("cmd"): the command text is worked out, nothing is run */
+        pp_node *c = node(P, N_CALL); c->line = (uint16_t)t->line;
+        c->sym = pp_intern(P->I, "&PicoPerl::__backtick", 21);
+        node_add(c, t->sigil == '\'' ? const_str(P, t->s, t->len) : double_quoted(P, t->s, t->len));
+        advance(P);
+        return c;
+    }
     case T_QW: {
         pp_node *n = qw_list(P, t->s, t->len); n->flags |= 1; advance(P);
         if (cur_is_op(P, "[")) { advance(P); pp_node *s = node(P, N_LSLICE); s->a = n; s->b = parse_expr(P); expect_op(P, "]"); return s; }
@@ -2840,7 +2849,7 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
 static int starts_term(pp_parser *P) {
     pp_tok *t = &P->cur;
     switch (t->type) {
-    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: case T_READLINE: return 1;
+    case T_NUM: case T_STR: case T_ISTR: case T_VAR: case T_CAST: case T_QW: case T_PAT: case T_READLINE: case T_CMD: return 1;
     case T_IDENT: return !at_list_end(P);
     case T_OP: return !strcmp(t->op, "(") || !strcmp(t->op, "[") || !strcmp(t->op, "{") || !strcmp(t->op, "\\") || !strcmp(t->op, "!")
         || (t->op[0] == '-' && isalpha((unsigned char)t->op[1]) && !t->op[2])

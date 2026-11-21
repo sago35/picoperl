@@ -3307,6 +3307,21 @@ static pp_val n_ver_VERSION(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return res;
 }
 
+/* `command` / qx{command}: there is nothing to run a command with. It gives undef (an empty
+   list), with $? = -1 and $! set as after a failed exec, and says so once per run. */
+static pp_val n_backtick(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)a;
+    if (!(I->compat_warn & 64)) {
+        I->compat_warn |= 64;
+        pp_warn(I, "picoperl: backticks do not run commands here, the result is empty");
+    }
+    pp_obj *st = pp_global(I, pp_intern(I, "$?", 2));
+    pp_release(st->u.scalar); st->u.scalar = pp_int(-1);
+    set_errno_var(I, "No such file or directory");
+    if (ctx == CTX_LIST && out) return pp_no_value();
+    return pp_undef();
+}
+
 /* Natives that are made the first time a script names them (pp_resolve_sub asks here): a
    native registered up front costs RAM in every script, these cost none until they are used. */
 static const struct { const char *name; pp_native fn; } lazy_natives[] = {
@@ -3354,6 +3369,7 @@ static const struct { const char *name; pp_native fn; } lazy_natives[] = {
     {"POSIX::access", n_px_access},
     {"POSIX::tzname", n_px_tzname},
     {"POSIX::tzset", n_bi_nothing},
+    {"PicoPerl::__backtick", n_backtick},
     {"version::new", n_ver_new}, {"version::parse", n_ver_new}, {"version::declare", n_ver_declare}, {"version::qv", n_ver_declare},
     {"version::numify", n_ver_numify}, {"version::normal", n_ver_normal}, {"version::stringify", n_ver_stringify},
     {"version::vcmp", n_ver_vcmp}, {"version::is_alpha", n_ver_is_alpha}, {"version::is_qv", n_ver_is_qv},
