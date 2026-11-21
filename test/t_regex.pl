@@ -187,3 +187,35 @@ my $s2 = "abab"; $s2 =~ /b/g; my $copy = $s2; print pos($s2), " ", (defined pos(
     print "ctrl atom: ", ("a\tb" =~ /a\cIb/ ? "ok" : "ng"), " ", ("\x1b[" =~ /^\c[\[/ ? "ok" : "ng"), "\n";
     (my $s = "x\x01y\x7f") =~ s/([^\n\t\c?[:^cntrl:][:^ascii:]])/sprintf '\\u%04x', ord $1/eg; print length($s), " ", substr($s, 0, 8), "\n";
 }
+
+# \G (前回のマッチの続きに固定) と /c (失敗しても pos を保つ)
+{
+    my $src = "let x = 42 + y1;"; my @tok;
+    for (my $guard = 0; $guard < 50; $guard++) {
+        if    ($src =~ /\G\s+/gc)         { }
+        elsif ($src =~ /\G([a-z]\w*)/gc)  { push @tok, "id:$1" }
+        elsif ($src =~ /\G(\d+)/gc)       { push @tok, "num:$1" }
+        elsif ($src =~ /\G([=+;])/gc)     { push @tok, "op:$1" }
+        else                              { last }
+    }
+    print "@tok | pos=", pos($src), "\n";
+    my $s = "aaXbb"; $s =~ /a+/g; print "after a+: ", pos($s), "\n";
+    print "G fail: ", ($s =~ /\Gb/gc ? "hit" : "miss"), " pos=", pos($s), "\n";
+    print "G hit: ", ($s =~ /\GX/gc ? "hit" : "miss"), " pos=", pos($s), "\n";
+    print "no c: ", ($s =~ /\GZ/g ? "hit" : "miss"), " pos=", (defined pos($s) ? pos($s) : "undef"), "\n";
+    my $t = "112233"; my @pairs; push @pairs, $1 while $t =~ /\G(\d\d)/g; print "@pairs\n";
+    my $u = "ab12"; $u =~ /[a-z]+/g; print "no g: ", ($u =~ /\G(\d)/ ? $1 : "none"), "\n";
+    pos($u) = 3; print "set pos: ", ($u =~ /\G(\d)/g ? $1 : "none"), "\n";
+}
+
+# //g のループの中で、ほかの変数に //g を何度も使っても、外側の位置は保たれる
+{
+    my $outer = "a b c d"; my @seen; my $guard = 0;
+    while ($outer =~ /(\w)/g) {
+        last if ++$guard > 20;
+        push @seen, $1;
+        my ($v1, $v2, $v3, $v4, $v5, $v6) = ("x1", "x2", "x3", "x4", "x5", "x6");
+        $_ =~ /x/g for $v1, $v2, $v3, $v4, $v5, $v6;      # 1 回ずつマッチしたまま残る
+    }
+    print "outer: $guard (@seen)\n";
+}

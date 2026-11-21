@@ -23,7 +23,7 @@ typedef struct pp_regex {
     int      nnames;
     int      nmarks;    /* loop-progress slots after the capture slots */
     int      flags;     /* PP_RE_* the pattern was compiled with */
-    int      anchored;  /* only position 0 can match */
+    int      anchored;  /* 1: only position 0 can match; 2: starts with \G, only the start position can */
     int      first;     /* literal first byte, or -1 */
     char    *source;    /* pattern text, for stringification */
     int      srclen;

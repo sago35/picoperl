@@ -1426,7 +1426,7 @@ static pp_node *parse_pattern_term(pp_parser *P) {
         case 'g': op |= PP_M_G; break;
         case 'e': op |= PP_M_E; break;
         case 'r': op |= PP_M_R; trop |= PP_TR_R; break;
-        case 'c': trop |= PP_TR_C; break;
+        case 'c': trop |= PP_TR_C; if (t.kind != 't') op |= PP_M_C; break;
         case 'd': trop |= PP_TR_D; break;
         default: perr(P, "Unknown regexp modifier \"/%c\"", *f);
         }

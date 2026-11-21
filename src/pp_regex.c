@@ -634,7 +634,8 @@ pp_regex *pp_re_compile(const char *pat, int len, int flags, char *err, int errc
     re->first = -1;
     int pc = 0;
     while (re->prog[pc] == I_SAVE) pc += 2;
-    if (re->prog[pc] == I_BOL || re->prog[pc] == I_BOS) re->anchored = 1;
+    if (len >= 2 && pat[0] == '\\' && pat[1] == 'G') re->anchored = 2;   /* \G in front: only where the search starts (pos) */
+    else if (re->prog[pc] == I_BOL || re->prog[pc] == I_BOS) re->anchored = 1;
     else if (re->prog[pc] == I_CHAR) re->first = re->prog[pc + 1];
     else if (re->prog[pc] == I_REP && re->prog[pc + 1] == I_CHAR && re->prog[pc + 3] >= 1) re->first = re->prog[pc + 2];
     return re;
@@ -844,7 +845,7 @@ int pp_re_exec(const pp_regex *re, const char *str, int len, int start, int note
     if (start < 0) start = 0;
     long steps = 0;
     for (int pos = start; pos <= len; pos++) {
-        if (re->anchored && pos > 0) return 0;
+        if (re->anchored && pos > (re->anchored == 2 ? start : 0)) return 0;
         if (re->first >= 0) {
             const void *f = pos < len ? memchr(s + pos, re->first, (size_t)(len - pos)) : NULL;
             if (!f) return 0;

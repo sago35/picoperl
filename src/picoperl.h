@@ -224,7 +224,7 @@ enum {
                        b: slurpy %hash N_MY or NULL, list: one N_ASSIGN{N_MY[$var], default|NULL} per param */
 };
 /* N_MATCH / N_SUBST op bits */
-enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16 };
+enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16, PP_M_C = 32 };   /* C: m//gc keeps pos() when the match fails */
 /* N_TRANS op bits */
 enum { PP_TR_C = 1, PP_TR_D = 2, PP_TR_S = 4, PP_TR_R = 8 };
 
@@ -275,7 +275,7 @@ void      pp_arena_absorb(pp_arena *dst, pp_arena *src);   /* dst takes over src
 /* ------------------------------------------------------------------ */
 
 #define PP_SYM_BUCKETS 128
-typedef struct pp_pos_ent { pp_obj *cell; pp_str *s; int pos, empty; } pp_pos_ent;
+typedef struct pp_pos_ent { pp_obj *cell; pp_str *s; int pos; unsigned empty : 1, used : 31; } pp_pos_ent;   /* used: when it was last looked at */
 typedef struct pp_re_ent { pp_str *src; int flags; pp_obj *re; } pp_re_ent;
 #ifndef PP_DEFAULT_STACK_LIMIT
 #define PP_DEFAULT_STACK_LIMIT (1024 * 1024)
@@ -327,8 +327,9 @@ struct pp_interp {
     /* regular expressions */
     pp_sym  *sym_cap[10];        /* $& and $1..$9 (interned on first use) */
     int      m_nset;             /* how many $N cells currently hold captures */
-    pp_pos_ent pos_tab[4];       /* pos() of scalars matched with /g */
-    int      pos_next;
+    pp_pos_ent *pos_tab;         /* pos() of scalars matched with /g: grows from 4 to PP_POS_MAX entries, then the least recently used one goes */
+    int      pos_cap;
+    unsigned pos_tick;
     pp_re_ent re_cache[4];       /* compiled dynamic patterns */
     int      re_next;
     unsigned compat_warn;        /* once-only "picoperl behaves differently here" notes (bit 1 utf8, 2 map/grep, 4 foreach) */

@@ -59,9 +59,9 @@ void pp_regex_cleanup(pp_interp *I) {
         if (I->re_cache[i].src) pp_str_decref(I->re_cache[i].src);
         if (I->re_cache[i].re) pp_obj_decref(I->re_cache[i].re);
         I->re_cache[i].src = NULL; I->re_cache[i].re = NULL;
-        if (I->pos_tab[i].s) pp_str_decref(I->pos_tab[i].s);
-        I->pos_tab[i].s = NULL; I->pos_tab[i].cell = NULL;
     }
+    for (int i = 0; i < I->pos_cap; i++) if (I->pos_tab[i].s) pp_str_decref(I->pos_tab[i].s);
+    free(I->pos_tab); I->pos_tab = NULL; I->pos_cap = 0;
 }
 
 /* ---------------- $& $1 .. ---------------- */
@@ -120,10 +120,12 @@ static void set_captures(pp_interp *I, const pp_regex *re, const char *s, const 
 
 static int same_text(pp_str *a, pp_str *b) { return a == b || (a && b && a->len == b->len && memcmp(a->d, b->d, (size_t)a->len) == 0); }
 
+#define PP_POS_MAX 32
 static pp_pos_ent *pos_entry(pp_interp *I, pp_obj *cell, pp_str *s, int create) {
-    for (int i = 0; i < 4; i++) {
+    pp_pos_ent *spare = NULL;
+    for (int i = 0; i < I->pos_cap; i++) {
         pp_pos_ent *e = &I->pos_tab[i];
-        if (e->cell != cell) continue;
+        if (e->cell != cell) { if (!e->cell && !spare) spare = e; continue; }
         /* The position belongs to one string value. A string variable hands out the same
            string object every time, so the object itself is compared: after an assignment, or
            when a new variable happens to sit where a freed one was, it is another object and
@@ -133,13 +135,24 @@ static pp_pos_ent *pos_entry(pp_interp *I, pp_obj *cell, pp_str *s, int create) 
             if (!create) return NULL;
             pp_str_decref(e->s); e->s = s; s->refcnt++; e->pos = 0; e->empty = 0;
         }
+        e->used = ++I->pos_tick;
         return e;
     }
     if (!create) return NULL;
-    pp_pos_ent *e = &I->pos_tab[I->pos_next];
-    I->pos_next = (I->pos_next + 1) & 3;
+    pp_pos_ent *e = spare;
+    if (!e && I->pos_cap < PP_POS_MAX) {             /* all in use (loops inside loops): more room */
+        int cap = I->pos_cap ? I->pos_cap * 2 : 4;
+        I->pos_tab = pp_xrealloc(I->pos_tab, (size_t)cap * sizeof(pp_pos_ent));
+        memset(I->pos_tab + I->pos_cap, 0, (size_t)(cap - I->pos_cap) * sizeof(pp_pos_ent));
+        e = &I->pos_tab[I->pos_cap];
+        I->pos_cap = cap;
+    }
+    if (!e) {                                        /* full: the one not looked at for the longest time */
+        e = &I->pos_tab[0];
+        for (int i = 1; i < I->pos_cap; i++) if ((int)(I->pos_tick - I->pos_tab[i].used) > (int)(I->pos_tick - e->used)) e = &I->pos_tab[i];
+    }
     if (e->s) pp_str_decref(e->s);
-    e->cell = cell; e->s = s; s->refcnt++; e->pos = 0; e->empty = 0;
+    e->cell = cell; e->s = s; s->refcnt++; e->pos = 0; e->empty = 0; e->used = ++I->pos_tick;
     return e;
 }
 static void pos_reset(pp_pos_ent *e) {
@@ -239,7 +252,9 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     int matched = 0;
     int want_list = ctx == CTX_LIST && out && !(flags & PP_M_NEG);
     if (!(flags & PP_M_G)) {
-        if (exec_or_die(I, re, s->d, s->len, 0, -1, caps)) {
+        int from = 0;
+        if (re->anchored == 2 && cell) { pp_pos_ent *pe = pos_entry(I, cell, s, 0); if (pe) from = pe->pos; }   /* \G without /g: at pos() */
+        if (exec_or_die(I, re, s->d, s->len, from, -1, caps)) {
             matched = 1;
             set_captures(I, re, s->d, caps, re->ncap);
             if (want_list) { if (re->ncap == 0) pp_list_push(out, pp_int(1)); else push_captures(out, s->d, caps, re->ncap); }
@@ -269,7 +284,7 @@ pp_val pp_eval_match(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             set_captures(I, re, s->d, caps, re->ncap);
             if (pe) { pe->pos = caps[1]; pe->empty = caps[0] == caps[1]; }
         }
-        else if (pe) pos_reset(pe);
+        else if (pe && !(flags & PP_M_C)) pos_reset(pe);
     }
     if (caps != stackcaps) free(caps);
     pp_str_decref(s);
