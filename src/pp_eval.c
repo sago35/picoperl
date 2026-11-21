@@ -3329,7 +3329,18 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_BUILTIN: I->line = n->line; return pp_builtin(I, n, ctx, out);
     case N_BLOCK: return exec_block(I, n, ctx, out);
     case N_IF: return eval_if(I, n, ctx, out);
-    case N_WHILE: if (n->sym) return eval_labeled_loop(I, n); return eval_while(I, n);
+    case N_WHILE:
+        if (n->sym) return eval_labeled_loop(I, n);
+        if (n->flags & 16) {   /* a bare block: as the last statement, its value is the value of its last statement */
+            for (;;) {
+                int outn = out ? out->n : 0;
+                pp_val v = exec_block(I, n->b, ctx, out);
+                if (loop_ctl(I, NULL) != 2) return v;            /* not redo */
+                pp_release(v);
+                if (out) { for (int i = outn; i < out->n; i++) pp_release(out->v[i]); out->n = outn; }
+            }
+        }
+        return eval_while(I, n);
     case N_FOR: if (n->sym) return eval_labeled_loop(I, n); return eval_for(I, n);
     case N_FOREACH: if (n->sym) return eval_labeled_loop(I, n); return eval_foreach(I, n);
     case N_SUBDEF: return eval_subdef(I, n);

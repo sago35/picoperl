@@ -86,6 +86,7 @@ struct pp_parser {
     int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
+    int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
     int proto_mask;                              /* '$' positions of the prototype skip_prototype just read */
     unsigned char *declmask;                     /* per declared sub (decl[]): that mask */
     int argw;                                    /* the sub being parsed writes to $_[N] (or loops over @_) */
@@ -2460,7 +2461,12 @@ static void parse_call_args(pp_parser *P, pp_node *n) {
 static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
     int parens = accept_op(P, "(");
     if (cur_is_op(P, "{")) {
+        /* map { { k => $_ } } LIST, map {{ %$_ }} LIST: where the block begins a term is
+           expected, so a '{' there is an anonymous hash (perl reads it that way too; a block
+           is written map {; { ... } }) */
+        if (!is_sort && is_op(peek(P), "{")) P->term_brace = 1;
         n->a = parse_block(P);
+        P->term_brace = 0;
         accept_op(P, ",");
         take_children(n, parse_comma_list(P));
         if (parens) expect_op(P, ")");
@@ -3190,9 +3196,11 @@ static pp_node *parse_statement_inner(pp_parser *P) {
     pp_tok *t = &P->cur;
     pp_sym *label = P->pending_label;
     P->pending_label = NULL;
+    int term_brace = P->term_brace;       /* applies to this statement only */
+    P->term_brace = 0;
     if (t->type == T_OP) {
         if (!strcmp(t->op, ";")) { advance(P); return NULL; }
-        if (!strcmp(t->op, "{")) {
+        if (!strcmp(t->op, "{") && !term_brace) {
             pp_node *n = node(P, N_WHILE); n->flags |= 16; n->sym = label; n->b = parse_block(P);   /* bare block: loop once */
             return n;
         }

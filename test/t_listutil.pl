@@ -60,3 +60,19 @@ use mro;
 { package MA; our @ISA = (); package MB; our @ISA = ('MA'); package MC; our @ISA = ('MA'); package MD; our @ISA = ('MB', 'MC'); }
 print "mro: ", join(" ", @{ mro::get_linear_isa('MD') }), " / ", join(" ", @{ mro::get_linear_isa('MA') }), " / ", mro::get_mro('MD'), " ", (mro::is_universal('UNIVERSAL') ? "u" : "-"), (mro::is_universal('MA') ? "u" : "-"), "\n";
 print "done\n";
+
+# map のブロックが { で始まると無名ハッシュ、素のブロックは最後の文の値を返す
+{
+my @in = ({ tag => "TODO", details => "why" }, { tag => "X", details => "y" });
+my $out = [map {{ %{$_} }} @in]; print scalar(@$out), " ", ref($out->[0]), " ", (ref $out->[0] eq 'HASH' ? $out->[0]{details} : "?"), "\n";
+my @c = map { { %$_ } } @in; print scalar(@c), " ", ref($c[0]), "\n";
+my @d = map {; +{ %$_ } } @in; print scalar(@d), " ", ref($d[0]), "\n";
+my @e = map { { name => $_ } } 1 .. 2; print scalar(@e), " ", ref($e[0]), "\n";
+my @f = map {{ tag => $_->{tag} }} @in; print scalar(@f), " ", ref($f[0]), " $f[1]{tag}\n";
+sub am { my @keep; for my $am (@_) { $am = {%$am} if ref($am) ne 'ARRAY'; $am = bless $am, "Amn"; push @keep, $am } scalar(@keep) . ref($keep[0]) . $keep[0]{details} } print am({ tag => "T", details => "d" }), "\n";
+my @g = map { { n => $_, sq => do { { my $t = $_ * $_; $t } } } } 1 .. 2; print scalar(@g), " $g[1]{sq}\n";
+my @h = map {; { my $x = $_ * 2; $x } } 1 .. 3; print "@h\n";
+}
+{
+my @bh = map {; { my $x = $_ * 2; $x } } 1 .. 3; print "[@bh]\n"; my $bv = do { { 5 } }; print defined $bv ? $bv : "undef", "\n"; sub bare_f { { "from bare" } } print bare_f(), "\n"; sub bare_g { if (1) { { "nested" } } } print bare_g(), "\n";
+}
