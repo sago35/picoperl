@@ -53,6 +53,7 @@ typedef struct {
     pp_sym **vars;
     unsigned char strict_vars, strict_subs, strict_refs, warnings;
     unsigned char integer;       /* use integer: arithmetic in this scope is on integers */
+    unsigned char bitwise;       /* use v5.28 (or later): & | ^ always work on numbers (the "bitwise" feature) */
     unsigned char builtins;      /* use v5.40 (or later): the builtin:: functions of that bundle are visible by their plain names */
 } pscope;
 typedef struct {
@@ -135,6 +136,7 @@ static int scope_push(pp_parser *P, int kind) {
     sc.warnings = top ? top->warnings : 0;
     sc.integer = top ? top->integer : 0;
     sc.builtins = top ? top->builtins : 0;
+    sc.bitwise = top ? top->bitwise : 0;
     S->parent_of[S->nids] = top ? top->id : -1;
     S->collapsed[S->nids] = 0;
     S->nids++;
@@ -805,7 +807,7 @@ static pp_node *node(pp_parser *P, int type) {
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
     if (P->stmt_line && (type == N_CALL || type == N_METHOD || type == N_CALLREF || type == N_BUILTIN)) n->line = (uint16_t)P->stmt_line;
-    if (type == N_BINOP || type == N_ASSIGN) { pscope *top = scope_top(P); if (top && top->integer) n->aux = 1; }   /* use integer */
+    if (type == N_BINOP || type == N_ASSIGN) { pscope *top = scope_top(P); if (top && top->integer) n->aux = 1; if (top && top->bitwise) n->aux |= 2; }   /* use integer; the bitwise feature */
     if (type == N_RV2AV || type == N_RV2HV || type == N_RV2SV || type == N_CALLREF || type == N_GLOB) {
         /* a string used as a reference (symbolic reference): dies under strict refs, otherwise
            the name is looked up in the current package (kept in b; main needs none) */
@@ -3461,6 +3463,7 @@ static pp_node *parse_use(pp_parser *P) {
         pscope *top = scope_top(P);
         if (minor >= 11) top->strict_vars = top->strict_subs = top->strict_refs = 1;
         if (minor >= 35) top->warnings = 1;
+        top->bitwise = minor >= 27;                  /* & | ^ on two strings: numbers, not the bytes */
         top->builtins = minor >= 39;                 /* the :5.40 bundle of builtin (blessed, trim, true ...) */
         end_use(P);
         return NULL;

@@ -928,6 +928,22 @@ static NOINLINE int ovl_binop(pp_interp *I, int op, pp_val a, pp_val b, pp_val *
     return 0;
 }
 
+/* & | ^ on two strings work on the bytes, as in perl ("ab" | "  " is "ab"): & gives the
+   shorter length, | and ^ the longer. Not under the bitwise feature (use v5.28 and later). */
+static pp_val str_bitop(int op, pp_str *x, pp_str *y) {
+    int lo = x->len < y->len ? x->len : y->len, hi = x->len > y->len ? x->len : y->len;
+    int n = op == OP_BAND ? lo : hi;
+    pp_str *r = pp_str_new(NULL, 0);
+    r = pp_str_reserve(r, n);
+    for (int i = 0; i < n; i++) {
+        unsigned char p = i < x->len ? (unsigned char)x->d[i] : 0, q = i < y->len ? (unsigned char)y->d[i] : 0;
+        r->d[i] = (char)(op == OP_BAND ? p & q : op == OP_BOR ? p | q : p ^ q);
+    }
+    r->len = n; r->d[n] = 0;
+    return pp_str_val(r);
+}
+#define IS_STR_BITOP(op, aux, x, y) (((op) == OP_BAND || (op) == OP_BOR || (op) == OP_BXOR) && !((aux) & 2) && (x).t == PP_STR && (y).t == PP_STR)
+
 static pp_val do_binop(pp_interp *I, int op, pp_val a, pp_val b) {
     if (__builtin_expect((a.t == PP_REF) | (b.t == PP_REF), 0) && pp_ovl_hook) { pp_val r; if (ovl_binop(I, op, a, b, &r)) return r; }
     switch (op) {
@@ -1719,14 +1735,14 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
     I->tie_noread = 0;
     if (!slot) { pp_release(v); return pp_undef(); }
     if (n->op != OP_NONE) {
-        if (I->warn_on && !(pp_ovl_hook && ((slot->t == PP_REF && slot->u.o->class) || (v.t == PP_REF && v.u.o->class)))) {
+        if (I->warn_on && !IS_STR_BITOP(n->op, n->aux, *slot, v) && !(pp_ovl_hook && ((slot->t == PP_REF && slot->u.o->class) || (v.t == PP_REF && v.u.o->class)))) {
             /* like perl, .= and += on undef do not warn about the left side */
             if (n->op != OP_CONCAT && n->op != OP_ADD && n->op != OP_SUB && n->op != OP_BOR && n->op != OP_BXOR) warn_operand(I, n->op, *slot, var_name_of(a));
             else if (slot->t == PP_STR && n->op != OP_CONCAT) warn_operand(I, n->op, *slot, var_name_of(a));
             warn_operand(I, n->op, v, var_name_of(b));
         }
         if (slot->t == PP_REF) ovl_assign = pp_ovl_hook != NULL;   /* ovl_binop takes the note and clears it */
-        pp_val r = n->aux ? int_binop(I, n->op, *slot, v) : do_binop(I, n->op, *slot, v);
+        pp_val r = IS_STR_BITOP(n->op, n->aux, *slot, v) ? str_bitop(n->op, slot->u.s, v.u.s) : (n->aux & 1) ? int_binop(I, n->op, *slot, v) : do_binop(I, n->op, *slot, v);
         pp_release(v);
         if (I->ctl) { pp_release(r); return pp_undef(); }
         v = r;
@@ -3259,11 +3275,11 @@ static NOINLINE pp_val eval_binop_node(pp_interp *I, pp_node *n, int ctx, pp_lis
     if (I->ctl) { pp_release(a); return pp_undef(); }
     /* (an overloaded object on either side handles the operation itself: the other operand is
        not looked at as a number here, version->parse("1.2") > "1.2.3" must not warn) */
-    if (I->warn_on && !(pp_ovl_hook && ((a.t == PP_REF && a.u.o->class) || (b.t == PP_REF && b.u.o->class)))) {
+    if (I->warn_on && !IS_STR_BITOP(n->op, n->aux, a, b) && !(pp_ovl_hook && ((a.t == PP_REF && a.u.o->class) || (b.t == PP_REF && b.u.o->class)))) {
         if (n->op == OP_REPEAT) { warn_operand(I, n->op, a, var_name_of(n->a)); if (b.t == PP_UNDEF) warn_uninit(I, "repeat (x)", var_name_of(n->b)); }
         else { warn_operand(I, n->op, a, var_name_of(n->a)); warn_operand(I, n->op, b, var_name_of(n->b)); }
     }
-    pp_val r = n->aux ? int_binop(I, n->op, a, b) : do_binop(I, n->op, a, b);
+    pp_val r = IS_STR_BITOP(n->op, n->aux, a, b) ? str_bitop(n->op, a.u.s, b.u.s) : (n->aux & 1) ? int_binop(I, n->op, a, b) : do_binop(I, n->op, a, b);
     pp_release(a); pp_release(b);
     if (I->ctl) { pp_release(r); return pp_undef(); }
     return scalar_or_push(ctx, out, r);
