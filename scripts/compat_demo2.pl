@@ -71,7 +71,10 @@ sub run {
     check("\\cX in a regex",                 ("a\tb" =~ /a\cIb/ ? 1 : 0), 1);
     my $dl = "k=v"; check("m;...; after =~",              ($dl =~ m;^(\w)=(\w)$; ? "$1$2" : "no"), "kv");
     check("unpack checksum %32C*",          unpack("%32C*", "abc"), 294);
+    my $h0 = defined &Board::_heap_free ? Board::_heap_free() : 0;      # ボード上だけ: Fcntl の読み込みで減る空きを見る
     my $fc = eval { require Fcntl; Fcntl::SEEK_END() . Fcntl::O_RDWR() }; check("Fcntl constants", defined $fc ? $fc : "err: $@", "22");
+    my $h1 = defined &Board::_heap_free ? Board::_heap_free() : 0;
+    print "     heap free: $h0 before Fcntl, $h1 after (", $h0 - $h1, " bytes used; next to nothing on a second run)\n" if $h0;
 
     print "-- done: $ok ok, $ng NG --\n\n";
 }
