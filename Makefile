@@ -2,7 +2,7 @@
 # The firmware is built with CMake in firmware/ (see README.md).
 CC      ?= cc
 CFLAGS  ?= -O2 -g -std=gnu11 -Wall -Wextra -Wno-unused-parameter
-SRC     := src/pp_value.c src/pp_parse.c src/pp_eval.c src/pp_builtin.c src/pp_keycodes.c src/pp_gfx.c src/pp_fonts.c src/pp_tone.c src/pp_regex.c src/pp_match.c
+SRC     := src/pp_value.c src/pp_parse.c src/pp_eval.c src/pp_builtin.c src/pp_keycodes.c src/pp_gfx.c src/pp_fonts.c src/pp_tone.c src/pp_regex.c src/pp_match.c src/pp_storable.c
 BIN     := build/picoperl
 
 all: $(BIN)

@@ -55,6 +55,8 @@ pp_obj *pp_get_array_raw(pp_interp *I, pp_node *n, int vivify);   /* like pp_get
 pp_obj *pp_get_hash_raw(pp_interp *I, pp_node *n, int vivify);
 extern int pp_tie_count;                           /* how many ties exist (0: nothing to look up) */
 /* call METHOD on a tie object (or a class name) with args; must: die when there is no such method */
+pp_obj *pp_find_method(pp_interp *I, const char *cls, const char *name);   /* borrowed; NULL: the class cannot do it */
+int     pp_isa(pp_interp *I, const char *cls, const char *want);
 pp_val  pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must);
 
 /* the text after __DATA__ (or the main script's __END__) becomes the handle DATA of package pkg */

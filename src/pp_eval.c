@@ -3362,6 +3362,8 @@ static int class_isa(pp_interp *I, const char *cls, const char *want, int depth)
 /* tie support: obj->METHOD(args) where obj is a tie object, or CLASS->METHOD(args) for a
    class name. The args are consumed. Without the method: an error when `must`, else undef
    with *args left alone (the caller falls back to its own default). */
+pp_obj *pp_find_method(pp_interp *I, const char *cls, const char *name) { return find_method(I, cls, name, 0); }
+int pp_isa(pp_interp *I, const char *cls, const char *want) { return class_isa(I, cls, want, 0); }
 pp_val pp_tie_call(pp_interp *I, pp_val obj, const char *method, pp_list *args, int ctx, pp_list *out, int must) {
     pp_str *cs = (obj.t == PP_REF && obj.u.o->class) ? NULL : pp_to_str(obj);
     const char *cls = cs ? cs->d : obj.u.o->class->name;

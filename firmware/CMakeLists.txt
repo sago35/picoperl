@@ -35,6 +35,7 @@ set(PP_SRC
     ${PP_ROOT}/src/pp_tone.c
     ${PP_ROOT}/src/pp_regex.c
     ${PP_ROOT}/src/pp_match.c
+    ${PP_ROOT}/src/pp_storable.c
 )
 
 # Embed the scripts as C string literals (perl is only needed on the build host).

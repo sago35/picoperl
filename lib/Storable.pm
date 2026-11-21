@@ -9,7 +9,10 @@ package Storable;
 # ハッシュ・配列・スカラーへの参照、bless されたもの、同じものを 2 か所から指している構造や循環参照を扱える。
 # 処理はインタプリタが C で持っていて、このファイルは名前を用意するだけ。
 #
-# 本家との違い: STORABLE_freeze / STORABLE_thaw などのフックは呼ばない (フックで保存されたデータは読めない)。
+# クラスのフックも呼ぶ: ($frozen, @refs) = $obj->STORABLE_freeze($cloning) で保存し、
+# $obj->STORABLE_thaw($cloning, $frozen, @refs) か Class->STORABLE_attach($cloning, $frozen) で読み戻す。
+#
+# 本家との違い: 読み戻すときにクラスのモジュールを自動で require しない (先に use しておく)。
 # コード、ファイルハンドル、正規表現、tie された変数は保存できない (dclone は正規表現などを共有する)。
 # lock_store などはロックせずに読み書きする。真偽値 (!!1) は 1 と "" として保存する。
 use strict;
