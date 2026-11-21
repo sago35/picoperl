@@ -86,6 +86,8 @@ struct pp_parser {
     int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
+    int stmt_line;                               /* line where the statement being parsed starts: the line its calls report (0: unknown) */
+    int last_line;                               /* line of the token before the current one */
     int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
     int proto_mask;                              /* '$' positions of the prototype skip_prototype just read */
     unsigned char *declmask;                     /* per declared sub (decl[]): that mask */
@@ -754,6 +756,7 @@ static pp_node *node(pp_parser *P, int type) {
     pp_stat_nodes++;
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
+    if (P->stmt_line && (type == N_CALL || type == N_METHOD || type == N_CALLREF || type == N_BUILTIN)) n->line = (uint16_t)P->stmt_line;
     if (type == N_BINOP || type == N_ASSIGN) { pscope *top = scope_top(P); if (top && top->integer) n->aux = 1; }   /* use integer */
     if (type == N_RV2AV || type == N_RV2HV || type == N_RV2SV || type == N_CALLREF || type == N_GLOB) {
         /* a string used as a reference (symbolic reference): dies under strict refs, otherwise
@@ -877,6 +880,7 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
 }
 
 static void advance(pp_parser *P) {
+    P->last_line = P->cur.line;
     if (P->has_nxt) { P->cur = P->nxt; P->has_nxt = 0; }
     else lex_next(P, &P->cur);
 }
@@ -1947,7 +1951,7 @@ static pp_node *parse_subscripts(pp_parser *P, pp_node *base, int allow_implicit
                 else n->b = mkvar(P, '$', P->cur.s, P->cur.len);
                 n->c = const_str(P, P->pkg, (int)strlen(P->pkg));
                 advance(P);
-                if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
+                if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
                 base = n; allow_implicit = 0; continue;
             }
             perr(P, "syntax error after '->'");
@@ -2467,6 +2471,7 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
         if (!is_sort && is_op(peek(P), "{")) P->term_brace = 1;
         n->a = parse_block(P);
         P->term_brace = 0;
+        if (P->stmt_line) P->stmt_line = P->last_line;       /* as after an anonymous sub */
         accept_op(P, ",");
         take_children(n, parse_comma_list(P));
         if (parens) expect_op(P, ")");
@@ -2647,6 +2652,9 @@ static pp_node *parse_ident_term(pp_parser *P) {
         scope_pop(P);
         if (P->argw) b->flags |= PP_BLOCK_WARGS;
         P->in_sub = save; P->state_n = save_state; P->argw = save_argw;
+        /* a statement with an anonymous sub in it counts from the line the sub's block ends on
+           (what perl reports for foo(sub {\n ... \n});) */
+        if (P->stmt_line) P->stmt_line = P->last_line;
         return parse_postfix(P, n);
     }
     if (len == 2 && !memcmp(id, "do", 2)) {
@@ -2957,8 +2965,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (m && m->sub && m->sub->u.code.native && !local_decl) s = m;
     }
     advance(P);
-    pp_node *n = node(P, N_CALL); n->sym = s; n->line = line;
-    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); return parse_postfix(P, n); }
+    pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);
+    if (cur_is_op(P, "(")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; return parse_postfix(P, n); }
     if (cur_is_op(P, "{") && !P->has_nxt && is_block_proto(P, s)) {
         /* name { ... } LIST for a sub with a (&...) prototype: the block is `sub { ... }`.
            Put a `sub` token in front of the '{' and let the anonymous-sub parser read it. */
@@ -2972,7 +2980,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
     int decl = is_declared(P, s);
     if (decl) {
         if (decl == 2) return parse_postfix(P, n);
-        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); }
+        if (starts_term(P) && !cur_is_op(P, "-") && !cur_is_op(P, "<") && !cur_is_op(P, "{") && !cur_is_op(P, "[") && !cur_is_op(P, "?")) { parse_call_args(P, n); apply_proto(P, n); if (P->stmt_line) n->line = (uint16_t)P->stmt_line; }
         return parse_postfix(P, n);
     }
     if (P->cur.type == T_IDENT && !has_pkg_sep(id, len) && P->cur.len > 0
@@ -3504,7 +3512,12 @@ static pp_node *parse_statement_inner(pp_parser *P) {
 }
 static pp_node *parse_statement(pp_parser *P) {
     check_parse_stack(P);       /* nested blocks recurse without going through parse_term */
+    /* perl gives every call in a statement the line the statement starts on (a call written
+       over several lines does not report the line of each argument) */
+    int save_line = P->stmt_line;
+    P->stmt_line = P->cur.line;
     pp_node *st = parse_statement_inner(P);
+    P->stmt_line = save_line;
     if (st && scope_top(P)->warnings) st->flags |= PP_STMT_WARN;
     return st;
 }
