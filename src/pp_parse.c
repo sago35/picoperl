@@ -1306,7 +1306,7 @@ static pp_node *double_quoted(pp_parser *P, const char *s, int len) {
                 if (c == '@') {
                     pp_node *j = node(P, N_BUILTIN);
                     j->op = (uint8_t)pp_builtin_id("join", 4, NULL);
-                    node_add(j, const_str(P, " ", 1));
+                    node_add(j, mkvar(P, '$', "\"", 1));       /* joined with $" (a blank unless the script changes it) */
                     node_add(j, ex);
                     ex = j;
                 }
@@ -1428,7 +1428,7 @@ static pp_node *pattern_node(pp_parser *P, const char *s, int len, int delim, in
             if (e > i + 1) {
                 if (n) { node_add(r, const_str(P, buf, n)); n = 0; }
                 pp_node *ex = parse_interp_expr(P, s + i, e - i, line);
-                if (c == '@') { pp_node *j = node(P, N_BUILTIN); j->op = (uint8_t)pp_builtin_id("join", 4, NULL); node_add(j, const_str(P, " ", 1)); node_add(j, ex); ex = j; }
+                if (c == '@') { pp_node *j = node(P, N_BUILTIN); j->op = (uint8_t)pp_builtin_id("join", 4, NULL); node_add(j, mkvar(P, '$', "\"", 1)); node_add(j, ex); ex = j; }
                 if (quoting) ex = builtin_call1(P, "quotemeta", ex);
                 node_add(r, ex);
                 dyn = 1; i = e; continue;

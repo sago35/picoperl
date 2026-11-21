@@ -610,6 +610,11 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 上書きしません (その中で書いた `close($fh)` は組み込みの close です)。上書きするのは、ほかのモジュールから取り込んだサブだけです
 (`use Time::HiRes qw(time)` など)。以前は自分で定義したサブも上書きしていました。
 
+**`$"`** (配列を文字列に埋め込むときの区切り): `local $" = ', '; print "f(@args)";` のように変えられます (既定は空白 1 つ)。
+
+**`CORE::name`**: `CORE::open`、`CORE::caller`、`CORE::stat`、`CORE::wantarray` など、同じ名前のサブを定義しているパッケージの中からでも
+組み込み関数そのものを呼べます。
+
 **`prototype`**: `prototype(\&f)`、`prototype("name")` は、サブに書かれたプロトタイプの文字列を返します (無ければ undef)。
 `prototype("CORE::open")` のように組み込み関数の名前を渡すと、perl と同じプロトタイプを返します (`print` や `system` のように
 perl が持たないものは undef)。`Scalar::Util::set_prototype` で、コード参照ごとに付け替えられます。

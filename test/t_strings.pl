@@ -106,3 +106,12 @@ X
 
 # 文字列中の $$$ref (参照の参照をたどる) と $$ (プロセス番号)
 { my $r = \\"v"; my $p = "$$"; print "$$$r ", ($p =~ /^\d+$/ ? "pid" : "nopid"), " ${$$r}\n"; }
+
+# $" : 配列を文字列に埋め込むときの区切り
+my @a = (1, 2, 3); my %h = (k => [4, 5]);
+print "default: @a | @{$h{k}} | @a[0,1]\n";
+{ local $" = ', '; print "comma: @a | @{$h{k}} | f(@a[1,2])\n"; my $code = "call(@a)"; print "$code\n"; }
+{ local $" = ''; print "none: @a\n"; }
+{ local $" = '-'; my $re = "a-b"; print "regex: ", ("1-2-3" =~ /^@a$/ ? "match" : "no"), "\n"; }
+print "restored: @a\n";
+sub gen { local($", $!) = (', ', 0); "open(@_)" } print gen('$fh', '"<"', '$path'), "\n";
