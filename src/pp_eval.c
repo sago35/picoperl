@@ -1719,7 +1719,7 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
     I->tie_noread = 0;
     if (!slot) { pp_release(v); return pp_undef(); }
     if (n->op != OP_NONE) {
-        if (I->warn_on) {
+        if (I->warn_on && !(pp_ovl_hook && ((slot->t == PP_REF && slot->u.o->class) || (v.t == PP_REF && v.u.o->class)))) {
             /* like perl, .= and += on undef do not warn about the left side */
             if (n->op != OP_CONCAT && n->op != OP_ADD && n->op != OP_SUB && n->op != OP_BOR && n->op != OP_BXOR) warn_operand(I, n->op, *slot, var_name_of(a));
             else if (slot->t == PP_STR && n->op != OP_CONCAT) warn_operand(I, n->op, *slot, var_name_of(a));
@@ -3256,7 +3256,9 @@ static NOINLINE pp_val eval_binop_node(pp_interp *I, pp_node *n, int ctx, pp_lis
     if (I->ctl) return pp_undef();
     pp_val b = pp_eval(I, n->b, CTX_SCALAR, NULL);
     if (I->ctl) { pp_release(a); return pp_undef(); }
-    if (I->warn_on) {
+    /* (an overloaded object on either side handles the operation itself: the other operand is
+       not looked at as a number here, version->parse("1.2") > "1.2.3" must not warn) */
+    if (I->warn_on && !(pp_ovl_hook && ((a.t == PP_REF && a.u.o->class) || (b.t == PP_REF && b.u.o->class)))) {
         if (n->op == OP_REPEAT) { warn_operand(I, n->op, a, var_name_of(n->a)); if (b.t == PP_UNDEF) warn_uninit(I, "repeat (x)", var_name_of(n->b)); }
         else { warn_operand(I, n->op, a, var_name_of(n->a)); warn_operand(I, n->op, b, var_name_of(n->b)); }
     }
