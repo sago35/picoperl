@@ -7,6 +7,12 @@
  * 4 KiB erase block and flushed when the block changes, on SYNCHRONIZE CACHE
  * or after a short idle period. After the host has written, the firmware
  * restarts the interpreter (USB stays up) so the new script is picked up.
+ *
+ * The other direction: when a script has written to the drive, the host still
+ * holds its own copy of the FAT and the directories, and its next write (saving
+ * main.pl) would put that old copy back - the script's files would be gone. So
+ * after the script's writes have settled, the drive reports "no medium" for a
+ * moment and then "medium changed": the host drops its copy and reads again.
  */
 #include <string.h>
 #include <stdlib.h>
@@ -41,6 +47,14 @@ static int32_t  cache_block = -1;   /* block number held in cache, -1 = none */
 static bool     cache_dirty;
 static uint32_t last_host_write_ms;
 static bool     host_wrote;
+static bool     dev_wrote;          /* the firmware side (a script) changed the drive: the host must read it again */
+static uint32_t last_dev_write_ms;
+static uint32_t medium_out_until;   /* until then the host is told there is no medium (0: not in that state) */
+static bool     medium_changed;     /* the next TEST UNIT READY answers "medium may have changed", once */
+#define DEV_WRITE_SETTLE_MS 500
+#define MEDIUM_OUT_MS       1200
+#define MEDIUM_OUT_GAP_MS   5000     /* not more often than this: a script that keeps writing must not keep the drive away */
+static uint32_t last_medium_out_ms;
 
 static const uint8_t *flash_ptr(uint32_t offset) {
     /* read through the uncached XIP alias so freshly programmed data is visible */
@@ -91,15 +105,17 @@ static void dev_read(uint32_t lba, uint32_t offset, void *buf, uint32_t len) {
     }
 }
 
-static void dev_write(uint32_t lba, uint32_t offset, const void *buf, uint32_t len) {
+static bool dev_write(uint32_t lba, uint32_t offset, const void *buf, uint32_t len) {   /* true: something changed */
     uint32_t addr = lba * SECTOR_SIZE + offset;
+    bool changed = false;
     while (len) {
         uint32_t block = addr / BLOCK_SIZE, in = addr % BLOCK_SIZE;
         uint32_t n = BLOCK_SIZE - in; if (n > len) n = len;
         cache_load(block);
-        if (memcmp(cache + in, buf, n) != 0) { memcpy(cache + in, buf, n); cache_dirty = true; }
+        if (memcmp(cache + in, buf, n) != 0) { memcpy(cache + in, buf, n); cache_dirty = true; changed = true; }
         buf = (const uint8_t *)buf + n; addr += n; len -= n;
     }
+    return changed;
 }
 
 /* ---- FatFs disk I/O ------------------------------------------------------ */
@@ -113,7 +129,10 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
 }
 DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    dev_write((uint32_t)sector, 0, buff, count * SECTOR_SIZE);
+    if (dev_write((uint32_t)sector, 0, buff, count * SECTOR_SIZE)) {
+        dev_wrote = true;
+        last_dev_write_ms = to_ms_since_boot(get_absolute_time());
+    }
     return RES_OK;
 }
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
@@ -425,6 +444,7 @@ bool flashfs_init(void) {
     }
     mounted = (r == FR_OK);
     cache_flush();
+    dev_wrote = false;                           /* (what was written here, the host has not seen any other way) */
     if (mounted) { script_hash = compute_script_hash(); take_snapshot(); }
     return mounted;
 }
@@ -443,6 +463,17 @@ void flashfs_poll(void) {
             reload_requested = true;
         }
     }
+    /* a script wrote and has been quiet since, and the host is not in the middle of writing:
+       take the medium away for a moment */
+    if (dev_wrote && !host_wrote && !medium_out_until && now - last_dev_write_ms > DEV_WRITE_SETTLE_MS
+        && now - last_host_write_ms > 1500 && (!last_medium_out_ms || now - last_medium_out_ms > MEDIUM_OUT_GAP_MS)) {
+        cache_flush();
+        dev_wrote = false;
+        last_medium_out_ms = now ? now : 1;
+        medium_out_until = now + MEDIUM_OUT_MS;
+        if (!medium_out_until) medium_out_until = 1;
+    }
+    if (medium_out_until && (int32_t)(now - medium_out_until) >= 0) { medium_out_until = 0; medium_changed = true; }
 }
 
 bool flashfs_take_reload_request(void) {
@@ -462,7 +493,20 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
     memcpy(product_rev, "1.0 ", 4);
 }
 
-bool tud_msc_test_unit_ready_cb(uint8_t lun) { (void)lun; return true; }
+static bool medium_absent(uint8_t lun) {
+    if (!medium_out_until) return false;
+    tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3A, 0x00);        /* medium not present */
+    return true;
+}
+bool tud_msc_test_unit_ready_cb(uint8_t lun) {
+    if (medium_absent(lun)) return false;
+    if (medium_changed) {
+        medium_changed = false;
+        tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);   /* not ready to ready: the medium may have changed */
+        return false;
+    }
+    return true;
+}
 
 void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_size) {
     (void)lun;
@@ -479,14 +523,14 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, boo
 bool tud_msc_is_writable_cb(uint8_t lun) { (void)lun; return true; }
 
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize) {
-    (void)lun;
+    if (medium_absent(lun)) return -1;
     if (lba >= SECTORS) return -1;
     dev_read(lba, offset, buffer, bufsize);
     return (int32_t)bufsize;
 }
 
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize) {
-    (void)lun;
+    if (medium_absent(lun)) return -1;
     if (lba >= SECTORS) return -1;
     dev_write(lba, offset, buffer, bufsize);
     last_host_write_ms = to_ms_since_boot(get_absolute_time());
