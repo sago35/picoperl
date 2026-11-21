@@ -1819,12 +1819,18 @@ PACK_FN static int unpack_run(pp_interp *I, const char *t, int tl, const unsigne
     int pos = 0;
     pack_item it;
     int64_t forced = -1;        /* count taken from a LENGTH/ item, for the next item */
+    int cks = -1, cks_from = 0; /* a %<bits> in front of the current item: sum its values */
     if (depth > 20) { pp_die(I, "Too deeply nested ()-groups in unpack"); return 0; }
     for (;;) {
         int r = pack_next(I, t, tl, &pos, &it);
         if (r <= 0) return r == 0;
         if (res->n > PACK_MAX) { pp_die(I, "unpack: too many values"); return 0; }
         if (forced >= 0) { it.count = forced; it.star = 0; it.has_count = 1; forced = -1; }
+        if (it.type == '%') {   /* %<bits>ITEM: the sum of what ITEM unpacks, kept to that many bits (16 without a number) */
+            cks = it.has_count ? (int)it.count : 16;
+            cks_from = res->n;
+            continue;
+        }
         int is_signed, big;
         int isz = pack_int_size(&it, &is_signed, &big);
         int left = dl - *dp;
@@ -1927,6 +1933,23 @@ PACK_FN static int unpack_run(pp_interp *I, const char *t, int tl, const unsigne
             if (it.slash) forced = last < 0 ? 0 : last;
             break;
         }
+        }
+        if (cks >= 0) {
+            uint64_t sum = 0; double fsum = 0; int isf = 0;
+            for (int k = cks_from; k < res->n; k++) {
+                pp_val v = res->v[k];
+                if (v.t == PP_STR && (it.type == 'b' || it.type == 'B')) { for (int x = 0; x < v.u.s->len; x++) sum += v.u.s->d[x] == '1'; }   /* bit strings: the number of set bits */
+                else if (v.t == PP_NUM) { isf = 1; fsum += v.u.n; }
+                else sum += (uint64_t)pp_to_int(v);
+                pp_release(v);
+            }
+            res->n = cks_from;
+            if (isf) { fsum += (double)(int64_t)sum; if (cks < 64) { double m = (double)((uint64_t)1 << cks); fsum = fmod(fsum, m); if (fsum < 0) fsum += m; } pp_list_push(res, pp_num(fsum)); }
+            else {
+                if (cks < 64) sum &= ((uint64_t)1 << cks) - 1;
+                if (sum > (uint64_t)INT64_MAX) pp_list_push(res, pp_num((double)sum)); else pp_list_push(res, pp_int((int64_t)sum));
+            }
+            cks = -1;
         }
     }
 }

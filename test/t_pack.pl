@@ -35,3 +35,13 @@ for my $bad ("y", "(C") { my $r = eval { my $x = pack($bad, 1, 2); 1 }; show("er
     show("U", (pack("U", 0x3042) eq $a ? "pack U" : "differs"), join(",", unpack("U*", $a . "A")), (pack("U*", 65, 0xe9, 0x1f600) eq $mix ? "pack U*" : "differs"));
 }
 print "done\n";
+
+# unpack のチェックサム: %<bits> を付けた項目は、値の合計になる
+{
+    my $s = "The quick brown fox";
+    print unpack("%32C*", $s), " ", unpack("%8C*", $s), " ", unpack("%C*", $s), " ", unpack("%16n*", pack("n*", 65535, 2, 3)), "\n";
+    print unpack("%32b*", "\x07\xf0"), " ", unpack("%32B*", "abc"), " ", unpack("%3C*", "\xff\xff"), "\n";
+    my @r = unpack("a2 %32C3 a*", "hdABCrest"); print scalar(@r), ": @r\n";
+    print unpack("%32N*", pack("N*", 4000000000, 4000000000)), " ", unpack("%64N*", pack("N*", 4000000000, 4000000000)), " ", unpack("%32c*", "\xff\x01"), "\n";
+    print unpack("%32C*", ""), " ", unpack("%32C*", "abc") % 65535, "\n";
+}
