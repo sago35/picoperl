@@ -393,6 +393,12 @@ perl との違い: `use Fcntl qw(:seek)` のようにタグを指定しても、
   呼んだパッケージの外で最初の呼び出し元の位置を付けます。`confess` などの呼び出し履歴に引数は出ません
   (`main::f() called at ...`)。`@CARP_NOT` は見ません
 
+- `POSIX` (ボードで意味のある部分): `floor ceil fmod pow round trunc fabs tan asin acos atan sinh cosh tanh log10 log2 isnan isinf`、
+  `strftime` (`strftime("%Y-%m-%d %H:%M:%S", localtime)`。曜日と月の名前は英語、`%Z` は `UTC`、`%z` は `+0000`。範囲外の日時は
+  perl 5.42 以降と同じく繰り上がります)、`strtol strtod setlocale localeconv getpid _exit access tzset tzname`、
+  `WEXITSTATUS WIFEXITED WTERMSIG WIFSIGNALED`。定数は `SIG*`、`WNOHANG`、`LC_*`、`EXIT_*`、`INT_MAX` / `DBL_MAX` などの上限、
+  `M_PI` など、`R_OK` / `W_OK`、Fcntl と Errno の定数。`use POSIX;` だけなら RAM はほとんど増えず (見込みで約 0.8KB)、
+  使った関数や定数のぶんだけ増えます。シグナル (`sigaction`、`POSIX::SigSet`)、端末 (`Termios`)、`dup2` などはありません
 - `MIME::Base64`: `encode_base64` `decode_base64` (76 文字ごとに改行。`encode_base64($bytes, "")` で改行なし)、
   `encode_base64url` `decode_base64url`、`encoded_base64_length` `decoded_base64_length`。
   `MIME::QuotedPrint`: `encode_qp` `decode_qp`。どれも C で実装してあり、perl 本体 (XS 版) と同じ結果になります

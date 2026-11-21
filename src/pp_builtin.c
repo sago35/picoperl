@@ -2482,7 +2482,207 @@ static const struct { const char *name; uint8_t val; } errno_consts[] = {
     {"EKEYREVOKED", 128}, {"EKEYREJECTED", 129}, {"EOWNERDEAD", 130}, {"ENOTRECOVERABLE", 131},
     {"ERFKILL", 132}, {"EHWPOISON", 133},
 };
+
+/* ---------------- POSIX (the part that makes sense here) ----------------
+   lib/POSIX.pm exports these by name on first use; none of it costs memory until then. */
+#define POSIX_MATH1(fname, expr) \
+    static pp_val fname(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; double x = a->n ? pp_to_num(a->v[0]) : 0; return pp_num(expr); }
+POSIX_MATH1(n_px_round, round(x)) POSIX_MATH1(n_px_trunc, trunc(x)) POSIX_MATH1(n_px_tan, tan(x))
+POSIX_MATH1(n_px_asin, asin(x)) POSIX_MATH1(n_px_acos, acos(x)) POSIX_MATH1(n_px_atan, atan(x))
+POSIX_MATH1(n_px_sinh, sinh(x)) POSIX_MATH1(n_px_cosh, cosh(x)) POSIX_MATH1(n_px_tanh, tanh(x))
+POSIX_MATH1(n_px_log10, log10(x)) POSIX_MATH1(n_px_log2, log2(x)) POSIX_MATH1(n_px_fabs, fabs(x))
+static pp_val n_px_fmod(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_num(fmod(a->n ? pp_to_num(a->v[0]) : 0, a->n > 1 ? pp_to_num(a->v[1]) : 0)); }
+static pp_val n_px_pow(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_num(pow(a->n ? pp_to_num(a->v[0]) : 0, a->n > 1 ? pp_to_num(a->v[1]) : 0)); }
+static pp_val n_px_isnan(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(a->n && isnan(pp_to_num(a->v[0]))); }
+static pp_val n_px_isinf(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(a->n && isinf(pp_to_num(a->v[0]))); }
+/* the wait status macros (the status is what $? holds) */
+static pp_val n_px_wexitstatus(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(((a->n ? pp_to_int(a->v[0]) : 0) >> 8) & 255); }
+static pp_val n_px_wifexited(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int(((a->n ? pp_to_int(a->v[0]) : 0) & 127) == 0); }
+static pp_val n_px_wtermsig(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return pp_int((a->n ? pp_to_int(a->v[0]) : 0) & 127); }
+static pp_val n_px_wifsignaled(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; int64_t s = (a->n ? pp_to_int(a->v[0]) : 0) & 127; return pp_int(s != 0 && s != 127); }
+static pp_val n_px_exit(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)ctx; (void)out; pp_request_exit(I, a->n ? (int)pp_to_int(a->v[0]) : 0); return pp_undef(); }
+static pp_val n_px_getpid(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)a; (void)ctx; (void)out; return pp_copy(pp_global(I, pp_intern(I, "$$", 2))->u.scalar); }
+/* access(PATH, MODE): "0 but true" when the file is there and allows it (R_OK | W_OK | X_OK), else undef */
+static pp_val n_px_access(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_str *p = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    int mode = a->n > 1 ? (int)pp_to_int(a->v[1]) : 0;
+    long long size = 0;
+    int m = pp_host_filetest(p->d, &size);
+    pp_str_decref(p);
+    int ok = m >= 0 && (!(mode & 4) || (m & PP_FT_READ)) && (!(mode & 2) || (m & PP_FT_WRITE)) && (!(mode & 1) || (m & PP_FT_EXEC));
+    if (!ok) { set_errno_var(I, m < 0 ? "No such file or directory" : "Permission denied"); return pp_undef(); }
+    return pp_strn("0 but true", 10);
+}
+/* tzset / tzname: there is one time zone */
+static pp_val n_px_tzname(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)a;
+    if (ctx == CTX_LIST && out) { pp_list_push(out, pp_strn("UTC", 3)); pp_list_push(out, pp_strn("UTC", 3)); return pp_no_value(); }
+    return pp_strn("UTC", 3);
+}
+/* setlocale: there is the "C" locale and nothing else */
+static pp_val n_px_setlocale(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)ctx; (void)out;
+    if (a->n > 1 && a->v[1].t != PP_UNDEF) {
+        pp_str *l = pp_to_str(a->v[1]);
+        int ok = l->len == 0 || !strcmp(l->d, "C") || !strcmp(l->d, "POSIX");
+        pp_str_decref(l);
+        if (!ok) return pp_undef();
+    }
+    return pp_strn("C", 1);
+}
+static pp_val n_px_localeconv(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I; (void)a; (void)ctx; (void)out;
+    pp_obj *h = pp_obj_new(PP_OHASH);
+    pp_hash_set(h, "decimal_point", 13, pp_strn(".", 1));
+    pp_val r = pp_ref(h); pp_obj_decref(h);
+    return r;
+}
+/* strtol(STR, BASE = 10): the number, and in list context how many characters were left over */
+static pp_val n_px_strtol(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    int base = a->n > 1 ? (int)pp_to_int(a->v[1]) : 10;
+    char *end = s->d;
+    long long v = base == 0 || (base >= 2 && base <= 36) ? strtoll(s->d, &end, base) : 0;
+    int left = s->len - (int)(end - s->d);
+    pp_str_decref(s);
+    if (ctx == CTX_LIST && out) { pp_list_push(out, pp_int(v)); pp_list_push(out, pp_int(left)); return pp_no_value(); }
+    return pp_int(v);
+}
+static pp_val n_px_strtod(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)I;
+    pp_str *s = a->n ? pp_to_str(a->v[0]) : pp_str_new(NULL, 0);
+    char *end = s->d;
+    double v = strtod(s->d, &end);
+    int left = s->len - (int)(end - s->d);
+    pp_str_decref(s);
+    if (ctx == CTX_LIST && out) { pp_list_push(out, pp_num(v)); pp_list_push(out, pp_int(left)); return pp_no_value(); }
+    return pp_num(v);
+}
+/* strftime(FMT, SEC, MIN, HOUR, MDAY, MON, YEAR, ...): the fields are taken as they are (the
+   week day and the day of the year are worked out from the date, as perl does); English
+   names, and UTC for %Z / %z (there are no time zones here) */
+static int px_days_before(int y, int m) {     /* days from 1970-01-01 to the first of month m (0-based) of year y */
+    static const int cum[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+    y += m / 12; m %= 12; if (m < 0) { m += 12; y--; }
+    long yy = y - 1;
+    long days = 365L * (y - 1970) + (yy / 4 - yy / 100 + yy / 400) - (1969 / 4 - 1969 / 100 + 1969 / 400) + cum[m];
+    if (m > 1 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) days++;
+    return (int)days;
+}
+static pp_val n_px_strftime(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    static const char *const wd[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+    static const char *const mn[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    if (a->n < 7) return pp_die(I, "Usage: POSIX::strftime(fmt, sec, min, hour, mday, mon, year, wday = -1, yday = -1, isdst = -1)");
+    pp_str *f = pp_to_str(a->v[0]);
+    int sec = (int)pp_to_int(a->v[1]), min = (int)pp_to_int(a->v[2]), hour = (int)pp_to_int(a->v[3]);
+    int mday = (int)pp_to_int(a->v[4]), mon = (int)pp_to_int(a->v[5]), year = (int)pp_to_int(a->v[6]) + 1900;
+    year += mon / 12; mon %= 12; if (mon < 0) { mon += 12; year--; }
+    int days = px_days_before(year, mon) + mday - 1;
+    {   /* fields out of range roll over, as with mktime (and as perl 5.42 and later do):
+           January 32nd is February 1st, second 60 is the next minute */
+        long long t = (long long)days * 86400 + (long long)hour * 3600 + (long long)min * 60 + sec;
+        long long d = t / 86400, rem = t % 86400;
+        if (rem < 0) { rem += 86400; d--; }
+        days = (int)d; hour = (int)(rem / 3600); min = (int)(rem % 3600 / 60); sec = (int)(rem % 60);
+        long long z = d + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
+        long long doe = z - era * 146097, yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+        mday = (int)(doy - (153 * mp + 2) / 5 + 1);
+        mon = (int)(mp < 10 ? mp + 2 : mp - 10);
+        year = (int)(yoe + era * 400 + (mon <= 1));
+    }
+    int wday = ((days % 7) + 11) % 7;                      /* 1970-01-01 was a Thursday */
+    int yday = days - px_days_before(year, 0);
+    pp_str *r = pp_str_new(NULL, 0);
+    char b[48];
+    for (int i = 0; i < f->len; i++) {
+        if (f->d[i] != '%' || i + 1 >= f->len) { str_append(&r, f->d + i, 1); continue; }
+        char c = f->d[++i];
+        int n = 0, h12 = hour % 12 ? hour % 12 : 12;
+        switch (c) {
+        case 'Y': n = pp_snprintf(b, sizeof b, "%d", year); break;
+        case 'C': n = pp_snprintf(b, sizeof b, "%02d", year / 100); break;
+        case 'y': n = pp_snprintf(b, sizeof b, "%02d", ((year % 100) + 100) % 100); break;
+        case 'm': n = pp_snprintf(b, sizeof b, "%02d", mon + 1); break;
+        case 'd': n = pp_snprintf(b, sizeof b, "%02d", mday); break;
+        case 'e': n = pp_snprintf(b, sizeof b, "%2d", mday); break;
+        case 'H': n = pp_snprintf(b, sizeof b, "%02d", hour); break;
+        case 'I': n = pp_snprintf(b, sizeof b, "%02d", h12); break;
+        case 'M': n = pp_snprintf(b, sizeof b, "%02d", min); break;
+        case 'S': n = pp_snprintf(b, sizeof b, "%02d", sec); break;
+        case 'j': n = pp_snprintf(b, sizeof b, "%03d", yday + 1); break;
+        case 'u': n = pp_snprintf(b, sizeof b, "%d", wday ? wday : 7); break;
+        case 'w': n = pp_snprintf(b, sizeof b, "%d", wday); break;
+        case 'a': n = pp_snprintf(b, sizeof b, "%.3s", wd[wday]); break;
+        case 'A': n = pp_snprintf(b, sizeof b, "%s", wd[wday]); break;
+        case 'b': case 'h': n = pp_snprintf(b, sizeof b, "%.3s", mn[mon]); break;
+        case 'B': n = pp_snprintf(b, sizeof b, "%s", mn[mon]); break;
+        case 'p': n = pp_snprintf(b, sizeof b, "%s", hour < 12 ? "AM" : "PM"); break;
+        case 'F': n = pp_snprintf(b, sizeof b, "%d-%02d-%02d", year, mon + 1, mday); break;
+        case 'T': n = pp_snprintf(b, sizeof b, "%02d:%02d:%02d", hour, min, sec); break;
+        case 'R': n = pp_snprintf(b, sizeof b, "%02d:%02d", hour, min); break;
+        case 'D': case 'x': n = pp_snprintf(b, sizeof b, "%02d/%02d/%02d", mon + 1, mday, ((year % 100) + 100) % 100); break;
+        case 'X': n = pp_snprintf(b, sizeof b, "%02d:%02d:%02d", hour, min, sec); break;
+        case 'r': n = pp_snprintf(b, sizeof b, "%02d:%02d:%02d %s", h12, min, sec, hour < 12 ? "AM" : "PM"); break;
+        case 'c': n = pp_snprintf(b, sizeof b, "%.3s %.3s %2d %02d:%02d:%02d %d", wd[wday], mn[mon], mday, hour, min, sec, year); break;
+        case 's': n = pp_snprintf(b, sizeof b, "%lld", (long long)days * 86400 + hour * 3600 + min * 60 + sec); break;
+        case 'Z': n = pp_snprintf(b, sizeof b, "UTC"); break;
+        case 'z': n = pp_snprintf(b, sizeof b, "+0000"); break;
+        case 'n': b[0] = '\n'; n = 1; break;
+        case 't': b[0] = '\t'; n = 1; break;
+        case '%': b[0] = '%'; n = 1; break;
+        default:  b[0] = '%'; b[1] = c; n = 2; break;
+        }
+        str_append(&r, b, n);
+    }
+    pp_str_decref(f);
+    return pp_str_val(r);
+}
+static const struct { const char *name; int64_t val; } posix_consts[] = {
+    {"SIGHUP", 1}, {"SIGINT", 2}, {"SIGQUIT", 3}, {"SIGILL", 4}, {"SIGTRAP", 5}, {"SIGABRT", 6}, {"SIGBUS", 7}, {"SIGFPE", 8},
+    {"SIGKILL", 9}, {"SIGUSR1", 10}, {"SIGSEGV", 11}, {"SIGUSR2", 12}, {"SIGPIPE", 13}, {"SIGALRM", 14}, {"SIGTERM", 15},
+    {"SIGCHLD", 17}, {"SIGCONT", 18}, {"SIGSTOP", 19}, {"SIGTSTP", 20}, {"SIGTTIN", 21}, {"SIGTTOU", 22},
+    {"SIG_BLOCK", 0}, {"SIG_UNBLOCK", 1}, {"SIG_SETMASK", 2},
+    {"WNOHANG", 1}, {"WUNTRACED", 2},
+    {"LC_CTYPE", 0}, {"LC_NUMERIC", 1}, {"LC_TIME", 2}, {"LC_COLLATE", 3}, {"LC_MONETARY", 4}, {"LC_MESSAGES", 5}, {"LC_ALL", 6},
+    {"EXIT_SUCCESS", 0}, {"EXIT_FAILURE", 1},
+    {"R_OK", 4}, {"W_OK", 2}, {"X_OK", 1}, {"F_OK", 0},
+    {"STDIN_FILENO", 0}, {"STDOUT_FILENO", 1}, {"STDERR_FILENO", 2},
+    {"CHAR_BIT", 8}, {"CHAR_MAX", 127}, {"CHAR_MIN", -128}, {"SCHAR_MAX", 127}, {"SCHAR_MIN", -128}, {"UCHAR_MAX", 255},
+    {"SHRT_MAX", 32767}, {"SHRT_MIN", -32768}, {"USHRT_MAX", 65535},
+    {"INT_MAX", 2147483647}, {"INT_MIN", -2147483647 - 1}, {"UINT_MAX", 4294967295LL},
+    {"LONG_MAX", INT64_MAX}, {"LONG_MIN", INT64_MIN},
+    {"PATH_MAX", 4096}, {"NAME_MAX", 255}, {"BUFSIZ", 8192}, {"EOF", -1}, {"RAND_MAX", 2147483647}, {"CLOCKS_PER_SEC", 1000000},
+    {"DBL_DIG", 15}, {"DBL_MANT_DIG", 53}, {"FLT_DIG", 6}, {"FLT_MANT_DIG", 24}, {"FLT_RADIX", 2},
+};
+static const struct { const char *name; double val; } posix_fconsts[] = {
+    {"DBL_MAX", 1.7976931348623157e308}, {"DBL_MIN", 2.2250738585072014e-308}, {"DBL_EPSILON", 2.2204460492503131e-16},
+    {"FLT_MAX", 3.40282346638528859812e38}, {"FLT_MIN", 1.17549435082228750797e-38}, {"FLT_EPSILON", 1.1920928955078125e-07},
+    {"ULONG_MAX", 18446744073709551615.0},
+    {"M_PI", 3.14159265358979323846}, {"M_E", 2.7182818284590452354}, {"M_SQRT2", 1.41421356237309504880},
+    {"M_LN2", 0.69314718055994530942}, {"M_LN10", 2.30258509299404568402},
+};
 int pp_core_const(const char *name, pp_val *out) {
+    int posix = !strncmp(name, "POSIX::", 7);
+    if (posix) {
+        name += 7;
+        for (size_t i = 0; i < sizeof posix_consts / sizeof posix_consts[0]; i++)
+            if (!strcmp(posix_consts[i].name, name)) { *out = pp_int(posix_consts[i].val); return 1; }
+        for (size_t i = 0; i < sizeof posix_fconsts / sizeof posix_fconsts[0]; i++)
+            if (!strcmp(posix_fconsts[i].name, name)) { *out = pp_num(posix_fconsts[i].val); return 1; }
+        if (!strcmp(name, "HUGE_VAL") || !strcmp(name, "INFINITY")) { *out = pp_num(INFINITY); return 1; }
+        if (!strcmp(name, "NAN")) { *out = pp_num(NAN); return 1; }
+        /* POSIX has the fcntl.h and errno.h constants too (O_RDONLY, SEEK_SET, EAGAIN ...) */
+        for (size_t i = 0; i < sizeof fcntl_consts / sizeof fcntl_consts[0]; i++)
+            if (!strcmp(fcntl_consts[i].name, name)) { *out = pp_int((int64_t)fcntl_consts[i].val); return 1; }
+        if (name[0] == 'E')
+            for (size_t i = 0; i < sizeof errno_consts / sizeof errno_consts[0]; i++)
+                if (!strcmp(errno_consts[i].name, name)) { *out = pp_int(errno_consts[i].val); return 1; }
+        return 0;
+    }
     if (!strncmp(name, "Fcntl::", 7)) {
         name += 7;
         for (size_t i = 0; i < sizeof fcntl_consts / sizeof fcntl_consts[0]; i++)
@@ -2779,19 +2979,76 @@ static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     if (arr->tied) pp_tie_writeback(I, arr);
     return pp_copy(a->v[1]);
 }
+
+/* Natives that are made the first time a script names them (pp_resolve_sub asks here): a
+   native registered up front costs RAM in every script, these cost none until they are used. */
+static const struct { const char *name; pp_native fn; } lazy_natives[] = {
+    {"MIME::Base64::encode_base64", n_b64_encode},
+    {"MIME::Base64::decode_base64", n_b64_decode},
+    {"MIME::Base64::encode_base64url", n_b64url_encode},
+    {"MIME::Base64::decode_base64url", n_b64url_decode},
+    {"MIME::Base64::encoded_base64_length", n_b64_enclen},
+    {"MIME::Base64::decoded_base64_length", n_b64_declen},
+    {"MIME::QuotedPrint::encode_qp", n_qp_encode},
+    {"MIME::QuotedPrint::decode_qp", n_qp_decode},
+    {"builtin::ceil", n_bi_ceil},
+    {"builtin::trim", n_bi_trim},
+    {"builtin::indexed", n_bi_indexed},
+    {"builtin::true", n_bi_true},
+    {"builtin::false", n_bi_false},
+    {"builtin::is_weak", n_bi_false},
+    {"builtin::is_tainted", n_bi_false},
+    {"builtin::weaken", n_bi_nothing},
+    {"builtin::unweaken", n_bi_nothing},
+    {"builtin::floor", n_bi_floor},
+    {"builtin::blessed", n_bi_blessed},
+    {"builtin::reftype", n_bi_reftype},
+    {"builtin::refaddr", n_bi_refaddr},
+    {"Scalar::Util::looks_like_number", n_looks_like_number},
+    {"POSIX::floor", n_bi_floor},
+    {"POSIX::ceil", n_bi_ceil},
+    {"POSIX::fmod", n_px_fmod},
+    {"POSIX::pow", n_px_pow},
+    {"POSIX::round", n_px_round},
+    {"POSIX::trunc", n_px_trunc},
+    {"POSIX::tan", n_px_tan},
+    {"POSIX::asin", n_px_asin},
+    {"POSIX::acos", n_px_acos},
+    {"POSIX::atan", n_px_atan},
+    {"POSIX::sinh", n_px_sinh},
+    {"POSIX::cosh", n_px_cosh},
+    {"POSIX::tanh", n_px_tanh},
+    {"POSIX::log10", n_px_log10},
+    {"POSIX::log2", n_px_log2},
+    {"POSIX::fabs", n_px_fabs},
+    {"POSIX::isnan", n_px_isnan},
+    {"POSIX::isinf", n_px_isinf},
+    {"POSIX::strftime", n_px_strftime},
+    {"POSIX::access", n_px_access},
+    {"POSIX::tzname", n_px_tzname},
+    {"POSIX::tzset", n_bi_nothing},
+    {"POSIX::strtol", n_px_strtol},
+    {"POSIX::strtod", n_px_strtod},
+    {"POSIX::setlocale", n_px_setlocale},
+    {"POSIX::localeconv", n_px_localeconv},
+    {"POSIX::getpid", n_px_getpid},
+    {"POSIX::_exit", n_px_exit},
+    {"POSIX::WEXITSTATUS", n_px_wexitstatus},
+    {"POSIX::WIFEXITED", n_px_wifexited},
+    {"POSIX::WTERMSIG", n_px_wtermsig},
+    {"POSIX::WIFSIGNALED", n_px_wifsignaled},
+};
+pp_native pp_core_native(const char *name, const char **stored) {
+    if (!strstr(name, "::")) return NULL;
+    for (size_t i = 0; i < sizeof lazy_natives / sizeof lazy_natives[0]; i++)
+        if (!strcmp(lazy_natives[i].name, name)) { *stored = lazy_natives[i].name; return lazy_natives[i].fn; }
+    return NULL;
+}
 void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "times", n_times);
     pp_register(I, "umask", n_umask);
     pp_register(I, "__read", n_read);
     pp_register(I, "syswrite", n_syswrite);
-    pp_register(I, "MIME::Base64::encode_base64", n_b64_encode);
-    pp_register(I, "MIME::Base64::decode_base64", n_b64_decode);
-    pp_register(I, "MIME::Base64::encode_base64url", n_b64url_encode);
-    pp_register(I, "MIME::Base64::decode_base64url", n_b64url_decode);
-    pp_register(I, "MIME::Base64::encoded_base64_length", n_b64_enclen);
-    pp_register(I, "MIME::Base64::decoded_base64_length", n_b64_declen);
-    pp_register(I, "MIME::QuotedPrint::encode_qp", n_qp_encode);
-    pp_register(I, "MIME::QuotedPrint::decode_qp", n_qp_decode);
     pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);
     pp_register(I, "__lastidx_set", n_lastidx_set);
@@ -2819,20 +3076,6 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "unpack", n_unpack);
     pp_register(I, "localtime", n_localtime);
     pp_register(I, "gmtime", n_gmtime);
-    pp_register(I, "builtin::ceil", n_bi_ceil);
-    pp_register(I, "builtin::trim", n_bi_trim);
-    pp_register(I, "builtin::indexed", n_bi_indexed);
-    pp_register(I, "builtin::true", n_bi_true);
-    pp_register(I, "builtin::false", n_bi_false);
-    pp_register(I, "builtin::is_weak", n_bi_false);
-    pp_register(I, "builtin::is_tainted", n_bi_false);
-    pp_register(I, "builtin::weaken", n_bi_nothing);
-    pp_register(I, "builtin::unweaken", n_bi_nothing);
-    pp_register(I, "builtin::floor", n_bi_floor);
-    pp_register(I, "builtin::blessed", n_bi_blessed);
-    pp_register(I, "builtin::reftype", n_bi_reftype);
-    pp_register(I, "builtin::refaddr", n_bi_refaddr);
-    pp_register(I, "Scalar::Util::looks_like_number", n_looks_like_number);
     /* utf8:: functions that need no `use utf8`. Strings are bytes here, so the code point
        conversions are the identity and the encoding ones leave the string alone. */
     pp_register(I, "utf8::unicode_to_native", n_utf8_identity);

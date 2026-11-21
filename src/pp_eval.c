@@ -151,6 +151,16 @@ static pp_obj *resolve_depth(pp_interp *I, pp_sym *sym, int depth) {
         pp_define_sub(I, sym, code);
         return sym->sub;
     }
+    {
+        const char *nm = NULL;
+        pp_native fn = pp_core_native(sym->name + 1, &nm);
+        if (fn) {
+            pp_obj *code = pp_obj_new(PP_OCODE);
+            code->u.code.native = fn; code->u.code.name = nm;
+            pp_define_sub(I, sym, code);
+            return sym->sub;
+        }
+    }
     if (I->nlazy) {
         const char *full = sym->name + 1;
         const char *last = NULL;
