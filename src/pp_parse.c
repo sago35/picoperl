@@ -304,7 +304,22 @@ static void skip_ws(pp_lex *L) {
             if (peekc(L, 0) == '=' && is_ident_start(peekc(L, 1))) skip_pod(L);
         }
         else if (c == ' ' || c == '\t' || c == '\r' || c == '\f') L->pos++;
-        else if (c == '#') { while (L->pos < L->len && L->src[L->pos] != '\n') L->pos++; }
+        else if (c == '#') {
+            int at_bol = L->pos == 0 || L->src[L->pos - 1] == '\n';
+            int start = L->pos;
+            while (L->pos < L->len && L->src[L->pos] != '\n') L->pos++;
+            if (at_bol) {   /* "# line 28" / "#line 28 "name"": the next line counts as line 28 (the name is not used) */
+                int i = start + 1;
+                while (i < L->pos && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+                if (i + 4 < L->pos && !memcmp(L->src + i, "line", 4) && (L->src[i + 4] == ' ' || L->src[i + 4] == '\t')) {
+                    i += 4;
+                    while (i < L->pos && (L->src[i] == ' ' || L->src[i] == '\t')) i++;
+                    int n = 0, digits = 0;
+                    while (i < L->pos && isdigit((unsigned char)L->src[i]) && digits < 6) { n = n * 10 + (L->src[i] - '0'); i++; digits++; }
+                    if (digits && (i >= L->pos || L->src[i] == ' ' || L->src[i] == '\t' || L->src[i] == '\r')) L->line = n - 1;
+                }
+            }
+        }
         else break;
     }
 }
