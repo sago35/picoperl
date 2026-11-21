@@ -40,6 +40,7 @@ void    pp_hash_clear(pp_obj *h);
 
 /* tie: which object a variable (or glob) is tied to. The variable carries only the `tied`
    flag; the object lives in a table, so untied variables pay nothing for it. */
+int     pp_core_fn_known(const char *name, int len);     /* a perl function name (for CORE::name) */
 int     pp_core_const(const char *name, pp_val *out);   /* "Pkg::NAME" of a constant kept in ROM (Fcntl) */
 void    pp_tie_set(pp_obj *var, pp_val obj);       /* takes ownership of obj; replaces an old tie */
 void pp_elemref_sync(pp_obj *cell, int store);   /* the scalar behind \$a[i] / \$h{k} <-> its element */

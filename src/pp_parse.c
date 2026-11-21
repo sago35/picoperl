@@ -2647,8 +2647,8 @@ static pp_node *parse_ident_term(pp_parser *P) {
         }
     }
     int forced_core = 0;
-    if (len > 6 && !memcmp(id, "CORE::", 6) && pp_builtin_id(id + 6, len - 6, NULL) > 0) {
-        /* CORE::length: the builtin itself, even where a sub of that name exists */
+    if (len > 6 && !memcmp(id, "CORE::", 6) && pp_core_fn_known(id + 6, len - 6)) {
+        /* CORE::length, CORE::caller, CORE::stat: the builtin itself, even where a sub of that name exists */
         t->s += 6; t->len -= 6; id = t->s; len = t->len; forced_core = 1;
     }
 
@@ -3052,7 +3052,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
         char buf[128];
         int bn = pp_snprintf(buf, sizeof buf, "&%.*s", len, id);
         pp_sym *m = bn < (int)sizeof buf ? pp_sym_find(P->I, buf, bn) : NULL;
-        if (m && m->sub && m->sub->u.code.native && !overrides_builtin(P, s, id, len)) s = m;
+        if (m && m->sub && m->sub->u.code.native && (forced_core || !overrides_builtin(P, s, id, len))) s = m;
     }
     advance(P);
     pp_node *n = node(P, N_CALL); n->sym = s; n->line = (uint16_t)(P->stmt_line ? P->stmt_line : line);

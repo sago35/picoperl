@@ -40,6 +40,7 @@ static const char core_protos[] =
     " umask=;$ undef=;\\[$@%&*] unlink=@ unpack=$_ unshift=\\@@ untie=\\[$@%*] utime=@ values=\\[%@] vec=$$$"
     " wait= waitpid=$$ wantarray= warn=@ write=;* ";
 
+int pp_builtin_id(const char *name, int len, int *kind);
 static const struct { const char *name; int id; int kind; } builtins[] = {
     { "print", B_PRINT, BK_LIST }, { "printf", B_PRINTF, BK_LIST }, { "say", B_SAY, BK_LIST },
     { "push", B_PUSH, BK_LIST }, { "unshift", B_UNSHIFT, BK_LIST }, { "pop", B_POP, BK_UNARY }, { "shift", B_SHIFT, BK_UNARY },
@@ -64,6 +65,16 @@ static const struct { const char *name; int id; int kind; } builtins[] = {
     { NULL, 0, 0 }
 };
 
+/* is this the name of a perl function (CORE::name)? One of the builtins here, or one that
+   perl has a prototype for (caller, stat, wantarray ...) */
+int pp_core_fn_known(const char *name, int len) {
+    if (pp_builtin_id(name, len, NULL) > 0) return 1;
+    char key[48];
+    if (len <= 0 || len > 40) return 0;
+    int kl = pp_snprintf(key, sizeof key, " %.*s=", len, name);
+    (void)kl;
+    return strstr(core_protos, key) != NULL;
+}
 int pp_builtin_id(const char *name, int len, int *kind) {
     for (int i = 0; builtins[i].name; i++) {
         if ((int)strlen(builtins[i].name) == len && memcmp(builtins[i].name, name, len) == 0) {

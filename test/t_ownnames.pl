@@ -19,3 +19,14 @@ use strict; no warnings;
     print with_glob(), "\n";
     my $old = $=; $= = 42; my $n = $=; $= = $old; $~ = "MYFMT"; print "$n ", $~, "\n";
 }
+
+# CORE::name: 組み込み関数そのもの (caller、stat、wantarray なども)
+{
+    package CoreNames;
+    sub stat { "my stat" } sub caller { "my caller" } sub length { "my length" }
+    sub f { my @c = CORE::caller(0); my @s = CORE::stat($0); my $w = CORE::wantarray() ? "list" : "scalar"; join(" ", $c[3], (@s > 5 ? "statlist" : "nostat"), $w, CORE::length("abc"), CORE::join("-", 1, 2), CORE::ref([])) }
+    sub g { CoreNames->stat . "/" . CoreNames->caller . "/" . CoreNames->length }
+    package main;
+    my @r = CoreNames::f(); print "@r\n", CoreNames::g(), "\n";
+    print CORE::uc("x"), CORE::sprintf("%02d", 5), " ", (CORE::defined(CORE::time()) ? "time" : "?"), "\n";
+}
