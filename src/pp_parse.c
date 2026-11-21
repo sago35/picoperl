@@ -790,12 +790,37 @@ static pp_node *node(pp_parser *P, int type) {
     }
     return n;
 }
+/* The malloc'd temporaries of the file being parsed that are still alive: when the parse
+   fails, they are freed (a syntax error must not cost memory: a board re-reads main.pl after
+   every save). Not kept for subtrees that run at once (BEGIN, use): those are freed as a whole. */
+static pp_node **tmp_live; static int tmp_n, tmp_cap;
+static void tmp_forget(pp_node *n) {
+    for (int i = tmp_n - 1; i >= 0; i--) if (tmp_live[i] == n) { tmp_live[i] = tmp_live[--tmp_n]; return; }
+}
+static void tmp_forget_tree(pp_node *n) {         /* before pp_free_ast on a subtree made of them */
+    if (!n) return;
+    tmp_forget_tree(n->a); tmp_forget_tree(n->b);
+    if (n->type != N_CONST) {
+        tmp_forget_tree(n->c); tmp_forget_tree(n->d);
+        for (int i = 0; i < n->n; i++) tmp_forget_tree(n->list[i]);
+    }
+    if (n->flags & PP_NODE_HEAP) tmp_forget(n);
+}
+static void tmp_release(int base, int free_them) {
+    if (free_them) for (int i = base; i < tmp_n; i++) { free(tmp_live[i]->list); free(tmp_live[i]); pp_stat_nodes--; }
+    if (tmp_n > base) tmp_n = base;
+    if (!tmp_n) { free(tmp_live); tmp_live = NULL; tmp_cap = 0; }
+}
 /* temporary node (list shells etc.): always malloc'd so it can be dropped */
 static pp_node *node_tmp(pp_parser *P, int type) {
     if (P->sc->track && !P->sc->heap_depth) return node(P, type);   /* eval STRING: everything is in its arena */
     pp_node *n = pp_xmalloc(sizeof(pp_node));
     memset(n, 0, sizeof *n);
     pp_stat_nodes++;
+    if (!P->sc->heap_depth) {
+        if (tmp_n == tmp_cap) { tmp_cap = tmp_cap ? tmp_cap * 2 : 16; tmp_live = pp_xrealloc(tmp_live, (size_t)tmp_cap * sizeof *tmp_live); }
+        tmp_live[tmp_n++] = n;
+    }
     n->flags = PP_NODE_HEAP;
     n->type = (uint8_t)type;
     n->line = (uint16_t)P->cur.line;
@@ -803,6 +828,7 @@ static pp_node *node_tmp(pp_parser *P, int type) {
 }
 /* a temporary that stays in the tree: move it into the arena (unless the subtree is heap anyway) */
 static pp_node *adopt(pp_parser *P, pp_node *n) {
+    if (n->flags & PP_NODE_HEAP) tmp_forget(n);
     if (!(n->flags & PP_NODE_HEAP) || P->sc->heap_depth) return n;
     pp_node *a = pp_arena_alloc(P->sc->arena, sizeof(pp_node));
     P->sc->arena->nnodes++;
@@ -813,7 +839,7 @@ static pp_node *adopt(pp_parser *P, pp_node *n) {
 }
 static void drop_shell(pp_node *l) {
     free(l->list);
-    if (l->flags & PP_NODE_HEAP) { free(l); pp_stat_nodes--; }
+    if (l->flags & PP_NODE_HEAP) { tmp_forget(l); free(l); pp_stat_nodes--; }
     else { l->list = NULL; l->n = 0; }        /* an arena node stays behind, empty */
 }
 static void node_add(pp_node *n, pp_node *child) {
@@ -3273,7 +3299,7 @@ static pp_node *parse_use(pp_parser *P) {
                     if (!strcmp(w, "all")) vars = subs = refs = 1;
                 }
             }
-            pp_free_ast(l);
+            tmp_forget_tree(l); pp_free_ast(l);
             if (!is_strict) vars = subs = refs = 1;
         }
         if (is_strict) {
@@ -3305,7 +3331,7 @@ static pp_node *parse_use(pp_parser *P) {
                 const char *w = l->list[i]->val.u.s->d; int wl = (int)l->list[i]->val.u.s->len;
                 if (wl >= 2 && (w[0] == '$' || w[0] == '@' || w[0] == '%')) declare_our(P, w[0], w + 1, wl - 1);
             }
-            pp_free_ast(l);
+            tmp_forget_tree(l); pp_free_ast(l);
         }
         end_use(P);
         return NULL;
@@ -3745,6 +3771,12 @@ static void shrink_ast(pp_arena *arena, pp_node *n) {
     n->list = nl;
 }
 
+/* a parse failed: its own subs leave the list, those of files it loaded meanwhile stay */
+static void drop_own_subs(pp_interp *I, int from) {
+    int k = from;
+    for (int i = from; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_SUB_FILEDONE) I->all_subdefs[k++] = I->all_subdefs[i];
+    I->nall_subdefs = k;
+}
 /* Parse a file, or (site != NULL) the code of an eval STRING. The eval code starts with the
    package, pragmas and `my` variables of the place it is evaluated at, its nodes go into an
    arena of their own (*arena, freed by the caller once the code has run), and a syntax error
@@ -3778,10 +3810,12 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
         parse_from.chunk = I->arena->chunks;
         parse_from.off = I->arena->chunks ? I->arena->chunks->used : 0;
     }
+    int tmp_base = tmp_n;
     if (setjmp(P.jb)) {
+        if (site) tmp_release(tmp_base, 0);
         if (!site) {
             int defined_early = 0;               /* a BEGIN block or `use` already defined a sub from this file */
-            for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_SUB_EARLY) defined_early = 1;
+            for (int i = subs_before; i < I->nall_subdefs; i++) if ((I->all_subdefs[i]->flags & (PP_SUB_EARLY | PP_SUB_FILEDONE)) == PP_SUB_EARLY) defined_early = 1;
             pp_arena_pos parse_to = { I->arena->chunks, I->arena->chunks ? I->arena->chunks->used : 0 };
             I->nsubdefs = nsubdefs_before;
             if (defined_early) {
@@ -3789,15 +3823,22 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
                    (lists still malloc'd) and released with the interpreter. Its named subs leave
                    the list that pp_free walks; what a BEGIN block kept (heap nodes) stays. */
                 int k = subs_before;
-                for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_NODE_HEAP) I->all_subdefs[k++] = I->all_subdefs[i];
+                for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & (PP_NODE_HEAP | PP_SUB_FILEDONE)) I->all_subdefs[k++] = I->all_subdefs[i];
                 I->nall_subdefs = k;
                 I->failed_ranges = pp_xrealloc(I->failed_ranges, (size_t)(I->nfailed_ranges + 2) * sizeof(pp_arena_pos));
                 I->failed_ranges[I->nfailed_ranges++] = parse_from;
                 I->failed_ranges[I->nfailed_ranges++] = parse_to;
+                if (tmp_n > tmp_base) {               /* its temporaries go with it */
+                    I->failed_tmps = pp_xrealloc(I->failed_tmps, (size_t)(I->nfailed_tmps + tmp_n - tmp_base) * sizeof(pp_node *));
+                    for (int i = tmp_base; i < tmp_n; i++) I->failed_tmps[I->nfailed_tmps++] = tmp_live[i];
+                }
+                tmp_release(tmp_base, 0);
             } else {
-                /* nothing refers to the partial tree: release it, and its memory where possible */
-                I->nall_subdefs = subs_before;
+                /* nothing refers to the partial tree: release it, and its memory where possible
+                   (the subs of modules it loaded stay in the list: those files are fine) */
+                drop_own_subs(I, subs_before);
                 pp_free_node_range(I->arena, parse_from, parse_to, skip_marker == NULL);
+                tmp_release(tmp_base, 1);
             }
             if (skip_marker) {
                 skip_marker->a = (pp_node *)I->arena->chunks;
@@ -3822,10 +3863,10 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
         if (site) {
             pp_arena *ea = P.sc->arena;
             int defined_early = 0;               /* a BEGIN block in the string already defined a sub from it */
-            for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_SUB_EARLY) defined_early = 1;
+            for (int i = subs_before; i < I->nall_subdefs; i++) if ((I->all_subdefs[i]->flags & (PP_SUB_EARLY | PP_SUB_FILEDONE)) == PP_SUB_EARLY) defined_early = 1;
             if (defined_early) pp_arena_absorb(I->arena, ea);
             else {
-                I->nall_subdefs = subs_before;   /* the string did not compile: its subs are not defined */
+                drop_own_subs(I, subs_before);   /* the string did not compile: its subs are not defined */
                 /* nothing refers to the partial tree: release what its nodes own, then the arena */
                 for (int i = 0; i < P.sc->nmade; i++) {
                     pp_node *nd = P.sc->made[i];
@@ -3879,6 +3920,7 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
         }
         I->file_parse_depth--;
     }
+    tmp_release(tmp_base, 0);                    /* those still alive are part of the tree now */
     parser_free(&P);
     return unit;
 }

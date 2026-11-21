@@ -369,6 +369,8 @@ struct pp_interp {
     pp_list  wb;                 /* arguments a sub changed through @_: (index, value) pairs for the caller */
     pp_arena_pos *failed_ranges; /* partial trees of files that did not compile but whose subs a BEGIN / use already defined: (from, to) pairs, freed with the interpreter */
     int      nfailed_ranges;
+    pp_node **failed_tmps;       /* ... and the malloc'd temporary nodes of those parses */
+    int      nfailed_tmps;
     int      file_parse_depth;   /* files being parsed right now (a `use` inside a file that is being parsed) */
     int      goto_call;          /* the call being made is `goto &sub`: it takes the place of the running sub for caller() */
     pp_obj  *wb_code;            /* ... and the sub that left them */

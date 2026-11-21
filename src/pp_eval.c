@@ -3956,6 +3956,8 @@ void pp_free(pp_interp *I) {
     free(I->units); free(I->unit_files);
     for (int i = 0; i + 1 < I->nfailed_ranges; i += 2) pp_free_node_range(I->arena, I->failed_ranges[i], I->failed_ranges[i + 1], 0);
     free(I->failed_ranges);
+    for (int i = 0; i < I->nfailed_tmps; i++) { free(I->failed_tmps[i]->list); free(I->failed_tmps[i]); pp_stat_nodes--; }
+    free(I->failed_tmps);
     pp_arena_free(I->arena);
     for (int i = 0; i < I->nlazy; i++) { free(I->lazy[i].dst); free(I->lazy[i].src); free(I->lazy[i].prefix); }
     free(I->lazy);
