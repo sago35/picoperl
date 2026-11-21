@@ -184,6 +184,7 @@ enum {
     N_SUBDEF,       /* sym, a: body */
     N_RETURN,       /* a: expr or NULL */
     N_LAST, N_NEXT, N_REDO,
+    N_SKIPRANGE,    /* not code: marks the part of the arena that a nested file parse filled (a: end chunk, b: end offset) */
     N_NOP,
     N_DOBLOCK,      /* a: block */
     N_EVALBLOCK,    /* a: block */
@@ -264,11 +265,14 @@ struct pp_node {
 #define PP_NODE_STRICTREFS 0x20   /* N_RV2xV / N_CALLREF: parsed under `use strict 'refs'` (0x40 is PP_STMT_WARN) */
 
 /* bump allocator for the AST of one file */
-typedef struct pp_arena_chunk { struct pp_arena_chunk *next; size_t used, cap; } pp_arena_chunk;
+typedef struct pp_arena_chunk { struct pp_arena_chunk *next; size_t used, cap; int foreign; } pp_arena_chunk;   /* foreign: taken over from another arena (pp_arena_absorb) */
+/* a place in an arena: the chunk and the offset in it */
+typedef struct pp_arena_pos { pp_arena_chunk *chunk; size_t off; } pp_arena_pos;
 typedef struct pp_arena { pp_arena_chunk *chunks; long nnodes; } pp_arena;
 pp_arena *pp_arena_new(void);
 void     *pp_arena_alloc(pp_arena *a, size_t n);
 void      pp_arena_free(pp_arena *a);
+void      pp_free_node_range(pp_arena *a, pp_arena_pos from, pp_arena_pos to, int rewind);   /* the nodes of a parse that did not finish */
 void      pp_arena_absorb(pp_arena *dst, pp_arena *src);   /* dst takes over src's memory; src is freed */
 
 /* ------------------------------------------------------------------ */
@@ -353,6 +357,9 @@ struct pp_interp {
                                     needs the subs defined so far; pp_exec_unit runs the file in it */
     const char *file_pkg;        /* package of the file-level code being run (NULL = main), for caller */
     pp_list  wb;                 /* arguments a sub changed through @_: (index, value) pairs for the caller */
+    pp_arena_pos *failed_ranges; /* partial trees of files that did not compile but whose subs a BEGIN / use already defined: (from, to) pairs, freed with the interpreter */
+    int      nfailed_ranges;
+    int      file_parse_depth;   /* files being parsed right now (a `use` inside a file that is being parsed) */
     int      goto_call;          /* the call being made is `goto &sub`: it takes the place of the running sub for caller() */
     pp_obj  *wb_code;            /* ... and the sub that left them */
     struct pp_frame *frame;      /* innermost sub call (frames live on the C stack of pp_call) */

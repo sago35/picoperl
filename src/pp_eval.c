@@ -2311,6 +2311,46 @@ void pp_free_ast(pp_node *n) {
     if (n->flags & PP_NODE_HEAP) { free(n); pp_stat_nodes--; }
 }
 
+/* A file is parsed straight into the interpreter's arena. Until the parse has succeeded its
+   part of the arena holds nodes only, each still owning a malloc'd list or a constant; after
+   a syntax error (or an exit in a BEGIN block) this walks that part and releases them.
+   What lies between `from` and `to` but is not ours is stepped over: the nodes and lists of a
+   file that a `use` loaded meanwhile (an N_SKIPRANGE node in front says where it ends) and
+   the chunks taken over from an eval string (foreign).
+   rewind: also give the memory back, when nothing else got in between. */
+void pp_free_node_range(pp_arena *a, pp_arena_pos from, pp_arena_pos to, int rewind) {
+    int n = 0, plain = 1;
+    for (pp_arena_chunk *c = a->chunks; c; c = c->next) { n++; if (c == from.chunk) break; }
+    if (!n) return;
+    pp_arena_chunk **cs = pp_xmalloc((size_t)n * sizeof *cs);       /* oldest first */
+    { int i = n; for (pp_arena_chunk *c = a->chunks; c && i > 0; c = c->next) cs[--i] = c; }
+    size_t off = cs[0] == from.chunk ? from.off : 0;
+    for (int i = 0; i < n; ) {
+        pp_arena_chunk *c = cs[i];
+        size_t limit = c == to.chunk ? to.off : c->used;
+        if (c->foreign) { plain = 0; i++; off = 0; continue; }
+        if (off + sizeof(pp_node) > limit) { if (c == to.chunk) break; i++; off = 0; continue; }
+        pp_node *nd = (pp_node *)((char *)(c + 1) + off);
+        if (nd->type == N_SKIPRANGE) {
+            plain = 0;
+            pp_arena_chunk *ec = (pp_arena_chunk *)nd->a;
+            int j = i;
+            while (j < n && cs[j] != ec) j++;
+            if (j >= n) break;                                       /* cannot happen: the range ends inside ours */
+            i = j; off = (size_t)(uintptr_t)nd->b;
+            continue;
+        }
+        if (nd->type == N_CONST) { pp_release(nd->val); nd->val = pp_undef(); }
+        else { free(nd->list); nd->list = NULL; nd->n = 0; }
+        off += sizeof(pp_node);
+    }
+    if (rewind && plain && to.chunk == a->chunks) {
+        while (a->chunks != from.chunk && a->chunks) { pp_arena_chunk *c = a->chunks; a->chunks = c->next; free(c); }
+        if (a->chunks) a->chunks->used = from.off;
+    }
+    free(cs);
+}
+
 /* does the subtree contain code that may still be referenced later (anonymous subs)? */
 static int keeps_code(pp_node *n) {
     if (!n) return 0;
@@ -3741,6 +3781,8 @@ void pp_free(pp_interp *I) {
     free(I->all_subdefs);
     for (int i = 0; i < I->nunits; i++) { pp_free_ast(I->units[i]); free(I->unit_files[i]); }
     free(I->units); free(I->unit_files);
+    for (int i = 0; i + 1 < I->nfailed_ranges; i += 2) pp_free_node_range(I->arena, I->failed_ranges[i], I->failed_ranges[i + 1], 0);
+    free(I->failed_ranges);
     pp_arena_free(I->arena);
     for (int i = 0; i < I->nlazy; i++) { free(I->lazy[i].dst); free(I->lazy[i].src); free(I->lazy[i].prefix); }
     free(I->lazy);

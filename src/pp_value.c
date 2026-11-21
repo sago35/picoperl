@@ -30,7 +30,7 @@ void *pp_arena_alloc(pp_arena *a, size_t n) {
     if (!c || c->used + n > c->cap) {
         size_t cap = n > ARENA_CHUNK ? n : ARENA_CHUNK;
         c = pp_xmalloc(sizeof *c + cap);
-        c->next = a->chunks; c->used = 0; c->cap = cap;
+        c->next = a->chunks; c->used = 0; c->cap = cap; c->foreign = 0;
         a->chunks = c;
     }
     void *p = (char *)(c + 1) + c->used;
@@ -67,6 +67,7 @@ int pp_is_false(pp_val v) { return v.t == PP_STR && v.u.s == &pp_false_str; }
 void pp_arena_absorb(pp_arena *dst, pp_arena *src) {
     if (src->chunks) {
         pp_arena_chunk *tail = src->chunks;
+        for (pp_arena_chunk *c = src->chunks; c; c = c->next) c->foreign = 1;   /* not part of the file being parsed into dst */
         while (tail->next) tail = tail->next;
         if (dst->chunks) { tail->next = dst->chunks->next; dst->chunks->next = src->chunks; }   /* dst keeps filling its own head chunk */
         else dst->chunks = src->chunks;

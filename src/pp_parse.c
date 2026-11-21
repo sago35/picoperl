@@ -3593,7 +3593,50 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     *err = 0;
     int subs_before = I->nall_subdefs;
     if (site) { P.sc->arena = pp_arena_new(); P.sc->track = 1; *arena = P.sc->arena; }
+    /* A file goes straight into the interpreter's arena. Where its nodes begin is noted, so
+       that a parse that does not finish can release them (pp_free_node_range). A file loaded
+       by a `use` of another file that is still being parsed puts a marker in front of its part
+       of the arena, for the outer file to step over. */
+    pp_node *skip_marker = NULL;
+    pp_arena_pos parse_from = { NULL, 0 };
+    int nsubdefs_before = I->nsubdefs;
+    if (!site) {
+        if (I->file_parse_depth > 0) {
+            skip_marker = pp_arena_alloc(I->arena, sizeof(pp_node));
+            memset(skip_marker, 0, sizeof *skip_marker);
+            skip_marker->type = N_SKIPRANGE;
+        }
+        I->file_parse_depth++;
+        parse_from.chunk = I->arena->chunks;
+        parse_from.off = I->arena->chunks ? I->arena->chunks->used : 0;
+    }
     if (setjmp(P.jb)) {
+        if (!site) {
+            int defined_early = 0;               /* a BEGIN block or `use` already defined a sub from this file */
+            for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_SUB_EARLY) defined_early = 1;
+            pp_arena_pos parse_to = { I->arena->chunks, I->arena->chunks ? I->arena->chunks->used : 0 };
+            I->nsubdefs = nsubdefs_before;
+            if (defined_early) {
+                /* those subs stay defined and point into the partial tree: it is kept as it is
+                   (lists still malloc'd) and released with the interpreter. Its named subs leave
+                   the list that pp_free walks; what a BEGIN block kept (heap nodes) stays. */
+                int k = subs_before;
+                for (int i = subs_before; i < I->nall_subdefs; i++) if (I->all_subdefs[i]->flags & PP_NODE_HEAP) I->all_subdefs[k++] = I->all_subdefs[i];
+                I->nall_subdefs = k;
+                I->failed_ranges = pp_xrealloc(I->failed_ranges, (size_t)(I->nfailed_ranges + 2) * sizeof(pp_arena_pos));
+                I->failed_ranges[I->nfailed_ranges++] = parse_from;
+                I->failed_ranges[I->nfailed_ranges++] = parse_to;
+            } else {
+                /* nothing refers to the partial tree: release it, and its memory where possible */
+                I->nall_subdefs = subs_before;
+                pp_free_node_range(I->arena, parse_from, parse_to, skip_marker == NULL);
+            }
+            if (skip_marker) {
+                skip_marker->a = (pp_node *)I->arena->chunks;
+                skip_marker->b = (pp_node *)(uintptr_t)(I->arena->chunks ? I->arena->chunks->used : 0);
+            }
+            I->file_parse_depth--;
+        }
         if (P.exiting && !site) {                    /* exit at parse time: an empty file, and I->ctl says exit */
             P.sc->heap_depth = 0;
             pp_node *empty = node(&P, N_BLOCK);
@@ -3625,7 +3668,7 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
             }
             *arena = NULL;
         }
-        parser_free(&P);      /* a file's partial tree stays in the arena until pp_free */
+        parser_free(&P);
         return NULL;
     }
     advance(&P);
@@ -3656,6 +3699,13 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     scope_finalize(&P, 0, -1);
     shrink_ast(P.sc->arena, unit);
     for (int i = 0; i < I->nsubdefs; i++) shrink_ast(P.sc->arena, I->subdefs[i]);
+    if (!site) {
+        if (skip_marker) {
+            skip_marker->a = (pp_node *)I->arena->chunks;
+            skip_marker->b = (pp_node *)(uintptr_t)(I->arena->chunks ? I->arena->chunks->used : 0);
+        }
+        I->file_parse_depth--;
+    }
     parser_free(&P);
     return unit;
 }
