@@ -3268,6 +3268,20 @@ static int version_cmp(const char *a, const char *b) {
     return 0;
 }
 
+/* methods on file handles come from IO::File: make sure it is loaded. 0 when it is not
+   available (the board without IO/File.pm on the drive): handles then have no methods. */
+static pp_val do_require(pp_interp *I, const char *fn, int force);
+static NOINLINE int handle_class_ready(pp_interp *I) {
+    if (pp_resolve_sub(I, pp_intern(I, "&IO::Handle::new", 16))) return 1;
+    if (I->ctl) return 0;
+    pp_val saved_at = pp_copy(I->g_at->u.scalar);
+    pp_val r = do_require(I, "IO/File.pm", 0);
+    pp_release(r);
+    int ok = !I->ctl;
+    if (I->ctl == CTL_DIE) { I->ctl = CTL_NONE; pp_release(I->err); I->err = pp_undef(); }
+    pp_release(I->g_at->u.scalar); I->g_at->u.scalar = saved_at;
+    return ok;
+}
 static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val inv = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) return pp_undef();
@@ -3275,12 +3289,28 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
     char cls[128];
     if (inv.t == PP_REF) {
         if (inv.u.o->kind == PP_OCODE && !inv.u.o->class) { /* $coderef->method not supported */ }
-        if (!inv.u.o->class) { pp_release(inv); return pp_die(I, "Can't call method \"%s\" on unblessed reference", n->sym ? n->sym->name : "?"); }
-        snprintf(cls, sizeof cls, "%s", inv.u.o->class->name);
+        if (!inv.u.o->class) {
+            /* a file handle ($fh->print, $fh->autoflush): its methods are those of IO::File,
+               loaded on first use as perl does. Without IO::File there are none. */
+            if ((inv.u.o->kind == PP_OFILE || inv.u.o->kind == PP_OGLOB) && handle_class_ready(I)) snprintf(cls, sizeof cls, "IO::File");
+            else { pp_release(inv); return pp_die(I, "Can't call method \"%s\" on unblessed reference", n->sym ? n->sym->name : "?"); }
+        }
+        else snprintf(cls, sizeof cls, "%s", inv.u.o->class->name);
     } else {
         pp_str *s = pp_to_str(inv);
         if (s->len == 0) { pp_str_decref(s); pp_release(inv); return pp_die(I, "Can't call method \"%s\" on an undefined value", n->sym ? n->sym->name : "?"); }
         snprintf(cls, sizeof cls, "%s", s->d);
+        {   /* STDOUT->flush, FH->close: a bareword that names an open handle */
+            const char *hn = s->d[0] == '*' ? s->d + 1 : s->d;
+            if (!strncmp(hn, "main::", 6)) hn += 6;
+            int std = !strcmp(hn, "STDIN") || !strcmp(hn, "STDOUT") || !strcmp(hn, "STDERR");
+            if (!std && s->d[0] != '*' && s->len < 100) {
+                char gb[128]; int gl = pp_snprintf(gb, sizeof gb, "*%s", s->d);
+                pp_sym *gs = pp_sym_find(I, gb, gl);
+                std = gs && gs->gcell && gs->gcell->kind == PP_OGLOB && gs->gcell->u.glob.io;
+            }
+            if (std && handle_class_ready(I)) snprintf(cls, sizeof cls, "IO::File");
+        }
         pp_str_decref(s);
     }
     /* method name: static, or from $obj->$name (string or code ref) */

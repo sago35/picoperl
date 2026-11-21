@@ -586,6 +586,15 @@ PICOPERL ドライブ上 (`main.pl`、`lib/...`)。書き込みはフラッシ�
 **`$.`** は最後に読んだハンドルの行番号です (`close` で 0 に戻ります。文字列の中でも展開されます)。
 `${^LAST_FH}` は常に undef です。
 
+**ファイルハンドルのメソッド呼び出し** (`$fh->print(...)`、`STDOUT->autoflush(1)`、`$fh->getline`): perl と同じく `IO::File` のメソッドを
+呼びます。`IO::File` / `IO::Handle` は同梱していないので、perl のライブラリが見える環境 (ホスト版) で使えます。ボードでは
+ドライブの `lib/IO/` に置かない限り、今までどおり `Can't call method ... on unblessed reference` になります。
+同梱の `lib/IO.pm` は、本物の `IO` が XS で提供している部分 (`flush`、`getline`、`blocking`、`getpos` など) の代わりです。
+
+**組み込み関数と同じ名前のサブ**: パッケージが自分で定義した `sub close`、`sub open`、`sub fileno` などは、perl と同じく組み込み関数を
+上書きしません (その中で書いた `close($fh)` は組み込みの close です)。上書きするのは、ほかのモジュールから取り込んだサブだけです
+(`use Time::HiRes qw(time)` など)。以前は自分で定義したサブも上書きしていました。
+
 **`AUTOLOAD`**: パッケージに `sub AUTOLOAD` があると、そのパッケージの未定義のサブ・メソッドの呼び出しを受け取ります
 (`our $AUTOLOAD` に呼ばれた名前が入ります。メソッドは `@ISA` をたどって探します。`DESTROY` は渡しません)。
 `defined &name` や `can` は、perl と同じく AUTOLOAD があっても偽のままです。
@@ -604,7 +613,7 @@ perl との違い: 同じ要素への参照を 2 回作ると別々の参照に�
 非対応 (今のところ): `sprintf` の位置指定 (`%2$s`)、
 `system`/バッククォート、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (`for ($x, @list, $h{k}) { s/..// }` は各反復のあとの書き戻しで代用)、
-ファイルハンドルのメソッド呼び出し (`$fh->print`)、変数を使う間接オブジェクト構文 (`new $class(ARGS)`。クラス名を直接書く形だけ対応)、パッケージの名前表 (`%Pkg::`) への書き込み。
+変数を使う間接オブジェクト構文 (`new $class(ARGS)`。クラス名を直接書く形だけ対応)、パッケージの名前表 (`%Pkg::`) への書き込み。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。
 **`%SIG`** は `__WARN__` / `__DIE__` フックと `alarm` + `$SIG{ALRM}` に対応しています
 (perl の safe signals と同じく文の切れ目で配送。未捕捉の ALRM は `Alarm clock` で die)。

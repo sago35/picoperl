@@ -2759,6 +2759,11 @@ static pp_node *parse_ident_term(pp_parser *P) {
         return parse_postfix(P, n);
     }
     if (len == 9 && !memcmp(id, "wantarray", 9)) { advance(P); if (accept_op(P, "(")) expect_op(P, ")"); return node(P, N_WANTARRAY); }
+    if (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6)) && is_op(peek(P), "->")) {
+        pp_node *h = handle_const(P, id, len);       /* STDOUT->autoflush(1): a method call on the handle */
+        advance(P);
+        return parse_postfix(P, h);
+    }
     if (len == 6 && (!memcmp(id, "STDOUT", 6) || !memcmp(id, "STDERR", 6))) {
         pp_node *n = node(P, N_FILEHANDLE); n->op = id[3] == 'O' ? 1 : 2; advance(P); return n;
     }
