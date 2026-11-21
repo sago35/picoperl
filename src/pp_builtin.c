@@ -613,7 +613,9 @@ static void check_irs(pp_interp *I) {
     pp_warn(I, "picoperl: $/ is ignored for STDIN, which always splits on \"\\n\"");
 }
 
+static int umask_value = 022;       /* what umask() remembers; applied to the PERMS of sysopen */
 static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    int new_perms = -1;                 /* sysopen creating a file: the permissions to give it */
     if (n->n < 2) return pp_die(I, "Not enough arguments for open");
     /* open(FH, ...), open(*FH, ...), open(\*FH, ...): the file goes under that name */
     pp_node *hn = n->list[0];
@@ -638,7 +640,8 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     if (n->op == B_SYSOPEN) {
         /* sysopen(FH, PATH, FLAGS, PERMS): the O_* flags (Fcntl's values) become the mode of a
            3-argument open. O_CREAT | O_EXCL fails when the file is there, opening without
-           O_CREAT fails when it is not; PERMS has no meaning here. */
+           O_CREAT fails when it is not. PERMS (less the umask) is given to a file that is
+           created, where the host has a chmod. */
         if (args.n < 2) { pp_list_free(&args); return pp_die(I, "Not enough arguments for sysopen"); }
         pp_str *ps = pp_to_str(args.v[0]);
         int64_t fl = pp_to_int(args.v[1]);
@@ -647,6 +650,7 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
         int acc = (int)(fl & 3), creat = (fl & 64) != 0, excl = (fl & 128) != 0, trunc = (fl & 512) != 0, append = (fl & 1024) != 0;
         const char *why = creat && excl && there ? "File exists" : !creat && !there ? "No such file or directory" : NULL;
         if (why) { pp_str_decref(ps); pp_list_free(&args); set_errno_var(I, why); return ret(ctx, out, pp_undef()); }
+        if (creat && !there && args.n > 2 && args.v[2].t != PP_UNDEF) new_perms = (int)pp_to_int(args.v[2]) & 07777 & ~umask_value;
         const char *mode = acc == 0 ? "<" : acc == 1 ? (append ? ">>" : trunc || !there ? ">" : "+<") : (trunc || !there ? "+>" : "+<");
         pp_val path = pp_str_val(ps);
         pp_list_free(&args);
@@ -755,6 +759,16 @@ static pp_val do_open(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     }
     pp_str *path = pp_to_str(args.v[1]);
     void *fp = pp_host_fopen(path->d, base);
+    if (fp && new_perms >= 0) {
+        pp_sym *cs = pp_sym_find(I, "&chmod", 6);
+        if (cs && cs->sub && cs->sub->u.code.native) {
+            pp_list ca = {0};
+            pp_list_push(&ca, pp_int(new_perms));
+            path->refcnt++; pp_list_push(&ca, pp_str_val(path));
+            pp_release(cs->sub->u.code.native(I, &ca, CTX_SCALAR, NULL));
+            pp_list_free(&ca);
+        }
+    }
     pp_str_decref(ms); pp_str_decref(path); pp_list_free(&args);
     if (!fp) set_errno_var(I, pp_host_io_error());
     /* like perl, the handle variable holds a (possibly closed) handle even on failure */
@@ -2409,9 +2423,8 @@ int pp_core_const(const char *name, pp_val *out) {
 /* umask: there are no file permissions to mask here; the value is only remembered */
 static pp_val n_umask(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     (void)I; (void)ctx; (void)out;
-    static int mask = 022;
-    int old = mask;
-    if (a->n > 0 && a->v[0].t != PP_UNDEF) mask = (int)pp_to_int(a->v[0]) & 0777;
+    int old = umask_value;
+    if (a->n > 0 && a->v[0].t != PP_UNDEF) umask_value = (int)pp_to_int(a->v[0]) & 0777;
     return pp_int(old);
 }
 
