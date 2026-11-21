@@ -1783,7 +1783,9 @@ static NOINLINE pp_obj *autoload_sub(pp_interp *I, const char *full) {
     int n = plen && !(plen == 4 && !memcmp(full, "main", 4)) ? pp_snprintf(buf, sizeof buf, "&%.*s::AUTOLOAD", plen, full) : pp_snprintf(buf, sizeof buf, "&AUTOLOAD");
     pp_obj *code = pp_resolve_sub(I, pp_intern(I, buf, n));
     if (!code || (!code->u.code.body && !code->u.code.native)) return NULL;
-    buf[0] = '$';
+    /* $AUTOLOAD of the package the sub was written in: with *AUTOLOAD = \&Other::AUTOLOAD that is Other's */
+    if (code->u.code.name && strlen(code->u.code.name) < 270) n = strstr(code->u.code.name, "::") ? pp_snprintf(buf, sizeof buf, "$%s", code->u.code.name) : pp_snprintf(buf, sizeof buf, "$AUTOLOAD");
+    else buf[0] = '$';
     pp_obj *var = pp_global(I, pp_intern(I, buf, n));
     char name[280];
     int nl = pp_snprintf(name, sizeof name, "%s%s", last ? "" : "main::", full);
