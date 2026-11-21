@@ -1916,7 +1916,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->warn_on = saved_warn;
     if (wargs) args_changed(I, code, argv, &orig, fr.nshift);
     if (msave) pp_match_restore(I, msave);
-    pp_env_decref(env);
+    pp_env_leave(env);
     pp_obj_decref(code);
     return r;
 }
@@ -2042,7 +2042,7 @@ static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out) {
         I->env = env;
         r = exec_stmts(I, blk, ctx, out);
         I->env = saved;
-        pp_env_decref(env);
+        pp_env_leave(env);
     } else {
         r = exec_stmts(I, blk, ctx, out);
     }
@@ -2108,7 +2108,7 @@ static NOINLINE pp_val eval_while(pp_interp *I, pp_node *n) {
             if (I->ctl || t == until) brk = 1;
             else brk = loop_body_x(I, n->b, n->sym, n->flags & 2);
             if (!brk && n->c) { pp_val v = exec_block(I, n->c, CTX_VOID, NULL); pp_release(v); if (I->ctl) brk = 1; }
-            if (it) { I->env = saved; pp_env_decref(it); }
+            if (it) { I->env = saved; pp_env_leave(it); }
             if (brk) break;
         }
     }
@@ -2126,7 +2126,7 @@ static NOINLINE pp_val eval_for(pp_interp *I, pp_node *n) {
         if (loop_body(I, n->d, n->sym)) break;
         if (n->c) { pp_val v = pp_eval(I, n->c, CTX_VOID, NULL); pp_release(v); }
     }
-    if (env) { I->env = saved; pp_env_decref(env); }
+    if (env) { I->env = saved; pp_env_leave(env); }
     return pp_undef();
 }
 
@@ -2167,7 +2167,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
             if (env && env->refcnt > 1) {
                 /* a closure made in the previous iteration captured `my $var`: it keeps that
                    scope, and this iteration gets a fresh one (each closure sees its own value) */
-                I->env = saved; pp_env_decref(env);
+                I->env = saved; pp_env_leave(env);
                 env = pp_env_new(I->env, nv); I->env = env;
                 for (int k = 0; k < nv; k++) cells[k] = pp_env_cell(env, k, '$');
                 cell = cells[0];
@@ -2211,7 +2211,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
             if (brk) break;
             if (env && env->refcnt > 1 && i + nv < items.n) {
                 /* a closure captured this iteration's variables: the next iteration gets fresh ones */
-                I->env = saved; pp_env_decref(env);
+                I->env = saved; pp_env_leave(env);
                 env = pp_env_new(I->env, nv); I->env = env;
                 for (int k = 0; k < nv; k++) cells[k] = pp_env_cell(env, k, '$');
                 cell = cells[0];
@@ -2221,7 +2221,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
     pp_list_free(&items);
     if (src_arr) pp_obj_decref(src_arr);
     if (restore) { pp_release(cell->u.scalar); cell->u.scalar = saved_val; }
-    if (env) { I->env = saved; pp_env_decref(env); }
+    if (env) { I->env = saved; pp_env_leave(env); }
     return pp_undef();
 }
 
@@ -2245,7 +2245,7 @@ static NOINLINE pp_val eval_if(pp_interp *I, pp_node *n, int ctx, pp_list *out) 
         if (t) r = (n->flags & 2) ? pp_eval(I, n->b, ctx, out) : exec_block(I, n->b, ctx, out);
         else if (n->c) r = n->c->type == N_IF ? eval_if(I, n->c, ctx, out) : exec_block(I, n->c, ctx, out);
     }
-    if (env) { I->env = saved; pp_env_decref(env); }
+    if (env) { I->env = saved; pp_env_leave(env); }
     return r;
 }
 
@@ -3775,7 +3775,7 @@ pp_val pp_exec_unit(pp_interp *I, pp_node *unit, int ctx, pp_list *out) {
     I->env = saved;
     I->file_pkg = saved_pkg;
     I->cur_code = saved_code;
-    pp_env_decref(env);
+    pp_env_leave(env);
     return last;
 }
 

@@ -480,8 +480,17 @@ pp_obj *pp_destroy_next(int from) {
     if (!pp_destroy_n) { free(destroy_q); destroy_q = NULL; destroy_cap = 0; }
     return o;
 }
+static void code_last_ref(pp_obj *code);
+static void var_last_ref(pp_obj *o);
 void pp_obj_decref(pp_obj *o) {
-    if (!o || --o->refcnt > 0) return;
+    if (!o) return;
+    if (--o->refcnt > 0) {
+        if (o->refcnt == 1) {
+            if (o->kind == PP_OCODE) { if (o->u.code.env && o->u.code.env->left == 1) code_last_ref(o); }
+            else if (o->anon && o->kind != PP_OGLOB) var_last_ref(o);
+        }
+        return;
+    }
     if (o->class && pp_destroy_on && !o->destroyed) {
         /* a blessed object: it lives on until its DESTROY has had a chance to run */
         o->destroyed = 1;
@@ -677,7 +686,7 @@ pp_sym *pp_sym_find(pp_interp *I, const char *name, int len) {
 
 pp_env *pp_env_new(pp_env *parent, int nslots) {
     pp_env *e = pp_xmalloc(sizeof(pp_env));
-    e->refcnt = 1; e->parent = parent; e->n = nslots; e->cap = nslots; e->is_sub = 0;
+    e->refcnt = 1; e->parent = parent; e->n = nslots; e->cap = nslots; e->is_sub = 0; e->left = 0;
     e->cells = nslots ? pp_xmalloc(nslots * sizeof(pp_obj *)) : NULL;
     for (int i = 0; i < nslots; i++) e->cells[i] = NULL;
     if (parent) parent->refcnt++;
@@ -691,6 +700,117 @@ void pp_env_decref(pp_env *e) {
         free(e->cells); free(e);
         e = p;
     }
+}
+/* ---------------- closures that their own scope holds ----------------
+   A closure keeps the whole scope it was made in. `my $cb = sub { ... }` therefore makes a
+   ring: the scope holds $cb, $cb holds the sub, the sub holds the scope, and reference counts
+   alone never free it. When a scope ends while something still holds it, this looks at what
+   the scope's variables own outright (objects with a single reference) for subs made in the
+   scope or in scopes inside it. If those subs account for every reference to those scopes,
+   nothing outside can reach them: the variables are emptied, and all of it is freed. The same
+   check runs again when the last outside reference to such a sub goes away (`my $c = sub ...;
+   return $c`). Costs nothing for a scope no closure was made in. */
+#define CYC_ENVS 12
+static struct { pp_env *e; int cnt; } cyc_tab[CYC_ENVS];
+static int cyc_n, cyc_budget, cyc_fail, cyc_seen;
+static void cyc_cells(pp_env *x, pp_env *root);
+static int cyc_env(pp_env *x, pp_env *root) {
+    for (int i = 0; i < cyc_n; i++) if (cyc_tab[i].e == x) return i;
+    pp_env *p = x;
+    for (int d = 0; p && p != root && d < CYC_ENVS; d++) p = p->parent;
+    if (p != root) return -1;                 /* not a scope inside this one: its business */
+    int pi = cyc_env(x->parent, root);        /* (x != root here: the root is in the table) */
+    if (pi < 0 || cyc_n == CYC_ENVS) { cyc_fail = 1; return -1; }
+    cyc_tab[pi].cnt++;
+    int at = cyc_n++;
+    cyc_tab[at].e = x; cyc_tab[at].cnt = 0;
+    cyc_cells(x, root);
+    return at;
+}
+static void cyc_obj(pp_obj *o, pp_env *root, int depth);
+static void cyc_val(pp_val v, pp_env *root, int depth) {
+    if (v.t != PP_REF) return;
+    pp_obj *o = v.u.o;
+    if (o->refcnt != 1 || o->tied) {          /* something else holds it too: not looked into */
+        if (o->kind == PP_OCODE && o->u.code.env) {       /* (a sub of this scope that is also held outside) */
+            pp_env *p = o->u.code.env;
+            for (int d = 0; p && p != root && d < CYC_ENVS; d++) p = p->parent;
+            if (p == root) cyc_seen = 1;
+        }
+        return;
+    }
+    cyc_obj(o, root, depth + 1);
+}
+static void cyc_obj(pp_obj *o, pp_env *root, int depth) {
+    if (cyc_fail) return;
+    if (--cyc_budget < 0 || depth > 24) { cyc_fail = 1; return; }
+    switch (o->kind) {
+    case PP_OSCALAR: cyc_val(o->u.scalar, root, depth); break;
+    case PP_OARRAY: for (int i = 0; i < o->u.arr.n && !cyc_fail; i++) cyc_val(o->u.arr.v[i], root, depth); break;
+    case PP_OHASH: for (int i = 0; i < o->u.hash.n && !cyc_fail; i++) if (o->u.hash.e[i].klen >= 0) cyc_val(o->u.hash.e[i].v, root, depth); break;
+    case PP_OCODE:
+        if (o->u.code.env) { int at = cyc_env(o->u.code.env, root); if (at >= 0) cyc_tab[at].cnt++; }
+        break;
+    default: break;
+    }
+}
+static void cyc_cells(pp_env *x, pp_env *root) {
+    for (int i = 0; i < x->n && !cyc_fail; i++) {
+        pp_obj *c = x->cells[i];
+        if (c && c->refcnt == 1 && !c->tied) cyc_obj(c, root, 0);
+    }
+}
+/* own: references to e that the caller itself holds. Returns 1 when the ring was freed. */
+static int env_collect(pp_env *e, int own) {
+    cyc_n = 1; cyc_fail = 0; cyc_seen = 0; cyc_budget = 400;
+    cyc_tab[0].e = e; cyc_tab[0].cnt = 0;
+    cyc_cells(e, e);
+    /* left = 1: some of its subs are held from outside for now, worth another look when one of
+       them is let go; 2: its variables hold no sub of its own (or there is too much to look at) */
+    if (cyc_fail || !cyc_tab[0].cnt) { e->left = cyc_seen && !cyc_fail ? 1 : 2; return 0; }
+    for (int i = 0; i < cyc_n; i++) if (cyc_tab[i].e->refcnt - (i ? 0 : own) != cyc_tab[i].cnt) { e->left = 1; return 0; }
+    pp_env *set[CYC_ENVS]; int n = cyc_n;
+    for (int i = 0; i < n; i++) { set[i] = cyc_tab[i].e; set[i]->refcnt++; }
+    for (int i = 0; i < n; i++) {
+        for (int k = 0; k < set[i]->n; k++) {
+            pp_obj *c = set[i]->cells[k];
+            if (!c || c->refcnt != 1 || c->tied) continue;
+            if (c->kind == PP_OSCALAR) { pp_val v = c->u.scalar; c->u.scalar = pp_undef(); pp_release(v); }
+            else if (c->kind == PP_OARRAY) pp_array_clear(c);
+            else if (c->kind == PP_OHASH) pp_hash_clear(c);
+        }
+    }
+    for (int i = 0; i < n; i++) pp_env_decref(set[i]);
+    return 1;
+}
+void pp_env_leave(pp_env *e) {
+    if (e->refcnt > 1 && !env_collect(e, 1)) {
+        for (int i = 0; i < e->n; i++) if (e->cells[i] && e->cells[i]->refcnt > 1) e->cells[i]->anon = 1;   /* e.g. \%h was returned */
+    }
+    pp_env_decref(e);
+}
+/* the scope `from` or one around it (that has ended too) which has `o` as a variable */
+static void left_env_with(pp_env *from, pp_obj *o) {
+    pp_env *e = from;
+    for (int d = 0; e && e->left && d < 4; d++, e = e->parent)
+        for (int i = 0; i < e->n; i++) if (e->cells[i] == o) { env_collect(e, 0); return; }
+}
+/* a variable of an ended scope is down to one reference (the scope's): `return \%h` with subs
+   in %h, and the caller has dropped it. A sub in it tells which scope that was. */
+static void var_last_ref(pp_obj *o) {
+    o->anon = 0;
+    pp_obj *code = NULL;
+    if (o->kind == PP_OSCALAR) { if (o->u.scalar.t == PP_REF) code = o->u.scalar.u.o; }
+    else if (o->kind == PP_OARRAY) { for (int i = 0; i < o->u.arr.n && i < 64 && !code; i++) if (o->u.arr.v[i].t == PP_REF && o->u.arr.v[i].u.o->kind == PP_OCODE) code = o->u.arr.v[i].u.o; }
+    else if (o->kind == PP_OHASH) { for (int i = 0; i < o->u.hash.n && i < 64 && !code; i++) if (o->u.hash.e[i].klen >= 0 && o->u.hash.e[i].v.t == PP_REF && o->u.hash.e[i].v.u.o->kind == PP_OCODE) code = o->u.hash.e[i].v.u.o; }
+    if (code && code->kind == PP_OCODE && code->u.code.env) left_env_with(code->u.code.env, o);
+}
+/* a sub is down to one reference, and the scope it keeps has ended: if that reference is in a
+   variable of the scope (or of one around it that has ended too), the ring may be free now */
+static void code_last_ref(pp_obj *code) {
+    pp_env *e = code->u.code.env;
+    for (int d = 0; e && e->left && d < 4; d++, e = e->parent)
+        if (e->left == 1 && env_collect(e, 0)) return;
 }
 static pp_obj *cell_for_sigil(char sigil) {
     switch (sigil) {

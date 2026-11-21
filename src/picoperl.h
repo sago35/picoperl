@@ -69,7 +69,9 @@ struct pp_obj {
     uint8_t kind;
     uint8_t tied;           /* tie'd: the object it is tied to is in the tie table (pp_tie_find) */
     uint8_t destroyed;      /* its DESTROY has been called (or is queued): not again */
-    uint8_t anon;           /* PP_OGLOB made from an open(my $fh) handle by *$fh: freed with its last reference */
+    uint8_t anon;           /* PP_OGLOB made from an open(my $fh) handle by *$fh: freed with its last reference.
+                               A variable (scalar / array / hash): its scope has ended while something else
+                               held it too (see pp_env_leave) */
     pp_sym *class;          /* package name when blessed, else NULL */
     union {
         pp_val scalar;
@@ -131,6 +133,7 @@ struct pp_env {
     pp_env *parent;
     int     n, cap;         /* cap is only used for the globals list */
     uint8_t is_sub;         /* sub scope: slot 0 is @_ */
+    uint8_t left;           /* its scope has ended while closures still held it (see pp_env_leave) */
     pp_obj **cells;         /* SCALAR/ARRAY/HASH objects, NULL until used */
 };
 

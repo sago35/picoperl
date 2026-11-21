@@ -18,6 +18,7 @@ pp_val  pp_str_val(pp_str *s);                    /* takes ownership */
 pp_obj *pp_obj_new(int kind);
 void    pp_obj_incref(pp_obj *o);
 void    pp_obj_decref(pp_obj *o);
+void    pp_env_leave(pp_env *e);                         /* a scope ends: pp_env_decref, after freeing closures that only it holds */
 pp_val  pp_ref(pp_obj *o);                        /* incref, wrap */
 
 /* arrays */
