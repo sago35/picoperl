@@ -1177,10 +1177,12 @@ static int interp_extent(const char *s, int len, int i) {
         while (j < len && (is_ident_char((unsigned char)s[j]) || (s[j] == ':' && j + 2 < len && s[j+1] == ':' && is_ident_start((unsigned char)s[j+2])))) j += (s[j] == ':') ? 2 : 1;
         if (j + 2 < len && s[j] == ':' && s[j+1] == ':' && s[j+2] == '{') j += 2;   /* "$Pkg::{name}": the name table */
     }
-    else if (s[i] == '$' && s[j] == '$' && j + 1 < len && (is_ident_start((unsigned char)s[j+1]) || s[j+1] == '{')) {
-        return interp_extent(s, len, j);
+    else if (s[i] == '$' && s[j] == '$') {
+        int k = j;                                   /* "$$name", "$$$ref": dereferences, when a name follows the '$'s */
+        while (k < len && s[k] == '$') k++;
+        if (k < len && (is_ident_start((unsigned char)s[k]) || s[k] == '{')) return interp_extent(s, len, j);
+        return j + 1;                                /* "$$": the process id */
     }
-    else if (s[i] == '$' && s[j] == '$') return j + 1;   /* "$$": the process id */
     else if (s[i] == '@' && s[j] == '$' && j + 1 < len && is_ident_start((unsigned char)s[j+1])) {   /* "@$ref" */
         j++;
         while (j < len && is_ident_char((unsigned char)s[j])) j++;
