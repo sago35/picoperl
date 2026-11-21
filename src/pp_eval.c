@@ -1089,6 +1089,18 @@ static pp_obj *stash_fill(pp_interp *I, pp_sym *hs) {
     return h;
 }
 pp_obj *pp_stash_of(pp_interp *I, pp_sym *hs) { return stash_fill(I, hs); }
+/* does anything live in this package (a sub, a variable such as @ISA, or a package below it)? */
+static int package_defined(pp_interp *I, const char *pkg) {
+    size_t pl = strlen(pkg);
+    char mk[112]; int ml = pp_snprintf(mk, sizeof mk, "*%s::", pkg);
+    if (ml < (int)sizeof mk && pp_sym_find(I, mk, ml)) return 1;        /* a package statement was seen */
+    for (int b = 0; b < PP_SYM_BUCKETS; b++)
+        for (pp_sym *s = I->syms[b]; s; s = s->next) {
+            if (!strchr("$@%&", s->name[0]) || strncmp(s->name + 1, pkg, pl) || s->name[1 + pl] != ':' || s->name[2 + pl] != ':') continue;
+            if (s->name[0] == '&' ? s->sub != NULL : s->gcell != NULL) return 1;
+        }
+    return 0;
+}
 static int is_stash_name(const char *name) { size_t l = strlen(name); return l >= 3 && name[l - 1] == ':' && name[l - 2] == ':'; }
 
 /* the array an expression names. A tied one is first filled from its object (FETCHSIZE /
@@ -2675,6 +2687,14 @@ static NOINLINE pp_val eval_use(pp_interp *I, pp_node *n) {
                 for (int k = 0; k < c->len && fl < 240; k++) { if (c->d[k] == ':' && c->d[k+1] == ':') { f[fl++] = '/'; k++; } else f[fl++] = c->d[k]; }
                 memcpy(f + fl, ".pm", 4);
                 pp_release(do_require(I, f, 0));
+                if ((n->flags & 4) && I->ctl == CTL_DIE && I->err.t == PP_STR && !strncmp(I->err.u.s->d, "Can't locate ", 13)
+                    && !strncmp(I->err.u.s->d + 13, f, strlen(f))) {
+                    /* use base: no file of that name is fine when the class is there already
+                       (defined further up in this file, or by a module loaded before) */
+                    pp_release(I->err); I->err = pp_undef(); I->ctl = CTL_NONE;
+                    if (!package_defined(I, c->d))
+                        pp_die(I, "Base class package \"%s\" is empty.\n    (Perhaps you need to 'use' the module which defines that package first,\n    or make that module available in @INC)", c->d);
+                }
             }
             if (!I->ctl) pp_array_push(isav, pp_strn(c->d, c->len));
             pp_str_decref(c);

@@ -3498,6 +3498,7 @@ static pp_node *parse_use(pp_parser *P) {
         if (!ignored) {
             pp_node *n = node(P, N_USE);
             if (cur_is_ident(P, "parent") || cur_is_ident(P, "base")) n->op = 1;
+            if (cur_is_ident(P, "base")) n->flags |= 4;        /* base: a class that exists already is not loaded */
             n->a = const_str(P, P->cur.s, P->cur.len);
             n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
             advance(P);
@@ -3775,6 +3776,10 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             if (P->cur.type == T_NUM) advance(P);   /* version */
             pp_node *pn = node(P, N_PACKAGE);   /* file-level code tells caller() its package */
             if (strcmp(P->pkg, "main") != 0) pn->sym = pp_intern(P->I, P->pkg, (int)strlen(P->pkg));
+            {   /* "*Pkg::" marks the package as declared (use base then knows it needs no file) */
+                char mk[112]; int ml = pp_snprintf(mk, sizeof mk, "*%s::", P->pkg);
+                if (ml < (int)sizeof mk) pp_intern(P->I, mk, ml);
+            }
             if (cur_is_op(P, "{")) {            /* package X { ... } */
                 pp_node *b = parse_block(P); strcpy(P->pkg, saved);
                 pp_node *w = node(P, N_BLOCK); w->flags |= PP_BLOCK_PKG;
