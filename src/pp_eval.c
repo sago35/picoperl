@@ -683,6 +683,7 @@ static void local_unwind(pp_interp *I, int height) {
         pp_obj *cell = I->locals[I->nlocals].cell;
         if (I->locals[I->nlocals].kind == 4) {               /* local *name: the name stands for its old cell again */
             I->locals[I->nlocals].sym->gcell = cell;
+            if (cell && I->locals[I->nlocals].sym == I->sym_underscore) I->g_underscore = cell;
             if (!cell) continue;
         } else if (I->locals[I->nlocals].kind == 5) {        /* ... and names its old sub (or none) */
             pp_sym *cs = I->locals[I->nlocals].sym;

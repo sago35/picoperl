@@ -2648,7 +2648,9 @@ static pp_node *parse_term(pp_parser *P) {
             pp_node *g = node(P, N_GLOB);
             char buf[256]; int bl;
             if (len > 6 && !memcmp(name, "main::", 6)) { name += 6; len -= 6; }
-            int std = (len == 5 && !memcmp(name, "STDIN", 5)) || (len == 6 && (!memcmp(name, "STDOUT", 6) || !memcmp(name, "STDERR", 6)));
+            int std = (len == 5 && !memcmp(name, "STDIN", 5)) || (len == 6 && (!memcmp(name, "STDOUT", 6) || !memcmp(name, "STDERR", 6)))
+                      || (len == 1 && name[0] == '_')        /* *_ , *ENV ...: main's in every package, like the variables */
+                      || (len == 3 && (!memcmp(name, "ENV", 3) || !memcmp(name, "INC", 3) || !memcmp(name, "SIG", 3))) || (len == 4 && !memcmp(name, "ARGV", 4));
             if (std || has_pkg_sep(name, len) || !strcmp(P->pkg, "main")) bl = pp_snprintf(buf, sizeof buf, "%.*s", len, name);
             else bl = pp_snprintf(buf, sizeof buf, "%s::%.*s", P->pkg, len, name);
             if (g->b) {                               /* (node() put the current package there) */

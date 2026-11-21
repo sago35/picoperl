@@ -862,4 +862,5 @@ void pp_global_alias(pp_interp *I, pp_sym *s, pp_obj *cell) {
     cell->refcnt++;
     globals_push(I->globals, cell);
     s->gcell = cell;
+    if (s == I->sym_underscore) I->g_underscore = cell;      /* *_ = \$x: the implicit $_ (s///, m//, print) is that one now */
 }
