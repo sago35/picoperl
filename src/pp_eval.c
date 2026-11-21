@@ -2124,7 +2124,7 @@ static int cond_true(pp_interp *I, pp_node *c) {
 
 static NOINLINE pp_val eval_while(pp_interp *I, pp_node *n) {
     if (n->flags & 16) {   /* bare block */
-        loop_body(I, n->b, n->sym);
+        if (!loop_body(I, n->b, n->sym) && n->c) { pp_val cv = exec_block(I, n->c, CTX_VOID, NULL); pp_release(cv); if (I->ctl) loop_ctl(I, n->sym); }
         return pp_undef();
     }
     pp_env *saved = I->env;
@@ -2221,6 +2221,7 @@ static NOINLINE pp_val eval_foreach(pp_interp *I, pp_node *n) {
                 }
             }
             int brk = loop_body_x(I, n->c, n->sym, n->flags & 2);
+            if (!brk && n->d) { pp_val cv = exec_block(I, n->d, CTX_VOID, NULL); pp_release(cv); if (I->ctl) brk = loop_ctl(I, n->sym) != 0 || I->ctl != CTL_NONE; }   /* the continue block: after the body, also after next */
             if (nv == 1 && src_arr && i < src_arr->u.arr.n) {
                 pp_val *slot = &src_arr->u.arr.v[i];
                 if (!pp_val_same(*slot, cell->u.scalar)) { pp_release(*slot); *slot = pp_copy(cell->u.scalar); }
@@ -3597,7 +3598,9 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             for (;;) {
                 int outn = out ? out->n : 0;
                 pp_val v = exec_block(I, n->b, ctx, out);
-                if (loop_ctl(I, NULL) != 2) return v;            /* not redo */
+                int lc = loop_ctl(I, NULL);
+                if (lc == 0 && n->c) { pp_val cv = exec_block(I, n->c, CTX_VOID, NULL); pp_release(cv); if (I->ctl) loop_ctl(I, NULL); }   /* { ... } continue { ... } */
+                if (lc != 2) return v;                           /* not redo */
                 pp_release(v);
                 if (out) { for (int i = outn; i < out->n; i++) pp_release(out->v[i]); out->n = outn; }
             }

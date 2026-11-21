@@ -315,6 +315,12 @@ perl との違い: グロブの値そのもの (`my $g = *name;`) は文字列 `
 読み込み済みのモジュールが定義した) 継承だけを設定します。どこにも無ければ `Base class package "X" is empty.` で die します。
 `use parent` は必ずファイルを読み込みます (`-norequire` を付ければ読み込みません)。
 
+**バッククォートと `qx{...}`** を含むコードはコンパイルできますが、コマンドは実行できません。実行すると結果は undef
+(リストコンテキストでは空)、`$?` は -1 になり、スクリプトの実行ごとに初回だけ `picoperl:` で知らせます。
+
+**`continue` ブロック**は `while` / `until` / `foreach` / 素のブロックのあとに書けます (本体のあと、`next` のあとにも実行され、
+`last` では実行されません)。
+
 **`require` / `use` したモジュールがコンパイルできないとき**、理由 (構文エラーや `BEGIN` の中の die) は perl と同じ形で `$@` に入ります:
 `理由` / `BEGIN failed--compilation aborted at FILE line N.` / `Compilation failed in require at FILE line N.`。
 `eval { require Optional::Module }` で捕まえれば何も表示されません。
@@ -695,7 +701,7 @@ perl との違い: 同じ要素への参照を 2 回作ると別々の参照に�
 そちらで書き換える形、`\$_[0]` 経由、関数呼び出しやハッシュを引数に含む場合のそれより後ろの引数。
 
 非対応 (今のところ): `sprintf` の位置指定 (`%2$s`)、
-`system`/バッククォート、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
+`system`、`format`、`class` 構文 (5.38+、bless の OOP で代替)、
 `my method` / `->&` (5.42)、`foreach` のエイリアス (`for ($x, @list, $h{k}) { s/..// }` は各反復のあとの書き戻しで代用)、
 変数を使う間接オブジェクト構文 (`new $class(ARGS)`。クラス名を直接書く形だけ対応)、パッケージの名前表 (`%Pkg::`) への書き込み。
 `use Exporter; use lib; use utf8;` などは受け付けて無視します。

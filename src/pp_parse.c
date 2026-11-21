@@ -2804,7 +2804,7 @@ static pp_node *parse_block_or_expr_arg(pp_parser *P, pp_node *n, int is_sort) {
            from the source text, because after a term the lexer would read "@list" as an operator. */
         pp_lex *L = &P->L;
         int i = L->pos, sp = 0;
-        while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t')) { i++; sp = 1; }
+        while (i < L->len && (L->src[i] == ' ' || L->src[i] == '\t' || L->src[i] == '\n' || L->src[i] == '\r')) { i++; sp = 1; }   /* (the list may start on the next line) */
         int c = i < L->len ? (unsigned char)L->src[i] : 0;
         if (sp && (c == '@' || c == '(' || (is_ident_start(c) && !(c == 'x' && !is_ident_char(i + 1 < L->len ? (unsigned char)L->src[i + 1] : 0))
                                              && strncmp(L->src + i, "if ", 3) && strncmp(L->src + i, "unless ", 7) && strncmp(L->src + i, "for ", 4) && strncmp(L->src + i, "foreach ", 8)
@@ -3584,7 +3584,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
     if (t->type == T_OP) {
         if (!strcmp(t->op, ";")) { advance(P); return NULL; }
         if (!strcmp(t->op, "{") && !term_brace) {
-            pp_node *n = node(P, N_WHILE); n->flags |= 16; n->sym = label; n->b = parse_block(P);   /* bare block: loop once */
+            pp_node *n = node(P, N_WHILE); n->flags |= 16; n->sym = label; n->b = parse_block(P); if (cur_is_ident(P, "continue")) { advance(P); n->c = parse_block(P); }   /* bare block: loop once */
             return n;
         }
     }
@@ -3758,7 +3758,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                     pp_node *var = node(P, N_MY); var->op = 'm'; var->flags |= 1;
                     for (int i = 0; i < nvars; i++) node_add(var, mkvar_decl(P, '$', names[i], lens[i]));
                     n->a = var;
-                    n->c = parse_block(P);
+                    n->c = parse_block(P); if (cur_is_ident(P, "continue")) { advance(P); n->d = parse_block(P); }   /* foreach ... { } continue { } */
                     scope_pop(P);
                     return n;
                 }
@@ -3787,7 +3787,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                     return n;
                 }
                 expect_op(P, ")");
-                pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); note_argw(P, n->b); n->c = parse_block(P);
+                pp_node *n = node(P, N_FOREACH); n->sym = label; n->a = NULL; n->b = init ? init : node(P, N_LIST); note_argw(P, n->b); n->c = parse_block(P); if (cur_is_ident(P, "continue")) { advance(P); n->d = parse_block(P); }   /* foreach ... { } continue { } */
                 int nv = scope_pop(P);
                 if (nv) {   /* for (my ($k, $v) = each %h) { ... }: the variables live in a scope around the loop */
                     pp_node *b = node(P, N_BLOCK); node_add(b, n);
@@ -3806,11 +3806,11 @@ static pp_node *parse_statement_inner(pp_parser *P) {
                 pp_node *var = node(P, N_MY); var->op = 'm';
                 node_add(var, mkvar_decl(P, '$', vname, vlen));
                 n->a = var;
-                n->c = parse_block(P);
+                n->c = parse_block(P); if (cur_is_ident(P, "continue")) { advance(P); n->d = parse_block(P); }   /* foreach ... { } continue { } */
                 scope_pop(P);
             } else {
                 n->a = mkvar(P, '$', vname, vlen);
-                n->c = parse_block(P);
+                n->c = parse_block(P); if (cur_is_ident(P, "continue")) { advance(P); n->d = parse_block(P); }   /* foreach ... { } continue { } */
             }
             return n;
         }
