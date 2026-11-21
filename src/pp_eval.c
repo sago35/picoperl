@@ -1660,6 +1660,45 @@ static NOINLINE pp_val eval_assign(pp_interp *I, pp_node *n, int ctx, pp_list *o
 
 static pp_val exec_block(pp_interp *I, pp_node *blk, int ctx, pp_list *out);
 
+/* AUTOLOAD: the sub that stands in for an undefined one of its package. full is the name that
+   was called ("Pkg::name", main's subs without a package); on a hit $Pkg::AUTOLOAD is set to
+   the full name, as the sub expects. NULL when the package has no AUTOLOAD. */
+static NOINLINE pp_obj *autoload_sub(pp_interp *I, const char *full) {
+    const char *last = NULL;
+    for (const char *p = full; *p; p++) if (p[0] == ':' && p[1] == ':') last = p;
+    const char *base = last ? last + 2 : full;
+    if (!strcmp(base, "AUTOLOAD") || !strcmp(base, "DESTROY")) return NULL;
+    char buf[280];
+    int plen = last ? (int)(last - full) : 0;
+    if (plen > 200) return NULL;
+    int n = plen && !(plen == 4 && !memcmp(full, "main", 4)) ? pp_snprintf(buf, sizeof buf, "&%.*s::AUTOLOAD", plen, full) : pp_snprintf(buf, sizeof buf, "&AUTOLOAD");
+    pp_obj *code = pp_resolve_sub(I, pp_intern(I, buf, n));
+    if (!code || (!code->u.code.body && !code->u.code.native)) return NULL;
+    buf[0] = '$';
+    pp_obj *var = pp_global(I, pp_intern(I, buf, n));
+    char name[280];
+    int nl = pp_snprintf(name, sizeof name, "%s%s", last ? "" : "main::", full);
+    pp_release(var->u.scalar);
+    var->u.scalar = pp_strn(name, nl);
+    return code;
+}
+/* the same for a method: AUTOLOAD is looked up like a method of cls (through @ISA), and
+   $AUTOLOAD of the package it lives in is set to "cls::method" */
+static pp_obj *find_method(pp_interp *I, const char *cls, const char *name, int depth);
+static NOINLINE pp_obj *autoload_method(pp_interp *I, const char *cls, const char *mname) {
+    if (!strcmp(mname, "AUTOLOAD") || !strcmp(mname, "DESTROY") || strstr(mname, "::")) return NULL;
+    pp_obj *code = find_method(I, cls, "AUTOLOAD", 0);
+    if (!code || !code->u.code.name || (!code->u.code.body && !code->u.code.native)) return NULL;
+    char buf[280];
+    int n = strstr(code->u.code.name, "::") ? pp_snprintf(buf, sizeof buf, "$%s", code->u.code.name) : pp_snprintf(buf, sizeof buf, "$AUTOLOAD");
+    pp_obj *var = pp_global(I, pp_intern(I, buf, n));
+    char name[280];
+    int nl = pp_snprintf(name, sizeof name, "%s::%s", cls, mname);
+    pp_release(var->u.scalar);
+    var->u.scalar = pp_strn(name, nl);
+    return code;
+}
+
 /* A sub that writes to its arguments ($_[0] = ..., s/// on $_[1], for (@_) ...) changes the
    caller's variables in perl, where @_ holds aliases. Here @_ holds copies, so the changes are
    copied back after the call: the sub leaves what it changed in I->wb (args_changed), and the
@@ -1758,7 +1797,11 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
         return r;
     }
     if (I->depth >= I->max_depth) return pp_die(I, "Deep recursion limit exceeded");
-    if (!code->u.code.body) return pp_die(I, "Undefined subroutine &%s%s called", strstr(code->u.code.name ? code->u.code.name : "", "::") ? "" : "main::", code->u.code.name ? code->u.code.name : "");
+    if (!code->u.code.body) {   /* declared (sub name;) or referenced (\&name) but never defined */
+        pp_obj *al = code->u.code.name ? autoload_sub(I, code->u.code.name) : NULL;
+        if (al && al != code) return pp_call(I, al, args, ctx, out);
+        return pp_die(I, "Undefined subroutine &%s%s called", strstr(code->u.code.name ? code->u.code.name : "", "::") ? "" : "main::", code->u.code.name ? code->u.code.name : "");
+    }
     pp_env *env = pp_env_new(code->u.code.env, 1);
     env->is_sub = 1;
     pp_obj *argv = pp_env_cell(env, 0, '@');
@@ -1837,7 +1880,8 @@ static NOINLINE pp_val call_named(pp_interp *I, pp_node *n, int ctx, pp_list *ou
             if (ctx == CTX_LIST && out) { pp_list_push(out, pp_cstr(name)); return pp_undef(); }
             return pp_cstr(name);
         }
-        return pp_die(I, "Undefined subroutine &%s%s called", strstr(n->sym->name, "::") ? "" : "main::", n->sym->name + 1);
+        code = autoload_sub(I, n->sym->name + 1);
+        if (!code) return pp_die(I, "Undefined subroutine &%s%s called", strstr(n->sym->name, "::") ? "" : "main::", n->sym->name + 1);
     }
     pp_list args = {0};
     if (n->flags & 2) {
@@ -3318,6 +3362,8 @@ static NOINLINE pp_val eval_method(pp_interp *I, pp_node *n, int ctx, pp_list *o
             pp_str_decref(want);
             pp_list_free(&args); if (dyn) pp_str_decref(dyn);
             return scalar_or_push(ctx, out, r);
+        } else if ((code = autoload_method(I, cls, mname)) != NULL) {
+            code->refcnt++;                          /* the class (or a parent) has an AUTOLOAD: it gets the call */
         } else {
             pp_list_free(&args);
             const char *q = NULL;                    /* $obj->Pkg::method: the search was in Pkg */
