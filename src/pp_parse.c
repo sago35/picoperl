@@ -2088,6 +2088,10 @@ static pp_node *handle_const(pp_parser *P, const char *id, int len) {
 }
 /* after *name: a {SLOT} subscript makes it *name{SLOT} */
 static pp_node *glob_slot(pp_parser *P, pp_node *g) {
+    if (cur_is_op(P, "->")) {       /* *$fh->{key}, *$fh->[0]: an element of the glob's hash / array */
+        pp_tok *nx = peek(P);
+        if (nx->type == T_OP && (!strcmp(nx->op, "{") || !strcmp(nx->op, "["))) return parse_postfix(P, g);
+    }
     if (!cur_is_op(P, "{") || P->cur.space_before) return g;
     advance(P);
     pp_node *n = node(P, N_GLOBSLOT); n->a = g; n->b = parse_hash_key(P);

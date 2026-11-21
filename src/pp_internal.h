@@ -136,6 +136,8 @@ void pp_note_sub_file(pp_interp *I, pp_node *body, const char *file);
 int      pp_snprintf(char *buf, size_t cap, const char *fmt, ...);
 pp_val   pp_false(void);                            /* "" that is also 0 without a warning */
 int      pp_is_false(pp_val v);
+void    pp_glob_promote(pp_interp *I, pp_obj *file);     /* an open(my $fh) handle becomes a glob without a name (*$fh) */
+extern pp_interp *pp_anon_I;                             /* the interpreter that has such globs (NULL: none) */
 pp_sym  *pp_sym_find(pp_interp *I, const char *name, int len);   /* NULL if not interned */
 pp_obj  *pp_lookup_sub(pp_interp *I, pp_sym *sym);
 /* symbolic reference: the symbol a plain string names when it is used as a reference by node n

@@ -389,6 +389,46 @@ void pp_tie_set(pp_obj *var, pp_val obj) {
     tie_tab[tie_n].var = var; tie_tab[tie_n].obj = obj; tie_n++;
     var->tied = 1;
 }
+/* *$fh on a handle from open(my $fh, ...): the handle turns into a glob in place, so that
+   every copy of $fh, and the class it was blessed into, now mean the glob. The file moves to
+   an object of its own. The glob gets a made-up name (*main::_GEN_n) whose $, @ and % slots
+   are what ${*$fh}, @{*$fh} and %{*$fh} reach; the name table does not keep the glob alive, and
+   the name is free again once the glob is gone. */
+pp_interp *pp_anon_I;
+void pp_glob_promote(pp_interp *I, pp_obj *o) {
+    pp_obj *f = pp_obj_new(PP_OFILE);
+    f->u.file = o->u.file;
+    if (I->last_read == (void *)o) I->last_read = f;
+    char buf[32]; int n; pp_sym *gs;
+    for (int i = 0; ; i++) {
+        n = pp_snprintf(buf, sizeof buf, "*_GEN_%d", i);
+        gs = pp_intern(I, buf, n);
+        if (!gs->gcell) break;
+    }
+    n = pp_snprintf(buf, sizeof buf, "*main::%s", gs->name + 1);
+    o->kind = PP_OGLOB; o->anon = 1;
+    o->u.glob.name = pp_strn(buf, n);
+    o->u.glob.io = f;
+    gs->gcell = o;              /* not counted, not in I->globals: see anon_glob_gone */
+    pp_anon_I = I;
+}
+static void anon_glob_gone(pp_obj *o) {
+    pp_interp *I = pp_anon_I;
+    if (!I) return;
+    const char *nm = o->u.glob.name.u.s->d + 7;      /* past "*main::" */
+    char buf[32];
+    static const char sig[] = "*$@%";
+    for (int k = 0; k < 4; k++) {
+        int n = pp_snprintf(buf, sizeof buf, "%c%s", sig[k], nm);
+        pp_sym *s = pp_sym_find(I, buf, n);
+        if (!s || !s->gcell) continue;
+        pp_obj *c = s->gcell;
+        if (k == 0) { if (c == o) s->gcell = NULL; }
+        else if (k == 1 && c->kind == PP_OSCALAR) { pp_val old = c->u.scalar; c->u.scalar = pp_undef(); pp_release(old); }
+        else if (k == 2 && c->kind == PP_OARRAY) pp_array_clear(c);
+        else if (k == 3 && c->kind == PP_OHASH) pp_hash_clear(c);
+    }
+}
 static void obj_free(pp_obj *o) {
     if (o->tied) pp_tie_remove(o);
     switch (o->kind) {
@@ -413,6 +453,7 @@ static void obj_free(pp_obj *o) {
         else if (o->u.file.fp) pp_host_fclose(o->u.file.fp);
         break;
     case PP_OGLOB:
+        if (o->anon) anon_glob_gone(o);
         pp_release(o->u.glob.name);
         if (o->u.glob.io) pp_obj_decref(o->u.glob.io);
         break;

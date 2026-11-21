@@ -69,6 +69,7 @@ struct pp_obj {
     uint8_t kind;
     uint8_t tied;           /* tie'd: the object it is tied to is in the tie table (pp_tie_find) */
     uint8_t destroyed;      /* its DESTROY has been called (or is queued): not again */
+    uint8_t anon;           /* PP_OGLOB made from an open(my $fh) handle by *$fh: freed with its last reference */
     pp_sym *class;          /* package name when blessed, else NULL */
     union {
         pp_val scalar;

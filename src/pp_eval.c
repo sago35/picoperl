@@ -206,6 +206,10 @@ static pp_sym *named_sym(pp_interp *I, char sigil, const char *pkg, const char *
 /* a name, or a reference to a glob (which stands for its name: @$globref is @name) */
 static int is_globref(pp_val v) { return v.t == PP_REF && v.u.o->kind == PP_OGLOB; }
 pp_sym *pp_glob_named(pp_interp *I, const char *name) { return named_sym(I, '*', NULL, name); }
+/* *$fh: a handle from open(my $fh ...) becomes a glob the first time it is used as one */
+static void glob_operand(pp_interp *I, pp_val v) {
+    if (v.t == PP_REF && v.u.o->kind == PP_OFILE) pp_glob_promote(I, v.u.o);
+}
 static int is_symname(pp_val v) { return v.t == PP_STR || v.t == PP_INT || v.t == PP_NUM || is_globref(v); }
 static pp_str *symname_str(pp_val v) {
     if (is_globref(v)) { pp_str *s = v.u.o->u.glob.name.u.s; s->refcnt++; return s; }
@@ -244,6 +248,7 @@ static NOINLINE pp_val eval_glob_assign(pp_interp *I, pp_node *n) {
     pp_node *g = n->a;
     pp_val nv = pp_eval(I, g->a, CTX_SCALAR, NULL);
     if (I->ctl) { pp_release(nv); return pp_undef(); }
+    glob_operand(I, nv);
     if (!is_symname(nv)) { pp_release(nv); return pp_die(I, "Not a GLOB reference"); }
     pp_str *name = symname_str(nv); pp_release(nv);
     const char *pkg = g->b && g->b->type == N_CONST ? g->b->val.u.s->d : NULL;
@@ -369,6 +374,7 @@ static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *o
 static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val nv = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) { pp_release(nv); return pp_undef(); }
+    glob_operand(I, nv);
     if (!is_symname(nv)) { pp_release(nv); return pp_die(I, "Not a GLOB reference"); }
     pp_str *name = symname_str(nv); pp_release(nv);
     pp_sym *s = named_sym(I, '*', n->b && n->b->type == N_CONST ? n->b->val.u.s->d : NULL, name->d);
@@ -381,6 +387,7 @@ static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out
 static pp_sym *glob_sym(pp_interp *I, pp_node *n) {
     pp_val nv = pp_eval(I, n->a, CTX_SCALAR, NULL);
     if (I->ctl) { pp_release(nv); return NULL; }
+    glob_operand(I, nv);
     if (!is_symname(nv)) { pp_release(nv); pp_die(I, "Not a GLOB reference"); return NULL; }
     pp_str *name = symname_str(nv); pp_release(nv);
     pp_sym *s = named_sym(I, '*', n->b && n->b->type == N_CONST ? n->b->val.u.s->d : NULL, name->d);
@@ -3806,6 +3813,7 @@ static pp_val n_univ_can(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
    over from one interpreter to the next: a board runs a fresh one on every reload */
 static void reset_static_state(void) {
     pp_ovl_hook = NULL; ovl_I = NULL; ovl_assign = 0;
+    pp_anon_I = NULL;
     pp_destroy_on = 0;
     pp_obj *o;
     while ((o = pp_destroy_next(0)) != NULL) pp_obj_decref(o);   /* freed without their DESTROY */
