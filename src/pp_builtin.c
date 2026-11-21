@@ -1341,6 +1341,12 @@ pp_val pp_builtin(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
             if (arr) { if (idx < 0) idx += arr->u.arr.n; e = idx >= 0 && idx < arr->u.arr.n; pp_obj_decref(arr); }
         } else if (a->type == N_CALL) {
             e = pp_resolve_sub(I, a->sym) != NULL;
+        } else if (a->type == N_CALLREF && (a->flags & 2)) {   /* exists &$code / exists &{"name"}: no call, and fine under strict refs */
+            pp_val cv = pp_eval(I, a->a, CTX_SCALAR, NULL);
+            if (I->ctl) { pp_release(cv); return pp_undef(); }
+            if (cv.t == PP_REF) e = cv.u.o->kind == PP_OCODE;
+            else if (cv.t != PP_UNDEF) { pp_sym *s = pp_symref(I, a, cv, '&', 0); e = s && pp_resolve_sub(I, s) != NULL; }
+            pp_release(cv);
         } else return pp_die(I, "exists argument is not a HASH or ARRAY element or a subroutine");
         if (I->ctl) return pp_undef();
         return ret(ctx, out, e ? pp_int(1) : pp_strn("", 0));

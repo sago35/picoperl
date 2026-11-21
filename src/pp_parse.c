@@ -735,7 +735,7 @@ static void lex_next(pp_parser *P, pp_tok *t) {
             t->type = T_VAR; t->sigil = '%'; term = 1;
         } else { L->pos++; t->type = T_CAST; strcpy(t->op, "%"); term = 0; }
     }
-    else if (c == ':' && peekc(L, 1) == ':' && !L->prev_term && is_ident_start(peekc(L, 2))) {
+    else if (c == ':' && peekc(L, 1) == ':' && (!L->prev_term || L->prev_brace) && is_ident_start(peekc(L, 2))) {   /* (after a block too: } ::ok(1);) */
         int start = L->pos; L->pos += 2; lex_name(L);            /* ::name is main::name */
         t->type = T_IDENT; t->s = L->src + start; t->len = L->pos - start; term = 0;
     }
@@ -3082,6 +3082,7 @@ static pp_node *parse_ident_term(pp_parser *P) {
             pp_node *c = node(P, N_CALLREF); c->a = e; c->flags |= 2; e = c;
         }
         e->flags |= PP_CALL_GOTO;
+        if (e->type == N_CALLREF) e->flags &= ~PP_NODE_STRICTREFS;      /* goto &$name names the sub: allowed under strict refs */
         pp_node *n = node(P, N_RETURN);
         n->a = e;
         return n;
@@ -3485,6 +3486,15 @@ static pp_node *parse_statement_inner(pp_parser *P) {
         if ((tok_is_ident(t, "my") || tok_is_ident(t, "our") || tok_is_ident(t, "state")) && tok_is_ident(nx, "sub")) {
             /* my sub name { ... }: a lexical sub; here it is an ordinary sub of the package */
             advance(P);
+            nx = peek(P);
+        }
+        if ((tok_is_ident(t, "AUTOLOAD") || tok_is_ident(t, "DESTROY")) && is_op(nx, "{")) {
+            /* AUTOLOAD { ... } / DESTROY { ... }: `sub` may be left out, as for BEGIN and END.
+               The name is read once more, behind a `sub` token. */
+            P->L.pos = (int)(t->s - P->L.src); P->L.line = t->line;
+            P->L.prev_term = 0; P->L.prev_brace = 0; P->L.prev_op = 0;
+            P->has_nxt = 0;
+            P->cur.s = "sub"; P->cur.len = 3;
             nx = peek(P);
         }
         if (tok_is_ident(t, "sub") && nx->type == T_IDENT) {

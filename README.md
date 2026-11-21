@@ -645,6 +645,8 @@ perl が持たないものは undef)。`Scalar::Util::set_prototype` で、コ�
 **`AUTOLOAD`**: パッケージに `sub AUTOLOAD` があると、そのパッケージの未定義のサブ・メソッドの呼び出しを受け取ります
 (`our $AUTOLOAD` に呼ばれた名前が入ります。メソッドは `@ISA` をたどって探します。`DESTROY` は渡しません)。
 `defined &name` や `can` は、perl と同じく AUTOLOAD があっても偽のままです。
+`AUTOLOAD { ... }` / `DESTROY { ... }` のように `sub` を省いた形も書けます。`goto &$name`、`exists &$name`、`defined &$name` は
+`use strict` の下でもサブを名前で指せます (名前での呼び出し `&$name(...)` は perl と同じく `no strict 'refs'` が必要)。
 
 **名前で指した変数への参照** `\${"Pkg::name"}` / `\$$name` はパッケージ変数そのものを指し、`\$$ref` は `$ref` と同じ参照です
 (`tie ${"Pkg::name"}, ...` でその変数に tie できます。`Env` がこの形を使います)。
