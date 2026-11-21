@@ -2980,6 +2980,333 @@ static pp_val n_lastidx_set(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_copy(a->v[1]);
 }
 
+/* ---------------- version objects ----------------
+   What perl itself implements in C for the `version` class: parse / new, declare / qv,
+   numify, normal, stringify, comparison, is_alpha, is_qv, is_lax, is_strict, _VERSION.
+   An object is a blessed hash like perl's: { version => [1, 2, 3], original => "1.2.3",
+   qv => 1, alpha => 1 }. lib/version.pm only turns overloading on and has import(). */
+static int ver_is(pp_val v) {
+    return v.t == PP_REF && v.u.o->kind == PP_OHASH && v.u.o->class && pp_hash_find(v.u.o, "version", 7) != NULL;
+}
+static pp_obj *ver_parts(pp_interp *I, pp_val v) {
+    pp_val *p = ver_is(v) ? pp_hash_find(v.u.o, "version", 7) : NULL;
+    if (!p || p->t != PP_REF || p->u.o->kind != PP_OARRAY) { pp_die(I, "Invalid version object"); return NULL; }
+    return p->u.o;
+}
+static pp_val ver_bad(pp_interp *I, const char *why) { return pp_die(I, "Invalid version format (%s)", why); }
+static int ver_dg(char c) { return isdigit((unsigned char)c) || c == '_'; }
+/* the text of a version: a v-string (v1.2.3 is chr(1) chr(2) chr(3)) is spelled out again */
+static pp_str *ver_text(pp_val v) {
+    pp_str *s = pp_to_str(v);
+    int odd = 0, punct = 0, printable = 1;
+    for (int i = 0; i < s->len; i++) {
+        unsigned char c = (unsigned char)s->d[i];
+        if (c == ',' || c == '.' || c == '_') punct = 1;
+        if (!isalnum(c) && !isspace(c)) odd = 1;
+        if (!(c >= 0x21 && c <= 0x7e) && !isspace(c)) printable = 0;
+    }
+    if (!s->len || punct || !odd || printable) return s;
+    pp_str *r = pp_str_new("v", 1);
+    char b[16];
+    for (int i = 0; i < s->len; ) {                    /* (a number above 127 is there as UTF-8) */
+        unsigned c = (unsigned char)s->d[i];
+        int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0, first = i == 0;
+        if (more && i + more < s->len + 0 && ((unsigned char)s->d[i + 1] & 0xC0) == 0x80) {
+            c &= 0x3F >> more;
+            for (int k = 1; k <= more; k++) c = (c << 6) | ((unsigned char)s->d[i + k] & 0x3F);
+            i += more + 1;
+        } else i++;
+        int n = pp_snprintf(b, sizeof b, "%s%u", first ? "" : ".", c);
+        str_append(&r, b, n);
+    }
+    pp_str_decref(s);
+    return r;
+}
+static pp_val ver_make(pp_interp *I, const char *cls, pp_obj *parts, const char *orig, int olen, int qv, int alpha) {
+    pp_obj *h = pp_obj_new(PP_OHASH);
+    h->class = pp_intern(I, cls, (int)strlen(cls));
+    pp_val pr = pp_ref(parts); pp_obj_decref(parts);
+    pp_hash_set(h, "version", 7, pr);
+    pp_hash_set(h, "original", 8, pp_strn(orig, olen));
+    if (qv) pp_hash_set(h, "qv", 2, pp_int(1));
+    if (alpha) pp_hash_set(h, "alpha", 5, pp_int(1));
+    pp_val r = pp_ref(h); pp_obj_decref(h);
+    return r;
+}
+/* read a version out of text; force: declare / qv (always dotted) */
+static pp_val ver_scan(pp_interp *I, const char *cls, const char *value, int force) {
+    const char *s = value;
+    while (isspace((unsigned char)*s)) s++;
+    if (*s == '-') return ver_bad(I, "negative version number");
+    int qv = force, n = 0;
+    if (s[0] == 'v' && isdigit((unsigned char)s[1])) {                    /* v1, v1.2.3 */
+        n = 1; while (ver_dg(s[n])) n++;
+        while (s[n] == '.' && ver_dg(s[n + 1])) { n++; while (ver_dg(s[n])) n++; }
+        qv = 1;
+    } else {
+        int i = 0, groups = 0;
+        while (isdigit((unsigned char)s[i])) i++;
+        int j = i;
+        while (s[j] == '.' && ver_dg(s[j + 1])) { j++; while (ver_dg(s[j])) j++; groups++; }
+        if (groups >= 2) { n = j; qv = 1; }                               /* 1.2.3 */
+        else if (isdigit((unsigned char)s[0])) { n = i; if (s[n] == '.') { n++; while (ver_dg(s[n])) n++; } }   /* 1, 1., 1.23 */
+        else if (s[0] == '.' && isdigit((unsigned char)s[1])) { n = 2; while (ver_dg(s[n])) n++; }               /* .5 */
+        else return ver_bad(I, s[0] == 'v' ? "dotted-decimal versions require at least three parts" : "non-numeric data");
+    }
+    const char *rest = s + n;
+    int dots = 0, unders = 0, first_dot = -1, last_under = -1, dot_under = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '.') { dots++; if (first_dot < 0) first_dot = i; if (i + 1 < n && s[i + 1] == '_') dot_under = 1; }
+        if (s[i] == '_') { unders++; last_under = i; }
+    }
+    if (*rest == '_' && !dots) return ver_bad(I, "alpha without decimal");
+    if (dot_under || (n && s[n - 1] == '.' && *rest == '_')) return ver_bad(I, "fractional part required");
+    if (*rest && !strchr("; \t\n\r{}", *rest)) return ver_bad(I, "non-numeric data");
+    if (unders) {
+        if (unders > 1) return ver_bad(I, "multiple underscores");
+        if (!dots) return ver_bad(I, "alpha without decimal");
+        if (!qv) { for (int i = 0; i < first_dot; i++) if (s[i] == '_') return ver_bad(I, "underscores before decimal"); }
+        if (last_under == n - 1) return ver_bad(I, "misplaced underscore");
+    }
+    pp_obj *parts = pp_obj_new(PP_OARRAY);
+    if (qv) {
+        int i = s[0] == 'v' ? 1 : 0;
+        for (;;) {
+            int64_t v = 0;
+            while (i < n && s[i] != '.') { if (s[i] != '_') v = v * 10 + (s[i] - '0'); i++; }
+            pp_array_push(parts, pp_int(v));
+            if (i >= n) break;
+            i++;
+        }
+        while (parts->u.arr.n < 3) pp_array_push(parts, pp_int(0));
+    } else {
+        int i = 0; int64_t v = 0;
+        while (i < n && s[i] != '.') { if (s[i] != '_') v = v * 10 + (s[i] - '0'); i++; }
+        pp_array_push(parts, pp_int(v));
+        if (i < n) i++;
+        int k = 0, part = 0;                                               /* the fraction, three digits at a time */
+        for (; i < n; i++) {
+            if (s[i] == '_') continue;
+            part = part * 10 + (s[i] - '0');
+            if (++k == 3) { pp_array_push(parts, pp_int(part)); k = 0; part = 0; }
+        }
+        if (k) { while (k++ < 3) part *= 10; pp_array_push(parts, pp_int(part)); }
+    }
+    char obuf[160];
+    int ol = pp_snprintf(obuf, sizeof obuf, "%s%.*s", qv && s[0] != 'v' && dots == 1 ? "v" : "", n > 150 ? 150 : n, s);
+    pp_val r = ver_make(I, cls, parts, obuf, ol, qv, unders);
+    if (*rest) pp_warn(I, "Version string '%s' contains invalid data; ignoring: '%s'", value, rest);
+    return r;
+}
+static pp_val ver_copy(pp_interp *I, const char *cls, pp_val src, int qv) {
+    pp_obj *from = ver_parts(I, src);
+    if (!from) return pp_undef();
+    pp_obj *parts = pp_obj_new(PP_OARRAY);
+    for (int i = 0; i < from->u.arr.n; i++) pp_array_push(parts, pp_copy(from->u.arr.v[i]));
+    pp_val *o = pp_hash_find(src.u.o, "original", 8);
+    pp_str *os = o ? pp_to_str(*o) : pp_str_new("0", 1);
+    pp_val r = ver_make(I, cls, parts, os->d, os->len, qv || pp_hash_find(src.u.o, "qv", 2) != NULL, pp_hash_find(src.u.o, "alpha", 5) != NULL);
+    pp_str_decref(os);
+    return r;
+}
+/* a version from any value: an object is copied; undef is version 0 */
+static pp_val ver_from(pp_interp *I, const char *cls, pp_val v, int force) {
+    if (ver_is(v)) return ver_copy(I, cls, v, force);
+    if (v.t == PP_UNDEF) { if (force) return ver_bad(I, "version required"); pp_obj *parts = pp_obj_new(PP_OARRAY); pp_array_push(parts, pp_int(0)); return ver_make(I, cls, parts, "0", 1, 0, 0); }
+    pp_str *t = ver_text(v);
+    pp_val r;
+    if (!t->len) r = ver_bad(I, "version required");
+    else if (!force && !strcmp(t->d, "undef")) { pp_obj *parts = pp_obj_new(PP_OARRAY); pp_array_push(parts, pp_int(0)); r = ver_make(I, cls, parts, "0", 1, 0, 0); }
+    else r = ver_scan(I, cls, t->d, force);
+    pp_str_decref(t);
+    return r;
+}
+static const char *ver_class_of(pp_val v, pp_str **tmp) {
+    *tmp = NULL;
+    if (v.t == PP_REF && v.u.o->class) return v.u.o->class->name;
+    *tmp = pp_to_str(v);
+    return (*tmp)->d;
+}
+/* version->new(VALUE), version->parse(VALUE), $obj->new */
+static pp_val n_ver_new(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_str *tmp;
+    const char *cls = a->n ? ver_class_of(a->v[0], &tmp) : (tmp = NULL, "version");
+    pp_val r;
+    if (a->n == 1 && ver_is(a->v[0])) r = ver_copy(I, cls, a->v[0], 0);
+    else r = ver_from(I, cls, a->n > 1 ? a->v[a->n > 2 ? 2 : 1] : pp_undef(), a->n > 2);
+    if (tmp) pp_str_decref(tmp);
+    return r;
+}
+/* version->declare(VALUE), qv(VALUE): always read as dotted */
+static pp_val n_ver_declare(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_str *tmp = NULL;
+    const char *cls = a->n > 1 ? ver_class_of(a->v[0], &tmp) : "version";
+    pp_val r = ver_from(I, cls, a->n > 1 ? a->v[1] : a->n ? a->v[0] : pp_undef(), 1);
+    if (tmp) pp_str_decref(tmp);
+    return r;
+}
+static pp_val ver_numify(pp_interp *I, pp_val v) {
+    pp_obj *p = ver_parts(I, v);
+    if (!p) return pp_undef();
+    pp_str *r = pp_str_new(NULL, 0);
+    char b[32];
+    for (int i = 0; i < p->u.arr.n; i++) { int n = pp_snprintf(b, sizeof b, i ? "%03lld" : "%lld.", (long long)pp_to_int(p->u.arr.v[i])); str_append(&r, b, n); }
+    if (p->u.arr.n <= 1) str_append(&r, "000", 3);
+    return pp_str_val(r);
+}
+static pp_val ver_normal(pp_interp *I, pp_val v) {
+    pp_obj *p = ver_parts(I, v);
+    if (!p) return pp_undef();
+    pp_str *r = pp_str_new("v", 1);
+    char b[32];
+    int n = p->u.arr.n < 3 ? 3 : p->u.arr.n;
+    for (int i = 0; i < n; i++) { int k = pp_snprintf(b, sizeof b, "%s%lld", i ? "." : "", i < p->u.arr.n ? (long long)pp_to_int(p->u.arr.v[i]) : 0LL); str_append(&r, b, k); }
+    return pp_str_val(r);
+}
+static pp_val n_ver_numify(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)ctx; (void)out; return ver_numify(I, a->n ? a->v[0] : pp_undef()); }
+static pp_val n_ver_normal(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)ctx; (void)out; return ver_normal(I, a->n ? a->v[0] : pp_undef()); }
+static pp_val n_ver_stringify(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_val v = a->n ? a->v[0] : pp_undef();
+    if (!ver_parts(I, v)) return pp_undef();
+    pp_val *o = pp_hash_find(v.u.o, "original", 8);
+    if (o) return pp_copy(*o);
+    return pp_hash_find(v.u.o, "qv", 2) ? ver_normal(I, v) : ver_numify(I, v);
+}
+static pp_val n_ver_is_alpha(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return a->n && ver_is(a->v[0]) && pp_hash_find(a->v[0].u.o, "alpha", 5) ? pp_int(1) : pp_strn("", 0); }
+static pp_val n_ver_is_qv(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return a->n && ver_is(a->v[0]) && pp_hash_find(a->v[0].u.o, "qv", 2) ? pp_int(1) : pp_strn("", 0); }
+/* -1 / 0 / 1; *ok = 0 after a die (the other side was no version) */
+static int ver_cmp(pp_interp *I, pp_val l, pp_val r, int *ok) {
+    *ok = 0;
+    pp_obj *lp = ver_parts(I, l);
+    if (!lp) return 0;
+    pp_val made = pp_undef();
+    if (!ver_is(r)) { made = ver_from(I, l.u.o->class->name, r, 0); if (I->ctl) { pp_release(made); return 0; } r = made; }
+    pp_obj *rp = ver_parts(I, r);
+    int c = 0;
+    if (rp) {
+        int n = lp->u.arr.n > rp->u.arr.n ? lp->u.arr.n : rp->u.arr.n;
+        for (int i = 0; i < n && !c; i++) {
+            int64_t x = i < lp->u.arr.n ? pp_to_int(lp->u.arr.v[i]) : 0, y = i < rp->u.arr.n ? pp_to_int(rp->u.arr.v[i]) : 0;
+            c = x < y ? -1 : x > y ? 1 : 0;
+        }
+        *ok = 1;
+    }
+    pp_release(made);
+    return c;
+}
+static pp_val n_ver_vcmp(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    int ok, c = ver_cmp(I, a->n ? a->v[0] : pp_undef(), a->n > 1 ? a->v[1] : pp_undef(), &ok);
+    if (!ok) return pp_undef();
+    return pp_int(a->n > 2 && pp_truth(a->v[2]) ? -c : c);
+}
+static pp_val n_ver_bool(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    pp_obj *p = ver_parts(I, a->n ? a->v[0] : pp_undef());
+    if (!p) return pp_undef();
+    for (int i = 0; i < p->u.arr.n; i++) if (pp_to_int(p->u.arr.v[i])) return pp_int(1);
+    return pp_strn("", 0);
+}
+static pp_val n_ver_noop(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)a; (void)ctx; (void)out; return pp_die(I, "operation not supported with version object"); }
+/* is_strict / is_lax: the two grammars of version::regex, written out */
+static int ver_digits(const char *s, int i) { int k = i; while (isdigit((unsigned char)s[k])) k++; return k - i; }
+static int ver_strict(const char *s) {
+    int i = 0;
+    if (s[0] == 'v') {                                    /* v1.2.3: at least three parts, up to 3 digits each */
+        i = 1;
+        int d = ver_digits(s, i);
+        if (!d || (d > 1 && s[i] == '0')) return -1;
+        i += d;
+        int groups = 0;
+        while (s[i] == '.') { d = ver_digits(s, i + 1); if (d < 1 || d > 3) return -1; i += 1 + d; groups++; }
+        return groups >= 2 ? i : -1;
+    }
+    int d = ver_digits(s, 0);
+    if (!d || (d > 1 && s[0] == '0')) return -1;
+    i = d;
+    if (s[i] == '.') { d = ver_digits(s, i + 1); if (!d) return -1; i += 1 + d; }
+    return i;
+}
+static int ver_alpha_tail(const char *s, int i) { if (s[i] == '_') { int d = ver_digits(s, i + 1); if (d) return i + 1 + d; } return i; }
+static int ver_lax(const char *s) {
+    if (!strncmp(s, "undef", 5)) return 5;
+    int best = -1, i, d;
+    if (s[0] == 'v' && (d = ver_digits(s, 1))) {          /* v1, v1.2, v1.2_3 */
+        i = 1 + d;
+        int groups = 0;
+        while (s[i] == '.' && (d = ver_digits(s, i + 1))) { i += 1 + d; groups++; }
+        if (groups) i = ver_alpha_tail(s, i);
+        if (i > best) best = i;
+    }
+    d = ver_digits(s, 0); i = d;                          /* 1.2.3, .1.2 (two or more dotted parts) */
+    {
+        int j = i, groups = 0, e;
+        while (s[j] == '.' && (e = ver_digits(s, j + 1))) { j += 1 + e; groups++; }
+        if (groups >= 2) { j = ver_alpha_tail(s, j); if (j > best) best = j; }
+    }
+    if (d) {                                              /* 1, 1., 1.23, 1.02_03 */
+        int j = d;
+        if (s[j] == '.') { int e = ver_digits(s, j + 1); j = e ? ver_alpha_tail(s, j + 1 + e) : j + 1; }
+        if (j > best) best = j;
+    } else if (s[0] == '.' && (d = ver_digits(s, 1))) {   /* .5 */
+        int j = ver_alpha_tail(s, 1 + d);
+        if (j > best) best = j;
+    }
+    return best;
+}
+static pp_val ver_check(pp_list *a, int strict) {
+    if (!a->n || a->v[0].t == PP_UNDEF) return pp_strn("", 0);
+    pp_str *t = pp_to_str(a->v[0]);
+    const char *s = t->d;
+    while (isspace((unsigned char)*s)) s++;
+    int n = strict ? ver_strict(s) : ver_lax(s);
+    int ok = n >= 0;
+    if (ok) { s += n; while (isspace((unsigned char)*s)) s++; ok = !*s; }
+    pp_str_decref(t);
+    return ok ? pp_int(1) : pp_strn("", 0);
+}
+static pp_val n_ver_is_strict(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return ver_check(a, 1); }
+static pp_val n_ver_is_lax(pp_interp *I, pp_list *a, int ctx, pp_list *out) { (void)I; (void)ctx; (void)out; return ver_check(a, 0); }
+/* version::_VERSION(CLASS or OBJECT, REQUIRED): what UNIVERSAL::VERSION does in perl */
+static pp_val n_ver_VERSION(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (!a->n) return pp_undef();
+    pp_str *tmp;
+    const char *cls = ver_class_of(a->v[0], &tmp);
+    char nm[160];
+    int nl = pp_snprintf(nm, sizeof nm, "$%s::VERSION", cls);
+    pp_sym *vs = nl < (int)sizeof nm ? pp_sym_find(I, nm, nl) : NULL;
+    pp_val have = pp_undef(), res = pp_undef();
+    if (vs && vs->gcell && vs->gcell->kind == PP_OSCALAR && vs->gcell->u.scalar.t != PP_UNDEF) have = ver_from(I, "version", vs->gcell->u.scalar, 0);
+    if (!I->ctl && a->n > 1 && a->v[1].t != PP_UNDEF) {
+        if (have.t == PP_UNDEF) pp_die(I, "%s does not define $%s::VERSION--version check failed", cls, cls);
+        else {
+            pp_val req = ver_from(I, "version", a->v[1], 0);
+            int ok = 0, c = I->ctl ? 0 : ver_cmp(I, req, have, &ok);
+            if (ok && c > 0) {
+                int qv = pp_hash_find(req.u.o, "qv", 2) != NULL;
+                pp_list one = {0};
+                pp_list_push(&one, pp_copy(req));
+                pp_val rs = qv ? ver_normal(I, req) : n_ver_stringify(I, &one, CTX_SCALAR, NULL);
+                pp_release(one.v[0]); one.v[0] = pp_copy(have);
+                pp_val hs = qv ? ver_normal(I, have) : n_ver_stringify(I, &one, CTX_SCALAR, NULL);
+                pp_list_free(&one);
+                pp_str *r1 = pp_to_str(rs), *h1 = pp_to_str(hs);
+                pp_die(I, "%s version %s required--this is only version %s", cls, r1->d, h1->d);
+                pp_str_decref(r1); pp_str_decref(h1); pp_release(rs); pp_release(hs);
+            }
+            pp_release(req);
+        }
+    }
+    if (!I->ctl && have.t != PP_UNDEF) { pp_list one = {0}; pp_list_push(&one, pp_copy(have)); res = n_ver_stringify(I, &one, CTX_SCALAR, NULL); pp_list_free(&one); }
+    pp_release(have);
+    if (tmp) pp_str_decref(tmp);
+    return res;
+}
+
 /* Natives that are made the first time a script names them (pp_resolve_sub asks here): a
    native registered up front costs RAM in every script, these cost none until they are used. */
 static const struct { const char *name; pp_native fn; } lazy_natives[] = {
@@ -3027,6 +3354,12 @@ static const struct { const char *name; pp_native fn; } lazy_natives[] = {
     {"POSIX::access", n_px_access},
     {"POSIX::tzname", n_px_tzname},
     {"POSIX::tzset", n_bi_nothing},
+    {"version::new", n_ver_new}, {"version::parse", n_ver_new}, {"version::declare", n_ver_declare}, {"version::qv", n_ver_declare},
+    {"version::numify", n_ver_numify}, {"version::normal", n_ver_normal}, {"version::stringify", n_ver_stringify},
+    {"version::vcmp", n_ver_vcmp}, {"version::is_alpha", n_ver_is_alpha}, {"version::is_qv", n_ver_is_qv},
+    {"version::is_strict", n_ver_is_strict}, {"version::is_lax", n_ver_is_lax}, {"version::_VERSION", n_ver_VERSION},
+    {"version::(\"\"", n_ver_stringify}, {"version::(0+", n_ver_numify}, {"version::(<=>", n_ver_vcmp}, {"version::(cmp", n_ver_vcmp},
+    {"version::(bool", n_ver_bool}, {"version::(+", n_ver_noop}, {"version::(-", n_ver_noop}, {"version::(*", n_ver_noop}, {"version::(/", n_ver_noop},
     {"POSIX::strtol", n_px_strtol},
     {"POSIX::strtod", n_px_strtod},
     {"POSIX::setlocale", n_px_setlocale},

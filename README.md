@@ -397,6 +397,12 @@ perl との違い: `use Fcntl qw(:seek)` のようにタグを指定しても、
   呼んだパッケージの外で最初の呼び出し元の位置を付けます。`confess` などの呼び出し履歴に引数は出ません
   (`main::f() called at ...`)。`@CARP_NOT` は見ません
 
+- `version`: バージョン番号のオブジェクト。`version->parse("1.2.3")` / `version->new(...)`、`version->declare("1.2")` / `qv("1.2")`、
+  `numify` `normal` `stringify`、比較 (`<=>` `cmp` と、文字列や数との比較: `$v > "1.2"`)、`is_alpha` `is_qv`、`is_lax` `is_strict`、
+  `version::_VERSION`。処理は C で実装してあり (perl 本体もこの部分は C)、乱数で作ったバージョン文字列でも本家と同じ結果に
+  なることを確かめています。`use version;` で減る空きは見込みで約 7KB。本家との違い: `use version;` しても
+  `UNIVERSAL::VERSION` は置き換えません。`$version::LAX` / `$version::STRICT` はありません。印字できる文字だけの v 文字列
+  (`v65.66` は `"AB"`) は、ただの文字列と区別できません
 - `POSIX` (ボードで意味のある部分): `floor ceil fmod pow round trunc fabs tan asin acos atan sinh cosh tanh log10 log2 isnan isinf`、
   `strftime` (`strftime("%Y-%m-%d %H:%M:%S", localtime)`。曜日と月の名前は英語、`%Z` は `UTC`、`%z` は `+0000`。範囲外の日時は
   perl 5.42 以降と同じく繰り上がります)、`strtol strtod setlocale localeconv getpid _exit access tzset tzname`、
