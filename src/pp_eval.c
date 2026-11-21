@@ -3835,10 +3835,12 @@ int pp_run(pp_interp *I, const char *filename, const char *src) {
     }
     char *fname = pp_xmalloc(strlen(filename) + 1); strcpy(fname, filename);
     track_unit(I, unit, fname);
-    I->ctl = CTL_NONE;
     I->main_unit = unit;
-    pp_val r = pp_exec_unit(I, unit, CTX_VOID, NULL);
-    pp_release(r);
+    if (I->ctl != CTL_EXIT) {                 /* (exit in a BEGIN block or a `use`: nothing is run, END blocks still are) */
+        I->ctl = CTL_NONE;
+        pp_val r = pp_exec_unit(I, unit, CTX_VOID, NULL);
+        pp_release(r);
+    }
     int rc = 0;
     if (I->ctl == CTL_DIE) { report_die(I); rc = 255; }
     else if (I->ctl == CTL_EXIT) rc = I->exit_code;

@@ -86,6 +86,7 @@ struct pp_parser {
     int pkg_stmt;                        /* a `package X;` statement was seen in the block being parsed */
     char **our_names; pp_sym **our_syms; int nours, capours;   /* `our` vars declared in non-main packages */
     int in_sub;
+    int exiting;                                 /* a BEGIN block or `use` called exit: stop parsing, the program ends */
     int stmt_line;                               /* line where the statement being parsed starts: the line its calls report (0: unknown) */
     int last_line;                               /* line of the token before the current one */
     int term_brace;                              /* the next statement starts a map/grep block: a '{' there is an anonymous hash */
@@ -870,6 +871,16 @@ static void exec_at_parse(pp_parser *P, pp_node *n, int rec_start, int id_start)
         pp_release(I->err); I->err = pp_undef();
         I->ctl = CTL_NONE;
         P->err_has_loc = 1;
+        longjmp(P->jb, 1);
+    }
+    if (I->ctl == CTL_EXIT) {
+        /* exit inside BEGIN / use (a test that prints "1..0 # SKIP" and leaves): nothing more
+           of the file is parsed or run. I->ctl stays set, so whoever runs the file exits. */
+        P->exiting = 1;
+        if (keeps_code_p(n)) {
+            I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
+            I->all_subdefs[I->nall_subdefs++] = n;
+        } else pp_free_ast(n);
         longjmp(P->jb, 1);
     }
     if (I->ctl) I->ctl = CTL_NONE;
@@ -3583,9 +3594,17 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     int subs_before = I->nall_subdefs;
     if (site) { P.sc->arena = pp_arena_new(); P.sc->track = 1; *arena = P.sc->arena; }
     if (setjmp(P.jb)) {
+        if (P.exiting && !site) {                    /* exit at parse time: an empty file, and I->ctl says exit */
+            P.sc->heap_depth = 0;
+            pp_node *empty = node(&P, N_BLOCK);
+            parser_free(&P);
+            return empty;
+        }
         char buf[512];
-        int n = P.err_has_loc ? pp_snprintf(buf, sizeof buf, "%s\n", P.errmsg)
+        if (P.exiting) P.errmsg[0] = 0;
+        int n = P.exiting ? 0 : P.err_has_loc ? pp_snprintf(buf, sizeof buf, "%s\n", P.errmsg)
                               : pp_snprintf(buf, sizeof buf, "%s at %s line %d.\n", P.errmsg, filename, P.cur.line);
+        if (P.exiting) buf[0] = 0;
         if (errbuf) snprintf(errbuf, errcap, "%s", buf);
         else pp_host_write(2, buf, n);
         *err = 1;
