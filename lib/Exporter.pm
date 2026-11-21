@@ -6,6 +6,7 @@ package Exporter;
 #   require Exporter; our @ISA = ('Exporter');     # 昔ながらの継承
 #   Module->import(qw(name));                      # import を自分で呼ぶ
 #   Module->export_to_level(1, @names);
+#   Exporter::export($pkg, $into, @names);
 use strict;
 our $VERSION = '5.79';
 our $ExportLevel = 0;
@@ -24,6 +25,8 @@ sub export_to_level {
     my ($pkg, $level, $ignored, @names) = @_;
     _export($pkg, scalar caller($level), @names);
 }
+# Exporter::export($pkg, $into, @names): 取り込み先のパッケージを直接指定する形 (FileHandle が使う)
+sub export { _export(@_) }
 
 sub _export {
     my ($pkg, $into, @names) = @_;

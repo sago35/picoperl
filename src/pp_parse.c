@@ -3105,6 +3105,24 @@ static pp_node *parse_ident_term(pp_parser *P) {
         if (parens) expect_op(P, ")");
         return c;
     }
+    if (len == 4 && !memcmp(id, "pipe", 4) && (forced_core || !is_declared(P, sym_sigil(P, '&', id, len)))      /* (CORE::pipe inside a sub named pipe) */
+        && !(nx->type == T_OP && (!strcmp(nx->op, "=>") || !strcmp(nx->op, "->") || !strcmp(nx->op, "::")))) {
+        /* pipe(READ, WRITE) is PicoPerl::__pipe(R, W): a handle name goes as "*Pkg::NAME", a
+           variable as a reference to it (the handle is put there) */
+        advance(P);
+        int parens = accept_op(P, "(");
+        pp_node *c = node(P, N_CALL); c->line = line;
+        c->sym = pp_intern(P->I, "&PicoPerl::__pipe", 17);
+        for (int k = 0; k < 2; k++) {
+            pp_node *h;
+            if (P->cur.type == T_IDENT && is_handle_name(P->cur.s, P->cur.len) && (is_op(peek(P), ",") || is_op(peek(P), ")") || is_op(peek(P), ";") || peek(P)->type == T_IDENT)) { h = handle_const(P, P->cur.s, P->cur.len); advance(P); }
+            else { pp_node *e = parse_assign(P); if (e->type == N_AELEM) note_argw(P, e); h = node(P, N_REF); h->a = e; h->line = line; }   /* (pipe $_[0], $_[1] hands the handles to the caller) */
+            node_add(c, h);
+            if (k == 0) expect_op(P, ",");
+        }
+        if (parens) expect_op(P, ")");
+        return c;
+    }
     if (len == 7 && !memcmp(id, "opendir", 7) && !is_declared(P, sym_sigil(P, '&', id, len))) {
         /* opendir(my $dh, $path) is $dh = __opendir($path) (the handle, or undef);
            opendir(DH, $path) is __opendir_named("*Pkg::DH", $path) */

@@ -3322,6 +3322,35 @@ static pp_val n_backtick(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_undef();
 }
 
+/* pipe(READ, WRITE): two handles on one buffer in memory. What is written to WRITE can be read
+   from READ; there are no processes here, so nothing ever blocks: an empty pipe reads as the
+   end of the file. Each argument is a glob name ("*main::R"), or a reference to the variable
+   that gets the handle (or holds a glob, as with Symbol::gensym). */
+static pp_val n_pipe(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_die(I, "Not enough arguments for pipe");
+    pp_obj *buf = pp_obj_new(PP_OSCALAR);
+    buf->u.scalar = pp_strn("", 0);
+    for (int k = 0; k < 2; k++) {
+        pp_obj *f = pp_obj_new(PP_OFILE);
+        f->u.file.mem = buf; buf->refcnt++;
+        f->u.file.fp = buf;
+        f->u.file.writable = (uint8_t)k;
+        pp_val v = a->v[k];
+        pp_obj *cell = v.t == PP_REF && v.u.o->kind == PP_OSCALAR ? v.u.o : NULL;
+        if (cell && cell->tied) pp_elemref_sync(cell, 0);
+        pp_obj *glob = glob_of(I, cell ? cell->u.scalar : v);
+        if (glob) { if (glob->u.glob.io) pp_obj_decref(glob->u.glob.io); glob->u.glob.io = f; }
+        else if (cell) {
+            pp_release(cell->u.scalar); cell->u.scalar = pp_ref(f); pp_obj_decref(f);
+            if (cell->tied) pp_elemref_sync(cell, 1);
+        }
+        else { pp_obj_decref(f); pp_obj_decref(buf); return pp_die(I, "Bad filehandle in pipe"); }
+    }
+    pp_obj_decref(buf);
+    return pp_int(1);
+}
+
 /* Natives that are made the first time a script names them (pp_resolve_sub asks here): a
    native registered up front costs RAM in every script, these cost none until they are used. */
 static const struct { const char *name; pp_native fn; } lazy_natives[] = {
@@ -3370,6 +3399,7 @@ static const struct { const char *name; pp_native fn; } lazy_natives[] = {
     {"POSIX::tzname", n_px_tzname},
     {"POSIX::tzset", n_bi_nothing},
     {"PicoPerl::__backtick", n_backtick},
+    {"PicoPerl::__pipe", n_pipe},
     {"version::new", n_ver_new}, {"version::parse", n_ver_new}, {"version::declare", n_ver_declare}, {"version::qv", n_ver_declare},
     {"version::numify", n_ver_numify}, {"version::normal", n_ver_normal}, {"version::stringify", n_ver_stringify},
     {"version::vcmp", n_ver_vcmp}, {"version::is_alpha", n_ver_is_alpha}, {"version::is_qv", n_ver_is_qv},
