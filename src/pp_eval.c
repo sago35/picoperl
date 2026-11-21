@@ -1864,6 +1864,7 @@ static int list_writeback(pp_interp *I, pp_node *first, pp_node **nodes, int nn,
     int pos = 0, w = 0;                              /* pos: index of the first value of the current expression */
     for (int i = first ? -1 : 0; i < nn && w < wb.n && !I->ctl; i++) {
         pp_node *a = i < 0 ? first : nodes[i];
+        if (i >= 0 && a->type == N_MY && a->n == 1 && a->list[0]->type == N_VAR) a = a->list[0];   /* f(my $x): the variable just declared */
         int cnt;
         if (i < 0) cnt = 1;                          /* the invocant is one value, whatever it is */
         else if (a->type == N_VAR && a->sym->name[0] == '@') {

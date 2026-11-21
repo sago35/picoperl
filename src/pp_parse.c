@@ -2085,7 +2085,7 @@ static pp_node *parse_unary(pp_parser *P) {
         }
         if (!strcmp(t->op, "+")) { advance(P); return parse_unary(P); }
         if (!strcmp(t->op, "~")) { advance(P); pp_node *n = node(P, N_BINOP); n->op = OP_BXOR; n->a = const_int(P, -1); n->b = parse_unary(P); return n; }
-        if (!strcmp(t->op, "\\")) { advance(P); pp_node *n = node(P, N_REF); n->a = parse_unary(P); return n; }
+        if (!strcmp(t->op, "\\")) { advance(P); pp_node *n = node(P, N_REF); n->a = parse_unary(P); if (n->a && n->a->type == N_AELEM) note_argw(P, n->a); return n; }   /* (\$_[0]: written through, the caller's variable changes) */
         if (!strcmp(t->op, "++")) { advance(P); pp_node *n = node(P, N_PREINC); n->a = parse_unary(P); if (n->a->type == N_AELEM) note_argw(P, n->a); return n; }
         if (!strcmp(t->op, "--")) { advance(P); pp_node *n = node(P, N_PREDEC); n->a = parse_unary(P); if (n->a->type == N_AELEM) note_argw(P, n->a); return n; }
     }
@@ -2648,7 +2648,12 @@ static pp_node *parse_term(pp_parser *P) {
         if (sigil == '&') {
             pp_node *n = node(P, N_CALL); n->sym = sym_sigil(P, '&', name, len);
             if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
-            else n->flags |= 2;
+            else {
+                n->flags |= 2;
+                /* &$name, defined &$name, \&$name name a sub, also under strict refs: the name is
+                   looked up in this package (node() keeps the package only without strict) */
+                if (!n->b && strcmp(P->pkg, "main") != 0) n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+            }
             return parse_postfix(P, n);
         }
         perr(P, "bad variable");
@@ -2683,7 +2688,12 @@ static pp_node *parse_term(pp_parser *P) {
             pp_node *inner = parse_cast_target(P);
             pp_node *n = node(P, N_CALLREF); n->a = inner;
             if (cur_is_op(P, "(")) { advance(P); pp_node *args = parse_comma_list(P); expect_op(P, ")"); take_children(n, args); }
-            else n->flags |= 2;
+            else {
+                n->flags |= 2;
+                /* &$name, defined &$name, \&$name name a sub, also under strict refs: the name is
+                   looked up in this package (node() keeps the package only without strict) */
+                if (!n->b && strcmp(P->pkg, "main") != 0) n->b = const_str(P, P->pkg, (int)strlen(P->pkg));
+            }
             return parse_postfix(P, n);
         }
         perr(P, "bad cast");
