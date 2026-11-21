@@ -370,6 +370,42 @@ static NOINLINE pp_val eval_caller(pp_interp *I, pp_node *n, int ctx, pp_list *o
     }
     return pp_undef();
 }
+/* substr($s, OFF, LEN) =~ s/a/b/ (or tr///, or .= and the like): OFF and LEN are evaluated
+   once, the part goes into a hidden variable, the operation runs on that, and the result is
+   put back with the 4-argument substr */
+static NOINLINE pp_val eval_substr_lv(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
+    pp_node *call = n->a;
+    pp_node c[3]; pp_node *list[4]; pp_node sub = *call;
+    memset(c, 0, sizeof c);
+    int na = call->n - 1;                             /* OFF, or OFF and LEN */
+    list[0] = call->list[0];
+    for (int i = 0; i < na; i++) {
+        c[i].type = N_CONST; c[i].line = call->line;
+        c[i].val = pp_eval(I, call->list[i + 1], CTX_SCALAR, NULL);
+        list[i + 1] = &c[i];
+        if (I->ctl) { for (int k = 0; k <= i; k++) pp_release(c[k].val); return pp_undef(); }
+    }
+    if (na == 1) { c[1].type = N_CONST; c[1].line = call->line; c[1].val = pp_int(0x7fffffff); list[2] = &c[1]; }
+    sub.list = list; sub.n = (uint16_t)(na + 1);
+    pp_val part = pp_eval(I, &sub, CTX_SCALAR, NULL);
+    pp_val res = pp_undef();
+    if (!I->ctl) {
+        pp_obj *cell = pp_global(I, pp_intern(I, "$\x13", 2));
+        pp_val saved = cell->u.scalar;                /* (a substr target inside the operation nests) */
+        cell->u.scalar = part; part = pp_undef();
+        res = pp_eval(I, n->b, ctx == CTX_LIST ? CTX_SCALAR : ctx, NULL);
+        c[2].type = N_CONST; c[2].line = call->line; c[2].val = cell->u.scalar;
+        cell->u.scalar = saved;
+        if (!I->ctl) {
+            list[3] = &c[2]; sub.n = 4;
+            pp_release(pp_eval(I, &sub, CTX_VOID, NULL));
+        }
+    }
+    pp_release(part);
+    for (int k = 0; k < 3; k++) pp_release(c[k].val);
+    if (I->ctl) { pp_release(res); return pp_undef(); }
+    return scalar_or_push(ctx, out, res);
+}
 /* a glob used as a value is its name: "*main::name" (enough for *a = *b and for printing) */
 static NOINLINE pp_val eval_glob(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     pp_val nv = pp_eval(I, n->a, CTX_SCALAR, NULL);
@@ -3623,6 +3659,7 @@ pp_val pp_eval(pp_interp *I, pp_node *n, int ctx, pp_list *out) {
     case N_MATCH: I->line = n->line; return pp_eval_match(I, n, ctx, out);
     case N_SUBST: I->line = n->line; return pp_eval_subst(I, n, ctx, out);
     case N_TRANS: I->line = n->line; return pp_eval_trans(I, n, ctx, out);
+    case N_SUBSTRLV: return eval_substr_lv(I, n, ctx, out);
     default: break;
     }
     return pp_die(I, "internal: unknown node type %d", n->type);

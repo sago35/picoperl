@@ -1096,6 +1096,9 @@ static pp_node *parse_expr(pp_parser *P);
 static pp_node *parse_assign(pp_parser *P);
 static void note_argw(pp_parser *P, pp_node *t);
 static pp_node *parse_comma_list(pp_parser *P);
+static int is_substr_lv(pp_node *n);
+static pp_node *substr_tmp(pp_parser *P);
+static pp_node *substr_lv(pp_parser *P, pp_node *call, pp_node *opn);
 static pp_node *parse_binary(pp_parser *P, int minprec);
 static pp_node *parse_unary(pp_parser *P);
 static int is_handle_name(const char *id, int len);
@@ -1666,6 +1669,11 @@ static pp_node *parse_binary(pp_parser *P, int minprec) {
         else rhs = parse_binary(P, rassoc ? prec : prec + 1);
         pp_node *n;
         if (op == OP_MATCH || op == OP_NMATCH) {
+            if (is_substr_lv(lhs) && !rhs->a && op == OP_MATCH && ((rhs->type == N_SUBST && !(rhs->op & PP_M_R)) || (rhs->type == N_TRANS && !(rhs->op & PP_TR_R)))) {
+                rhs->a = substr_tmp(P);               /* substr($s, 0, 1) =~ s/a/b/ */
+                lhs = substr_lv(P, lhs, rhs);
+                continue;
+            }
             if ((rhs->type == N_MATCH || rhs->type == N_SUBST || rhs->type == N_TRANS) && !rhs->a && !(rhs->type == N_MATCH && (rhs->op & PP_M_QR))) { rhs->a = lhs; n = rhs; if (n->type != N_MATCH && lhs->type == N_AELEM) note_argw(P, lhs); }
             else { n = node(P, N_MATCH); n->a = lhs; n->b = rhs; }
             if (op == OP_NMATCH) {
@@ -1751,6 +1759,17 @@ static void note_argw(pp_parser *P, pp_node *t) {
     if (t->type == N_AELEM) t = t->a;
     if (t->type == N_VAR && t->sym == P->I->sym_args) P->argw = 1;
 }
+/* substr(...) as the target of s///, tr/// or an assignment operator: the hidden variable the
+   operation works on, and the node that copies the part in and the result back */
+static int is_substr_lv(pp_node *n) {
+    return n->type == N_BUILTIN && (n->n == 2 || n->n == 3) && n->op == (uint8_t)pp_builtin_id("substr", 6, NULL);
+}
+static pp_node *substr_tmp(pp_parser *P) { pp_node *v = node(P, N_VAR); v->sym = pp_intern(P->I, "$\x13", 2); return v; }
+static pp_node *substr_lv(pp_parser *P, pp_node *call, pp_node *opn) {
+    pp_node *n = node(P, N_SUBSTRLV);
+    n->a = call; n->b = opn;
+    return n;
+}
 static pp_node *parse_assign(pp_parser *P) {
     pp_node *lhs = parse_ternary(P);
     int op = assign_op_of(P);
@@ -1798,6 +1817,11 @@ static pp_node *parse_assign(pp_parser *P) {
         advance(P);
         pp_node *n = node(P, N_ASSIGN);
         n->op = (uint8_t)op;
+        if (op != OP_NONE && is_substr_lv(lhs)) {     /* substr($s, 0, 1) .= "x" */
+            n->a = substr_tmp(P);
+            n->b = parse_assign(P);
+            return substr_lv(P, lhs, n);
+        }
         n->a = lhs;
         if (lhs->type == N_AELEM || lhs->type == N_LIST) note_argw(P, lhs);
         n->b = parse_assign(P);

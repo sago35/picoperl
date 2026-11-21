@@ -224,6 +224,8 @@ enum {
     N_TRYERR,       /* leaf: the error caught by the enclosing try (copied into the catch variable) */
     N_NAMEDBIND,    /* named signature params (5.44): op: first pair index, a: sub name (const str),
                        b: slurpy %hash N_MY or NULL, list: one N_ASSIGN{N_MY[$var], default|NULL} per param */
+    N_SUBSTRLV,     /* substr(...) =~ s///, =~ tr///, OP=: a: the substr call (2 or 3 arguments), b: the
+                       operation, done on a hidden variable that holds the part; the result goes back */
 };
 /* N_MATCH / N_SUBST op bits */
 enum { PP_M_G = 1, PP_M_NEG = 2, PP_M_QR = 4, PP_M_E = 8, PP_M_R = 16, PP_M_C = 32 };   /* C: m//gc keeps pos() when the match fails */
