@@ -2486,6 +2486,30 @@ static pp_val n_times(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
     return pp_num(up);
 }
 
+/* syswrite(FH, SCALAR, LEN, OFFSET): LEN bytes of SCALAR from OFFSET (all of it without LEN);
+   the number of bytes written, undef when it fails. There is no unbuffered writing here: it
+   goes the way print does. */
+static pp_val n_syswrite(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
+    (void)ctx; (void)out;
+    if (a->n < 2) return pp_die(I, "Not enough arguments for syswrite");
+    int fd;
+    pp_obj *f = handle_of(I, a->v[0], &fd);
+    pp_str *s = pp_to_str(a->v[1]);
+    int64_t off = a->n > 3 ? pp_to_int(a->v[3]) : 0;
+    if (off < 0) off += s->len;
+    if (off < 0 || off > s->len) { pp_str_decref(s); return pp_die(I, "Offset outside string"); }
+    int64_t len = a->n > 2 && a->v[2].t != PP_UNDEF ? pp_to_int(a->v[2]) : s->len - off;
+    if (len < 0) { pp_str_decref(s); return pp_die(I, "Negative length"); }
+    if (len > s->len - off) len = s->len - off;
+    int ok = 1;
+    if (f) { if (!f->u.file.writable || !(f->u.file.fp || f->u.file.mem)) ok = 0; else ok = f_write(f, s->d + off, (int)len); }
+    else if (fd == 1 || fd == 2) pp_host_write(fd, s->d + off, (int)len);
+    else ok = 0;
+    pp_str_decref(s);
+    if (!ok) { set_errno_var(I, "Bad file descriptor"); return pp_undef(); }
+    return pp_int(len);
+}
+
 /* read(FH, $buf, LEN, OFFSET): the parser passes \$buf. Returns the number of bytes read (0 at
    the end of the file), undef for something that is no open file. getc(FH): one byte or undef. */
 static pp_val n_read(pp_interp *I, pp_list *a, int ctx, pp_list *out) {
@@ -2543,6 +2567,7 @@ void pp_core_natives_register(pp_interp *I) {
     pp_register(I, "times", n_times);
     pp_register(I, "umask", n_umask);
     pp_register(I, "__read", n_read);
+    pp_register(I, "syswrite", n_syswrite);
     pp_register(I, "__getc", n_getc);
     pp_register(I, "__pos_set", n_pos_set);
     pp_register(I, "__lastidx_set", n_lastidx_set);

@@ -23,3 +23,14 @@ unlink $p;
     sysopen($h, $q, O_WRONLY, 0600) or die; close $h; printf "existing file keeps: %04o\n", (stat($q))[2] & 0777;
     umask($old); unlink $q;
 }
+# syswrite: 長さと位置を指定して書く。戻り値は書いたバイト数
+{
+    my $q = "test/io_tmp_syswrite.txt"; unlink $q;
+    open(my $h, '>', $q) or die; my $buf = "0123456789";
+    my $n1 = syswrite($h, $buf); my $n2 = syswrite($h, $buf, 3); my $n3 = syswrite($h, $buf, 4, 6); my $n4 = syswrite($h, $buf, 100, 8); my $n5 = syswrite($h, $buf, 2, -3);
+    close $h;
+    open($h, '<', $q) or die; my $all = <$h>; close $h;
+    print "syswrite: $n1 $n2 $n3 $n4 $n5 [$all]\n";
+    open($h, '<', $q) or die; { no warnings; my $r = syswrite($h, "x"); print "read-only: ", defined $r ? "wrote" : "undef", "\n"; } close $h;
+    unlink $q;
+}
