@@ -2286,6 +2286,20 @@ static NOINLINE pp_val make_ref(pp_interp *I, pp_node *a, int ctx, pp_list *out)
             return pp_ref(code);
         }
         break;
+    case N_RV2SV: {
+        /* \$$ref is $ref itself; \${"name"} and \${*glob} point at the package variable (so that
+           tie ${"Pkg::name"}, ... ties the variable, as Env does) */
+        pp_val v = pp_eval(I, a->a, CTX_SCALAR, NULL);
+        if (I->ctl) { pp_release(v); return pp_undef(); }
+        if (v.t == PP_REF && v.u.o->kind == PP_OSCALAR && !v.u.o->class) return v;
+        if (v.t != PP_REF ? (v.t == PP_STR && v.u.s->len > 0) : is_globref(v)) {
+            pp_sym *s = pp_symref(I, a, v, '$', 1);
+            pp_release(v);
+            return s ? pp_ref(pp_global(I, s)) : pp_undef();
+        }
+        pp_release(v);
+        break;
+    }
     case N_ANONSUB: return pp_eval(I, a, CTX_SCALAR, NULL);
     case N_GLOB: { pp_sym *gs = glob_sym(I, a); return gs ? pp_ref(pp_glob_obj(I, gs)) : pp_undef(); }
     case N_CALLREF:
