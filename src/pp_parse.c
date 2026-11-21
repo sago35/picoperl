@@ -1643,6 +1643,7 @@ static pp_node *qw_list(pp_parser *P, const char *s, int len) {
 
 /* perl's while-condition magic: `while (<$fh>)` reads into $_ and tests defined;
    an assignment from readline also gets the implicit defined(). */
+static void drop_shell(pp_node *l);
 static pp_node *while_cond_magic(pp_parser *P, pp_node *c) {
     int rl = pp_builtin_id("readline", 8, NULL);
     pp_node *inner = c;
@@ -1655,6 +1656,7 @@ static pp_node *while_cond_magic(pp_parser *P, pp_node *c) {
     }
     else if (!(inner->type == N_ASSIGN && inner->op == OP_NONE && inner->b && inner->b->type == N_BUILTIN && inner->b->op == rl))
         return c;
+    if (c->type == N_LIST && c->n == 1) drop_shell(c);           /* the parentheses around it are not used */
     pp_node *d = node(P, N_BUILTIN);
     d->op = (uint8_t)pp_builtin_id("defined", 7, NULL);
     node_add(d, inner);
