@@ -265,6 +265,8 @@ struct pp_node {
 #define PP_SUB_EARLY 0x08          /* N_SUBDEF: already defined while parsing (a BEGIN block or `use` needed it) */
 #define PP_CALL_GOTO 0x10          /* N_CALL / N_CALLREF: written as goto &sub */
 #define PP_SUB_INPLACE 0x10        /* N_SUBDEF: not defined up front, see N_SUBCLOSE */
+#define PP_SUB_FILEDONE 0x04       /* N_SUBDEF: the file it is in has compiled (a file that fails later leaves it alone) */
+#define PP_SUB_UNPACKED 0x20       /* N_SUBDEF (in place): its lists are still malloc'd; the end of the parse packs them */
 #define PP_UNIT_GOTO 0x08          /* file-level N_BLOCK: the file uses goto, keep its statements after they ran */
 #define PP_BLOCK_WARGS 0x04        /* body of a sub that writes to $_[N]: its caller copies the changes back */
 #define PP_BLOCK_PKG 0x10          /* N_BLOCK: contains a `package` statement, restore the package on exit */

@@ -3444,8 +3444,7 @@ static pp_node *parse_statement_inner(pp_parser *P) {
             I->all_subdefs = pp_xrealloc(I->all_subdefs, (I->nall_subdefs + 1) * sizeof(pp_node *));
             I->all_subdefs[I->nall_subdefs++] = n;
             if (in_place) {
-                n->flags |= PP_SUB_INPLACE;
-                shrink_ast(P->sc->arena, n);          /* not under the file's tree: its lists go into the arena now */
+                n->flags |= PP_SUB_INPLACE | PP_SUB_UNPACKED;   /* not under the file's tree: parse_unit packs its lists */
                 pp_node *c = node(P, N_SUBCLOSE); c->sym = n->sym;
                 return c;
             }
@@ -3868,6 +3867,11 @@ static pp_node *parse_unit(pp_interp *I, const char *filename, const char *src, 
     scope_finalize(&P, 0, -1);
     shrink_ast(P.sc->arena, unit);
     for (int i = 0; i < I->nsubdefs; i++) shrink_ast(P.sc->arena, I->subdefs[i]);
+    for (int i = subs_before; i < I->nall_subdefs; i++) {       /* subs defined in place (and not those of a file loaded meanwhile) */
+        pp_node *sd = I->all_subdefs[i];
+        sd->flags |= PP_SUB_FILEDONE;
+        if (sd->flags & PP_SUB_UNPACKED) { sd->flags &= ~PP_SUB_UNPACKED; shrink_ast(P.sc->arena, sd); }
+    }
     if (!site) {
         if (skip_marker) {
             skip_marker->a = (pp_node *)I->arena->chunks;
