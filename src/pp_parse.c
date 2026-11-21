@@ -1193,7 +1193,8 @@ static void apply_proto(pp_parser *P, pp_node *n) {
         pp_node *a = n->list[i];
         if (!(mask & (1 << i))) continue;
         int listy = (a->type == N_VAR && a->sym->name[0] != '$') || a->type == N_BUILTIN || a->type == N_CALL || a->type == N_CALLREF
-                    || a->type == N_METHOD || a->type == N_RV2AV || a->type == N_RV2HV || a->type == N_MATCH;
+                    || a->type == N_METHOD || a->type == N_RV2AV || a->type == N_RV2HV || a->type == N_MATCH
+                    || a->type == N_EVALBLOCK || a->type == N_DOBLOCK || a->type == N_EVALSTR || a->type == N_TERNARY || a->type == N_LIST;   /* is(eval { ... }, undef): one value, also when it dies */
         if (!listy) continue;
         pp_node *sc = node(P, N_BUILTIN); sc->op = (uint8_t)pp_builtin_id("scalar", 6, NULL); sc->line = a->line;
         node_add(sc, a);
