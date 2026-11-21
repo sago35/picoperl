@@ -75,7 +75,58 @@ static pp_obj *cap_cell(pp_interp *I, int i) {
     return pp_global(I, pp_intern(I, nm, n));
 }
 
+/* $1 ... belong to the sub that matched: the first match inside a sub call puts the caller's
+   values aside, and the return puts them back (pp_call). Costs nothing for a sub without a
+   match. */
+typedef struct {
+    int nset, noff;                 /* groups, entries of @- / @+ */
+    pp_val plus;                    /* $+ */
+    pp_obj *names;                  /* %+ (NULL: was empty) */
+    int *off;                       /* 2 * noff offsets, -1 for undef */
+    pp_val caps[1];
+} match_save;
+static void match_save_now(pp_interp *I) {
+    int n = I->m_nset;
+    pp_obj *mi = pp_global(I, pp_intern(I, "@-", 2)), *pl = pp_global(I, pp_intern(I, "@+", 2));
+    pp_obj *h = pp_global(I, pp_intern(I, "%+", 2)), *plus = pp_global(I, pp_intern(I, "$+", 2));
+    int noff = mi->u.arr.n < pl->u.arr.n ? mi->u.arr.n : pl->u.arr.n;
+    match_save *ms = pp_xmalloc(sizeof *ms + (size_t)n * sizeof(pp_val) + (size_t)noff * 2 * sizeof(int));
+    ms->nset = n; ms->noff = noff;
+    ms->off = (int *)(void *)&ms->caps[n + 1];
+    for (int i = 0; i <= n; i++) { pp_obj *c = cap_cell(I, i); ms->caps[i] = c->u.scalar; c->u.scalar = pp_undef(); }
+    ms->plus = plus->u.scalar; plus->u.scalar = pp_undef();
+    for (int i = 0; i < noff; i++) {
+        ms->off[2 * i] = mi->u.arr.v[i].t == PP_UNDEF ? -1 : (int)pp_to_int(mi->u.arr.v[i]);
+        ms->off[2 * i + 1] = pl->u.arr.v[i].t == PP_UNDEF ? -1 : (int)pp_to_int(pl->u.arr.v[i]);
+    }
+    ms->names = NULL;
+    if (h->u.hash.live > 0) { ms->names = pp_obj_new(PP_OHASH); pp_obj tmp = *ms->names; ms->names->u = h->u; h->u = tmp.u; }
+    *I->m_slot = ms;
+}
+void pp_match_restore(pp_interp *I, void *saved) {
+    match_save *ms = saved;
+    pp_obj *mi = pp_global(I, pp_intern(I, "@-", 2)), *pl = pp_global(I, pp_intern(I, "@+", 2));
+    pp_obj *h = pp_global(I, pp_intern(I, "%+", 2)), *plus = pp_global(I, pp_intern(I, "$+", 2));
+    int top = I->m_nset > ms->nset ? I->m_nset : ms->nset;
+    for (int i = 0; i <= top; i++) {
+        pp_obj *c = cap_cell(I, i);
+        pp_val old = c->u.scalar;
+        c->u.scalar = i <= ms->nset ? ms->caps[i] : pp_undef();
+        pp_release(old);
+    }
+    I->m_nset = ms->nset;
+    { pp_val old = plus->u.scalar; plus->u.scalar = ms->plus; pp_release(old); }
+    pp_array_clear(mi); pp_array_clear(pl);
+    for (int i = 0; i < ms->noff; i++) {
+        pp_array_push(mi, ms->off[2 * i] < 0 ? pp_undef() : pp_int(ms->off[2 * i]));
+        pp_array_push(pl, ms->off[2 * i + 1] < 0 ? pp_undef() : pp_int(ms->off[2 * i + 1]));
+    }
+    pp_hash_clear(h);
+    if (ms->names) { pp_obj tmp = *h; h->u = ms->names->u; ms->names->u = tmp.u; pp_obj_decref(ms->names); }
+    free(ms);
+}
 static void set_captures(pp_interp *I, const pp_regex *re, const char *s, const int *caps, int ncap) {
+    if (I->m_slot && !*I->m_slot) match_save_now(I);
     for (int i = 0; i <= ncap; i++) {
         pp_obj *c = cap_cell(I, i);
         pp_release(c->u.scalar);

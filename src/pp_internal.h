@@ -138,6 +138,7 @@ pp_val   pp_false(void);                            /* "" that is also 0 without
 int      pp_is_false(pp_val v);
 void    pp_glob_promote(pp_interp *I, pp_obj *file);     /* an open(my $fh) handle becomes a glob without a name (*$fh) */
 extern pp_interp *pp_anon_I;                             /* the interpreter that has such globs (NULL: none) */
+void    pp_match_restore(pp_interp *I, void *saved);     /* a sub returns: $1 ... are the caller's again */
 pp_sym  *pp_sym_find(pp_interp *I, const char *name, int len);   /* NULL if not interned */
 pp_obj  *pp_lookup_sub(pp_interp *I, pp_sym *sym);
 /* symbolic reference: the symbol a plain string names when it is used as a reference by node n

@@ -1884,7 +1884,10 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->frame = &fr;
     const char *saved_file = I->file;
     if (code->u.code.body->type == N_BLOCK && code->u.code.body->sym) I->file = code->u.code.body->sym->name + 1;
+    void *msave = NULL, **prev_slot = I->m_slot;
+    I->m_slot = &msave;
     pp_val r = exec_block(I, code->u.code.body, ctx, out);
+    I->m_slot = prev_slot;
     I->file = saved_file;
     I->frame = prev_frame;
     I->file_pkg = prev_pkg;              /* a `package` statement inside the sub ends with it */
@@ -1912,6 +1915,7 @@ pp_val pp_call(pp_interp *I, pp_obj *code, pp_list *args, int ctx, pp_list *out)
     I->line = saved_line;
     I->warn_on = saved_warn;
     if (wargs) args_changed(I, code, argv, &orig, fr.nshift);
+    if (msave) pp_match_restore(I, msave);
     pp_env_decref(env);
     pp_obj_decref(code);
     return r;

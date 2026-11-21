@@ -335,6 +335,7 @@ struct pp_interp {
     pp_sym  *sym_a, *sym_b;
     /* regular expressions */
     pp_sym  *sym_cap[10];        /* $& and $1..$9 (interned on first use) */
+    void   **m_slot;             /* where the running sub keeps what $1 ... were when it was called (NULL: main program) */
     int      m_nset;             /* how many $N cells currently hold captures */
     pp_pos_ent *pos_tab;         /* pos() of scalars matched with /g: grows from 4 to PP_POS_MAX entries, then the least recently used one goes */
     int      pos_cap;
